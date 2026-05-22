@@ -8,6 +8,7 @@ public class AppProperties {
     private final Market market = new Market();
     private final Ai ai = new Ai();
     private final Scheduler scheduler = new Scheduler();
+    private final Auth auth = new Auth();
 
     public Market getMarket() {
         return market;
@@ -19,6 +20,10 @@ public class AppProperties {
 
     public Scheduler getScheduler() {
         return scheduler;
+    }
+
+    public Auth getAuth() {
+        return auth;
     }
 
     public static class Market {
@@ -109,7 +114,7 @@ public class AppProperties {
     }
 
     public static class Scheduler {
-        private boolean enabled = true;
+        private boolean enabled = false;
         private long newsFixedRateMs = 300000;
         private long intradayAnalysisFixedRateMs = 1800000;
         private String closeAnalysisCron = "0 30 15 * * MON-FRI";
@@ -144,6 +149,27 @@ public class AppProperties {
 
         public void setCloseAnalysisCron(String closeAnalysisCron) {
             this.closeAnalysisCron = closeAnalysisCron;
+        }
+    }
+
+    public static class Auth {
+        private String jwtSecret = "maogou-local-dev-secret-change-me";
+        private long accessTokenTtlMinutes = 1440;
+
+        public String getJwtSecret() {
+            return jwtSecret;
+        }
+
+        public void setJwtSecret(String jwtSecret) {
+            this.jwtSecret = jwtSecret;
+        }
+
+        public long getAccessTokenTtlMinutes() {
+            return accessTokenTtlMinutes;
+        }
+
+        public void setAccessTokenTtlMinutes(long accessTokenTtlMinutes) {
+            this.accessTokenTtlMinutes = accessTokenTtlMinutes;
         }
     }
 }

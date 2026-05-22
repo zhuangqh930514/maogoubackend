@@ -9,10 +9,17 @@ CREATE TABLE IF NOT EXISTS user_account (
     username VARCHAR(64) NOT NULL,
     display_name VARCHAR(64) NULL,
     email VARCHAR(128) NULL,
+    phone VARCHAR(32) NULL,
+    password_hash VARCHAR(255) NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+    risk_preference VARCHAR(16) NULL,
+    last_login_at DATETIME NULL,
     deleted TINYINT NOT NULL DEFAULT 0,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_user_account_username (username)
+    UNIQUE KEY uk_user_account_username (username),
+    UNIQUE KEY uk_user_account_email (email),
+    UNIQUE KEY uk_user_account_phone (phone)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 
 CREATE TABLE IF NOT EXISTS watch_stock (
@@ -129,5 +136,5 @@ CREATE TABLE IF NOT EXISTS stock_kline (
     UNIQUE KEY uk_stock_kline_code_period_date (stock_code, period, trade_date)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 
-INSERT IGNORE INTO user_account (id, username, display_name, email)
-VALUES (1, 'demo', '默认用户', NULL);
+INSERT IGNORE INTO user_account (id, username, display_name, email, status)
+VALUES (1, 'demo', '默认用户', NULL, 'ACTIVE');

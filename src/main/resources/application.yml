@@ -1,5 +1,5 @@
 server:
-  port: 8080
+  port: 8081
   servlet:
     context-path: /
 
@@ -8,9 +8,9 @@ spring:
     name: maogou-stock-backend
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: ${MYSQL_URL:jdbc:mysql://127.0.0.1:3306/maogou_stock?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
-    username: ${MYSQL_USERNAME:root}
-    password: ${MYSQL_PASSWORD:root}
+    url: ${MYSQL_URL:jdbc:mysql://8.138.232.4:3306/maogou?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
+    username: ${MYSQL_USERNAME:zqh}
+    password: ${MYSQL_PASSWORD:930514}
   jackson:
     time-zone: Asia/Shanghai
     date-format: yyyy-MM-dd HH:mm:ss
@@ -44,7 +44,10 @@ maogou:
     temperature: 0.2
     max-tokens: 2048
   scheduler:
-    enabled: true
+    enabled: ${MAOGOU_SCHEDULER_ENABLED:false}
     news-fixed-rate-ms: 300000
     intraday-analysis-fixed-rate-ms: 1800000
     close-analysis-cron: "0 30 15 * * MON-FRI"
+  auth:
+    jwt-secret: ${MAOGOU_JWT_SECRET:maogou-local-dev-secret-change-me}
+    access-token-ttl-minutes: ${MAOGOU_ACCESS_TOKEN_TTL_MINUTES:1440}

@@ -14,6 +14,11 @@ public class UserAccount {
     public String username;
     public String displayName;
     public String email;
+    public String phone;
+    public String passwordHash;
+    public String status;
+    public String riskPreference;
+    public LocalDateTime lastLoginAt;
     @TableLogic
     public Integer deleted;
     public LocalDateTime createdAt;

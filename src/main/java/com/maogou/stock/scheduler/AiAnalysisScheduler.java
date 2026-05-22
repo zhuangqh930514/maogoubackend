@@ -26,7 +26,11 @@ public class AiAnalysisScheduler {
             return;
         }
         log.info("start intraday AI analysis for watchlist");
-        aiAnalysisService.analyzeWatchlist();
+        try {
+            aiAnalysisService.analyzeWatchlist();
+        } catch (Exception ex) {
+            log.warn("intraday AI analysis skipped: {}", ex.getMessage());
+        }
     }
 
     @Scheduled(cron = "${maogou.scheduler.close-analysis-cron}")
@@ -35,6 +39,10 @@ public class AiAnalysisScheduler {
             return;
         }
         log.info("start close AI analysis for watchlist");
-        aiAnalysisService.analyzeWatchlist();
+        try {
+            aiAnalysisService.analyzeWatchlist();
+        } catch (Exception ex) {
+            log.warn("close AI analysis skipped: {}", ex.getMessage());
+        }
     }
 }

@@ -8,6 +8,7 @@ import com.maogou.stock.dto.settings.ModelConfigRequest;
 import com.maogou.stock.dto.settings.ModelConfigResponse;
 import com.maogou.stock.infrastructure.ai.LocalAiClient;
 import com.maogou.stock.mapper.AiModelConfigMapper;
+import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.ModelConfigService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -38,7 +39,7 @@ public class ModelConfigServiceImpl implements ModelConfigService {
     @Override
     public AiModelConfig currentEntity() {
         AiModelConfig existing = configMapper.selectOne(new QueryWrapper<AiModelConfig>()
-                .eq("user_id", WatchlistServiceImpl.DEFAULT_USER_ID)
+                .eq("user_id", AuthContext.currentUserIdOrDefault())
                 .last("limit 1"));
         return existing == null ? defaultEntity() : existing;
     }
@@ -48,7 +49,7 @@ public class ModelConfigServiceImpl implements ModelConfigService {
     public ModelConfigResponse save(ModelConfigRequest request) {
         AiModelConfig entity = currentEntity();
         boolean insert = entity.id == null;
-        entity.userId = WatchlistServiceImpl.DEFAULT_USER_ID;
+        entity.userId = AuthContext.currentUserIdOrDefault();
         entity.apiBaseUrl = request.apiBaseUrl();
         entity.modelName = request.modelName();
         entity.apiKey = request.apiKey();
@@ -85,7 +86,7 @@ public class ModelConfigServiceImpl implements ModelConfigService {
     private AiModelConfig defaultEntity() {
         AppProperties.Ai ai = properties.getAi();
         AiModelConfig config = new AiModelConfig();
-        config.userId = WatchlistServiceImpl.DEFAULT_USER_ID;
+        config.userId = AuthContext.currentUserIdOrDefault();
         config.apiBaseUrl = ai.getApiBaseUrl();
         config.modelName = ai.getModelName();
         config.apiKey = ai.getApiKey();

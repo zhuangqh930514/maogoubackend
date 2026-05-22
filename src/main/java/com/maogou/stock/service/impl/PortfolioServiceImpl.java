@@ -9,6 +9,7 @@ import com.maogou.stock.dto.portfolio.PositionResponse;
 import com.maogou.stock.dto.portfolio.TradeRecordCreateRequest;
 import com.maogou.stock.dto.portfolio.TradeRecordResponse;
 import com.maogou.stock.mapper.TradeRecordMapper;
+import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.MarketDataService;
 import com.maogou.stock.service.PortfolioService;
 import org.springframework.stereotype.Service;
@@ -44,7 +45,7 @@ public class PortfolioServiceImpl implements PortfolioService {
     public TradeRecordResponse addBuyRecord(TradeRecordCreateRequest request) {
         StockQuoteResponse quote = marketDataService.quote(request.code());
         TradeRecord entity = new TradeRecord();
-        entity.userId = WatchlistServiceImpl.DEFAULT_USER_ID;
+        entity.userId = AuthContext.currentUserIdOrDefault();
         entity.stockCode = request.code();
         entity.stockName = quote.name();
         entity.side = TradeSide.BUY;
@@ -82,7 +83,7 @@ public class PortfolioServiceImpl implements PortfolioService {
 
     private QueryWrapper<TradeRecord> baseTradeQuery() {
         return new QueryWrapper<TradeRecord>()
-                .eq("user_id", WatchlistServiceImpl.DEFAULT_USER_ID)
+                .eq("user_id", AuthContext.currentUserIdOrDefault())
                 .orderByDesc("traded_at");
     }
 

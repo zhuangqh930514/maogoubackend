@@ -30,6 +30,7 @@ backend/src/main/java/com/maogou/stock
 
 | 前端页面 | 后端接口 |
 | --- | --- |
+| 注册登录 | `POST /api/auth/register`, `POST /api/auth/login`, `GET /api/auth/me` |
 | 资讯首页 | `GET /api/news/latest` |
 | 大盘数据 | `GET /api/market/indexes`, `GET /api/market/indexes/{code}/intraday` |
 | 个股详情 | `GET /api/stocks/{code}`, `GET /api/stocks/{code}/kline` |
@@ -38,12 +39,20 @@ backend/src/main/java/com/maogou/stock
 | AI 分析报告 | `GET /api/ai/reports`, `POST /api/ai/analyze`, `POST /api/ai/analyze-watchlist` |
 | 模型配置中心 | `GET /api/settings/model`, `PUT /api/settings/model`, `POST /api/settings/model/test` |
 
+除注册和登录外，业务接口使用 `Authorization: Bearer <token>` 访问。
+
 ## 本地启动
 
 1. 创建数据库并执行建表脚本：
 
 ```bash
 mysql -uroot -p < backend/src/main/resources/db/schema.sql
+```
+
+如果是已有数据库，先执行一次增量脚本：
+
+```bash
+mysql -uroot -p maogou < backend/src/main/resources/db/20260522_auth_upgrade.sql
 ```
 
 2. 按需配置 MySQL 和本地模型：
@@ -55,6 +64,7 @@ export MYSQL_PASSWORD='root'
 export MAOGOU_AI_API_BASE_URL='http://localhost:11434/v1'
 export MAOGOU_AI_MODEL_NAME='qwen3.6'
 export MAOGOU_AI_API_KEY='sk-local-dev-key'
+export MAOGOU_JWT_SECRET='replace-with-a-long-random-secret'
 ```
 
 3. 启动后端：
@@ -69,7 +79,7 @@ mvn -f backend/pom.xml spring-boot:run
 npm run dev
 ```
 
-Vite 会把 `/api` 代理到 `http://127.0.0.1:8080`。
+Vite 会把 `/api` 代理到 `http://127.0.0.1:8081`，也可以通过 `VITE_API_PROXY_TARGET` 覆盖。
 
 ## 后续接真实行情源的位置
 

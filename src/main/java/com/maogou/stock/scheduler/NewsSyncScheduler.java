@@ -25,7 +25,11 @@ public class NewsSyncScheduler {
         if (!properties.getScheduler().isEnabled()) {
             return;
         }
-        int size = marketDataService.latestNews(20).size();
-        log.info("news sync completed, fetched={}", size);
+        try {
+            int size = marketDataService.latestNews(20).size();
+            log.info("news sync completed, fetched={}", size);
+        } catch (Exception ex) {
+            log.warn("news sync skipped: {}", ex.getMessage());
+        }
     }
 }

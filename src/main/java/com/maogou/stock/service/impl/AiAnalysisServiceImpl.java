@@ -9,6 +9,7 @@ import com.maogou.stock.dto.market.StockDetailResponse;
 import com.maogou.stock.dto.watchlist.WatchStockResponse;
 import com.maogou.stock.infrastructure.ai.LocalAiClient;
 import com.maogou.stock.mapper.AiAnalysisReportMapper;
+import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.AiAnalysisService;
 import com.maogou.stock.service.MarketDataService;
 import com.maogou.stock.service.ModelConfigService;
@@ -45,7 +46,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
     @Override
     public List<AiAnalysisReportResponse> listReports(String code) {
         QueryWrapper<AiAnalysisReport> wrapper = new QueryWrapper<AiAnalysisReport>()
-                .eq("user_id", WatchlistServiceImpl.DEFAULT_USER_ID)
+                .eq("user_id", AuthContext.currentUserIdOrDefault())
                 .orderByDesc("generated_at");
         if (code != null && !code.isBlank()) {
             wrapper.eq("stock_code", code);
@@ -60,7 +61,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         AiModelConfig config = modelConfigService.currentEntity();
         String prompt = buildPrompt(detail, config);
         AiAnalysisReport report = new AiAnalysisReport();
-        report.userId = WatchlistServiceImpl.DEFAULT_USER_ID;
+        report.userId = AuthContext.currentUserIdOrDefault();
         report.stockCode = detail.quote().code();
         report.stockName = detail.quote().name();
         report.rawPrompt = prompt;

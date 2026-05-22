@@ -7,6 +7,7 @@ import com.maogou.stock.dto.market.StockQuoteResponse;
 import com.maogou.stock.dto.watchlist.AddWatchStockRequest;
 import com.maogou.stock.dto.watchlist.WatchStockResponse;
 import com.maogou.stock.mapper.WatchStockMapper;
+import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.MarketDataService;
 import com.maogou.stock.service.WatchlistService;
 import org.springframework.stereotype.Service;
@@ -17,8 +18,6 @@ import java.util.List;
 
 @Service
 public class WatchlistServiceImpl implements WatchlistService {
-
-    public static final long DEFAULT_USER_ID = 1L;
 
     private final WatchStockMapper watchStockMapper;
     private final MarketDataService marketDataService;
@@ -31,7 +30,7 @@ public class WatchlistServiceImpl implements WatchlistService {
     @Override
     public List<WatchStockResponse> list(String groupName) {
         QueryWrapper<WatchStock> wrapper = new QueryWrapper<WatchStock>()
-                .eq("user_id", DEFAULT_USER_ID)
+                .eq("user_id", AuthContext.currentUserIdOrDefault())
                 .orderByAsc("priority")
                 .orderByDesc("created_at");
         if (groupName != null && !groupName.isBlank() && !"全部".equals(groupName)) {
@@ -45,7 +44,7 @@ public class WatchlistServiceImpl implements WatchlistService {
     public WatchStockResponse add(AddWatchStockRequest request) {
         StockQuoteResponse quote = marketDataService.quote(request.code());
         WatchStock entity = new WatchStock();
-        entity.userId = DEFAULT_USER_ID;
+        entity.userId = AuthContext.currentUserIdOrDefault();
         entity.stockCode = request.code();
         entity.stockName = quote.name();
         entity.market = quote.market();
@@ -62,7 +61,7 @@ public class WatchlistServiceImpl implements WatchlistService {
     @Transactional
     public void remove(String code) {
         watchStockMapper.delete(new QueryWrapper<WatchStock>()
-                .eq("user_id", DEFAULT_USER_ID)
+                .eq("user_id", AuthContext.currentUserIdOrDefault())
                 .eq("stock_code", code));
     }
 
