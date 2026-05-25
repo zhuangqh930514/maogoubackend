@@ -50,16 +50,18 @@ public class ModelConfigServiceImpl implements ModelConfigService {
         AiModelConfig entity = currentEntity();
         boolean insert = entity.id == null;
         entity.userId = AuthContext.currentUserIdOrDefault();
-        entity.apiBaseUrl = request.apiBaseUrl();
-        entity.modelName = request.modelName();
-        entity.apiKey = request.apiKey();
-        entity.timeoutMs = request.timeout();
-        entity.temperature = request.temperature();
-        entity.maxTokens = request.maxTokens();
-        entity.intradayIntervalMinutes = request.intradayInterval();
-        entity.closeAnalysisTime = request.closeTime();
-        entity.analysisScope = request.analysisScope();
-        entity.promptTemplate = request.promptTemplate();
+        entity.apiBaseUrl = normalizeBaseUrl(request.apiBaseUrl());
+        entity.modelName = request.modelName().trim();
+        entity.apiKey = resolveApiKey(request.apiKey(), insert ? null : entity.apiKey);
+        entity.timeoutMs = request.timeout() == null ? properties.getAi().getTimeoutMs() : request.timeout();
+        entity.temperature = request.temperature() == null ? BigDecimal.valueOf(properties.getAi().getTemperature()) : request.temperature();
+        entity.maxTokens = request.maxTokens() == null ? properties.getAi().getMaxTokens() : request.maxTokens();
+        entity.intradayIntervalMinutes = request.intradayInterval() == null ? 30 : request.intradayInterval();
+        entity.closeAnalysisTime = request.closeTime() == null || request.closeTime().isBlank() ? "15:30" : request.closeTime();
+        entity.analysisScope = request.analysisScope() == null || request.analysisScope().isBlank() ? "全部自选股" : request.analysisScope();
+        entity.promptTemplate = request.promptTemplate() == null || request.promptTemplate().isBlank()
+                ? DEFAULT_PROMPT_TEMPLATE
+                : request.promptTemplate();
         entity.deleted = 0;
         entity.updatedAt = LocalDateTime.now();
         if (insert) {
@@ -73,7 +75,8 @@ public class ModelConfigServiceImpl implements ModelConfigService {
 
     @Override
     public ConnectionTestResponse testConnection(ModelConfigRequest request) {
-        AiModelConfig config = fromRequest(request);
+        AiModelConfig existing = currentEntity();
+        AiModelConfig config = fromRequest(request, existing);
         long start = System.currentTimeMillis();
         try {
             boolean success = localAiClient.test(config);
@@ -101,14 +104,14 @@ public class ModelConfigServiceImpl implements ModelConfigService {
         return config;
     }
 
-    private AiModelConfig fromRequest(ModelConfigRequest request) {
+    private AiModelConfig fromRequest(ModelConfigRequest request, AiModelConfig existing) {
         AiModelConfig config = new AiModelConfig();
-        config.apiBaseUrl = request.apiBaseUrl();
-        config.modelName = request.modelName();
-        config.apiKey = request.apiKey();
-        config.timeoutMs = request.timeout();
-        config.temperature = request.temperature();
-        config.maxTokens = request.maxTokens();
+        config.apiBaseUrl = normalizeBaseUrl(request.apiBaseUrl());
+        config.modelName = request.modelName().trim();
+        config.apiKey = resolveApiKey(request.apiKey(), existing == null ? null : existing.apiKey);
+        config.timeoutMs = request.timeout() == null ? properties.getAi().getTimeoutMs() : request.timeout();
+        config.temperature = request.temperature() == null ? BigDecimal.valueOf(properties.getAi().getTemperature()) : request.temperature();
+        config.maxTokens = request.maxTokens() == null ? properties.getAi().getMaxTokens() : request.maxTokens();
         config.promptTemplate = request.promptTemplate();
         return config;
     }
@@ -136,5 +139,20 @@ public class ModelConfigServiceImpl implements ModelConfigService {
             return "******";
         }
         return apiKey.substring(0, 4) + "****" + apiKey.substring(apiKey.length() - 4);
+    }
+
+    private static String normalizeBaseUrl(String value) {
+        String normalized = value == null ? "" : value.trim();
+        while (normalized.endsWith("/")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        return normalized;
+    }
+
+    private static String resolveApiKey(String requested, String existing) {
+        if (requested == null || requested.isBlank() || requested.contains("****")) {
+            return existing;
+        }
+        return requested.trim();
     }
 }

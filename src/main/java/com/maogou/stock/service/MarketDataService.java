@@ -5,6 +5,8 @@ import com.maogou.stock.dto.market.*;
 import java.util.List;
 
 public interface MarketDataService {
+    List<StockSearchResponse> searchStocks(String keyword, int limit);
+
     List<NewsFlashResponse> latestNews(int limit);
 
     List<MarketIndexResponse> coreIndexes();

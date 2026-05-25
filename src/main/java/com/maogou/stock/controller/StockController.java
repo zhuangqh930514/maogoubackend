@@ -3,6 +3,7 @@ package com.maogou.stock.controller;
 import com.maogou.stock.common.ApiResponse;
 import com.maogou.stock.dto.market.KlinePointResponse;
 import com.maogou.stock.dto.market.StockDetailResponse;
+import com.maogou.stock.dto.market.StockSearchResponse;
 import com.maogou.stock.service.MarketDataService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -20,6 +21,14 @@ public class StockController {
 
     public StockController(MarketDataService marketDataService) {
         this.marketDataService = marketDataService;
+    }
+
+    @GetMapping("/search")
+    public ApiResponse<List<StockSearchResponse>> search(
+            @RequestParam String keyword,
+            @RequestParam(defaultValue = "10") int limit
+    ) {
+        return ApiResponse.ok(marketDataService.searchStocks(keyword, limit));
     }
 
     @GetMapping("/{code}")

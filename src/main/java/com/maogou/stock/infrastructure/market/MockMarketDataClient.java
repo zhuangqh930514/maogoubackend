@@ -26,6 +26,19 @@ public class MockMarketDataClient implements MarketDataClient {
     );
 
     @Override
+    public List<StockSearchResponse> searchStocks(String keyword, int limit) {
+        String normalized = keyword == null ? "" : keyword.trim();
+        if (normalized.isBlank()) {
+            return List.of();
+        }
+        return QUOTES.values().stream()
+                .filter(item -> item.code().contains(normalized) || item.name().contains(normalized))
+                .limit(Math.max(1, limit))
+                .map(item -> new StockSearchResponse(item.code(), item.name(), item.market(), item.market().toLowerCase() + item.code()))
+                .toList();
+    }
+
+    @Override
     public List<NewsFlashResponse> fetchLatestNews(int limit) {
         List<NewsFlashResponse> news = List.of(
                 news("券商板块拉升，市场风险偏好回暖", "新浪财经", "14:53"),

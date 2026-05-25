@@ -81,14 +81,19 @@ npm run dev
 
 Vite 会把 `/api` 代理到 `http://127.0.0.1:8081`，也可以通过 `VITE_API_PROXY_TARGET` 覆盖。
 
-## 后续接真实行情源的位置
+## 行情源配置
 
-当前默认使用 `MockMarketDataClient`，用于让接口合同先稳定下来。
+当前默认使用 `SinaMarketDataClient`，指数点位、分时/K 线来自新浪行情接口，财经快讯来自东方财富快讯接口。
+如需回到本地静态数据，可设置：
 
-后续可以新增：
+```bash
+export MAOGOU_MARKET_PROVIDER='mock'
+```
+
+后续也可以新增：
+
 
 - `AkShareMarketDataClient`：对接本地 AkShare HTTP 服务
-- `SinaMarketDataClient`：对接新浪财经公开接口
 - `EastMoneyMarketDataClient`：对接东方财富公开接口
 
 只需要实现 `MarketDataClient`，并通过 `maogou.market.provider` 切换实现。

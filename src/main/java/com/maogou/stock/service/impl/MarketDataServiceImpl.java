@@ -1,20 +1,37 @@
 package com.maogou.stock.service.impl;
 
+import com.maogou.stock.config.AppProperties;
 import com.maogou.stock.dto.market.*;
 import com.maogou.stock.infrastructure.market.MarketDataClient;
 import com.maogou.stock.service.MarketDataService;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.function.Supplier;
 
 @Service
 public class MarketDataServiceImpl implements MarketDataService {
 
     private final MarketDataClient marketDataClient;
+    private final AppProperties properties;
+    private final ConcurrentMap<String, CacheEntry<StockQuoteResponse>> quoteCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, CacheEntry<FinanceSnapshotResponse>> financeCache = new ConcurrentHashMap<>();
 
-    public MarketDataServiceImpl(MarketDataClient marketDataClient) {
+    public MarketDataServiceImpl(MarketDataClient marketDataClient, AppProperties properties) {
         this.marketDataClient = marketDataClient;
+        this.properties = properties;
+    }
+
+    @Override
+    public List<StockSearchResponse> searchStocks(String keyword, int limit) {
+        if (keyword == null || keyword.isBlank()) {
+            return List.of();
+        }
+        return marketDataClient.searchStocks(keyword.trim(), limit);
     }
 
     @Override
@@ -55,12 +72,52 @@ public class MarketDataServiceImpl implements MarketDataService {
 
     @Override
     public StockQuoteResponse quote(String code) {
-        return marketDataClient.fetchQuote(code);
+        String normalizedCode = normalizeCode(code);
+        return cached(
+                quoteCache,
+                normalizedCode,
+                Duration.ofSeconds(properties.getMarket().getQuoteCacheTtlSeconds()),
+                () -> marketDataClient.fetchQuote(normalizedCode)
+        );
     }
 
     @Override
     public FinanceSnapshotResponse finance(String code) {
-        return marketDataClient.fetchFinance(code);
+        String normalizedCode = normalizeCode(code);
+        return cached(
+                financeCache,
+                normalizedCode,
+                Duration.ofSeconds(properties.getMarket().getFinanceCacheTtlSeconds()),
+                () -> marketDataClient.fetchFinance(normalizedCode)
+        );
+    }
+
+    private static <T> T cached(
+            ConcurrentMap<String, CacheEntry<T>> cache,
+            String key,
+            Duration ttl,
+            Supplier<T> loader
+    ) {
+        long ttlMillis = ttl.toMillis();
+        if (ttlMillis <= 0) {
+            return loader.get();
+        }
+        long now = System.currentTimeMillis();
+        CacheEntry<T> existing = cache.get(key);
+        if (existing != null && existing.expiresAtMillis > now) {
+            return existing.value;
+        }
+        return cache.compute(key, (cacheKey, current) -> {
+            long computeNow = System.currentTimeMillis();
+            if (current != null && current.expiresAtMillis > computeNow) {
+                return current;
+            }
+            return new CacheEntry<>(loader.get(), computeNow + ttlMillis);
+        }).value;
+    }
+
+    private static String normalizeCode(String code) {
+        return code == null ? "" : code.trim();
     }
 
     private static String adviceByPercent(BigDecimal percent) {
@@ -81,5 +138,8 @@ public class MarketDataServiceImpl implements MarketDataService {
             return 64;
         }
         return 72;
+    }
+
+    private record CacheEntry<T>(T value, long expiresAtMillis) {
     }
 }

@@ -27,9 +27,12 @@ public class AppProperties {
     }
 
     public static class Market {
-        private String provider = "mock";
+        private String provider = "sina";
         private String akshareBaseUrl = "http://127.0.0.1:5000";
         private String sinaBaseUrl = "https://hq.sinajs.cn";
+        private int timeoutMs = 5000;
+        private long quoteCacheTtlSeconds = 15;
+        private long financeCacheTtlSeconds = 1800;
 
         public String getProvider() {
             return provider;
@@ -54,12 +57,36 @@ public class AppProperties {
         public void setSinaBaseUrl(String sinaBaseUrl) {
             this.sinaBaseUrl = sinaBaseUrl;
         }
+
+        public int getTimeoutMs() {
+            return timeoutMs;
+        }
+
+        public void setTimeoutMs(int timeoutMs) {
+            this.timeoutMs = timeoutMs;
+        }
+
+        public long getQuoteCacheTtlSeconds() {
+            return quoteCacheTtlSeconds;
+        }
+
+        public void setQuoteCacheTtlSeconds(long quoteCacheTtlSeconds) {
+            this.quoteCacheTtlSeconds = quoteCacheTtlSeconds;
+        }
+
+        public long getFinanceCacheTtlSeconds() {
+            return financeCacheTtlSeconds;
+        }
+
+        public void setFinanceCacheTtlSeconds(long financeCacheTtlSeconds) {
+            this.financeCacheTtlSeconds = financeCacheTtlSeconds;
+        }
     }
 
     public static class Ai {
         private String apiBaseUrl = "http://localhost:11434/v1";
         private String modelName = "qwen3.6";
-        private String apiKey = "sk-local-dev-key";
+        private String apiKey = "";
         private int timeoutMs = 60000;
         private double temperature = 0.2;
         private int maxTokens = 2048;

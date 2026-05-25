@@ -1,6 +1,7 @@
 package com.maogou.stock.dto.settings;
 
-import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.DecimalMax;
+import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 
@@ -11,7 +12,7 @@ public record ModelConfigRequest(
         @NotBlank String modelName,
         String apiKey,
         @Min(1000) Integer timeout,
-        @Min(0) @Max(1) BigDecimal temperature,
+        @DecimalMin("0.0") @DecimalMax("2.0") BigDecimal temperature,
         @Min(256) Integer maxTokens,
         @Min(5) Integer intradayInterval,
         String closeTime,

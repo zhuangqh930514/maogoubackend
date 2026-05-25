@@ -3,6 +3,7 @@ package com.maogou.stock.infrastructure.ai;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.maogou.stock.config.AppProperties;
 import com.maogou.stock.domain.entity.AiModelConfig;
+import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -10,6 +11,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -17,11 +19,11 @@ import java.util.Map;
 @Component
 public class LocalAiClient {
 
-    private final RestTemplate restTemplate;
+    private final RestTemplateBuilder restTemplateBuilder;
     private final AppProperties properties;
 
-    public LocalAiClient(RestTemplate restTemplate, AppProperties properties) {
-        this.restTemplate = restTemplate;
+    public LocalAiClient(RestTemplateBuilder restTemplateBuilder, AppProperties properties) {
+        this.restTemplateBuilder = restTemplateBuilder;
         this.properties = properties;
     }
 
@@ -30,6 +32,9 @@ public class LocalAiClient {
         String baseUrl = firstNonBlank(config == null ? null : config.apiBaseUrl, defaults.getApiBaseUrl());
         String modelName = firstNonBlank(config == null ? null : config.modelName, defaults.getModelName());
         String apiKey = firstNonBlank(config == null ? null : config.apiKey, defaults.getApiKey());
+        Integer timeoutMs = config == null || config.timeoutMs == null
+                ? defaults.getTimeoutMs()
+                : config.timeoutMs;
         BigDecimal temperature = config == null || config.temperature == null
                 ? BigDecimal.valueOf(defaults.getTemperature())
                 : config.temperature;
@@ -49,16 +54,24 @@ public class LocalAiClient {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         if (apiKey != null && !apiKey.isBlank()) {
-            headers.setBearerAuth(apiKey);
+            headers.set(HttpHeaders.AUTHORIZATION, normalizeAuthorization(apiKey));
         }
 
+        RestTemplate restTemplate = restTemplateBuilder
+                .setConnectTimeout(Duration.ofSeconds(10))
+                .setReadTimeout(Duration.ofMillis(Math.max(1000, timeoutMs)))
+                .build();
         JsonNode response = restTemplate.postForObject(
-                stripTrailingSlash(baseUrl) + "/chat/completions",
+                chatCompletionsUrl(baseUrl),
                 new HttpEntity<>(body, headers),
                 JsonNode.class
         );
         JsonNode content = response == null ? null : response.at("/choices/0/message/content");
-        return content == null || content.isMissingNode() ? "" : content.asText();
+        if (content == null || content.isMissingNode()) {
+            JsonNode text = response == null ? null : response.at("/choices/0/text");
+            return text == null || text.isMissingNode() ? "" : text.asText();
+        }
+        return content.asText();
     }
 
     public boolean test(AiModelConfig config) {
@@ -75,5 +88,18 @@ public class LocalAiClient {
             return "";
         }
         return value.endsWith("/") ? value.substring(0, value.length() - 1) : value;
+    }
+
+    private static String chatCompletionsUrl(String baseUrl) {
+        String normalized = stripTrailingSlash(baseUrl);
+        if (normalized.endsWith("/chat/completions")) {
+            return normalized;
+        }
+        return normalized + "/chat/completions";
+    }
+
+    private static String normalizeAuthorization(String apiKey) {
+        String trimmed = apiKey.trim();
+        return trimmed.regionMatches(true, 0, "Bearer ", 0, 7) ? trimmed : "Bearer " + trimmed;
     }
 }

@@ -33,13 +33,16 @@ management:
 
 maogou:
   market:
-    provider: mock
+    provider: ${MAOGOU_MARKET_PROVIDER:sina}
     akshare-base-url: http://127.0.0.1:5000
     sina-base-url: https://hq.sinajs.cn
+    timeout-ms: ${MAOGOU_MARKET_TIMEOUT_MS:5000}
+    quote-cache-ttl-seconds: ${MAOGOU_QUOTE_CACHE_TTL_SECONDS:15}
+    finance-cache-ttl-seconds: ${MAOGOU_FINANCE_CACHE_TTL_SECONDS:1800}
   ai:
-    api-base-url: http://localhost:11434/v1
-    model-name: qwen3.6
-    api-key: sk-local-dev-key
+    api-base-url: ${MAOGOU_AI_API_BASE_URL:http://localhost:11434/v1}
+    model-name: ${MAOGOU_AI_MODEL_NAME:qwen3.6}
+    api-key: "${MAOGOU_AI_API_KEY:}"
     timeout-ms: 60000
     temperature: 0.2
     max-tokens: 2048
