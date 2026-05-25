@@ -30,12 +30,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class WatchlistServiceImpl implements WatchlistService {
 
     private static final Logger log = LoggerFactory.getLogger(WatchlistServiceImpl.class);
-    private static final FinanceSnapshotResponse EMPTY_FINANCE = new FinanceSnapshotResponse(
-            BigDecimal.ZERO,
-            BigDecimal.ZERO,
-            BigDecimal.ZERO,
-            BigDecimal.ZERO
-    );
+    private static final FinanceSnapshotResponse EMPTY_FINANCE = FinanceSnapshotResponse.empty();
 
     private final WatchStockMapper watchStockMapper;
     private final MarketDataService marketDataService;
@@ -123,6 +118,34 @@ public class WatchlistServiceImpl implements WatchlistService {
                 .eq("stock_code", code));
     }
 
+    @Override
+    @Transactional
+    public void removeBatch(List<String> codes) {
+        List<String> normalizedCodes = normalizeCodes(codes);
+        if (normalizedCodes.isEmpty()) {
+            return;
+        }
+        watchStockMapper.delete(new QueryWrapper<WatchStock>()
+                .eq("user_id", AuthContext.currentUserIdOrDefault())
+                .in("stock_code", normalizedCodes));
+    }
+
+    @Override
+    @Transactional
+    public void reorder(List<String> codes) {
+        List<String> normalizedCodes = normalizeCodes(codes);
+        Long userId = AuthContext.currentUserIdOrDefault();
+        LocalDateTime now = LocalDateTime.now();
+        for (int index = 0; index < normalizedCodes.size(); index++) {
+            WatchStock entity = new WatchStock();
+            entity.userId = userId;
+            entity.stockCode = normalizedCodes.get(index);
+            entity.priority = (index + 1) * 10;
+            entity.updatedAt = now;
+            watchStockMapper.updatePriority(entity);
+        }
+    }
+
     private WatchStockResponse toResponse(WatchStock entity) {
         StockQuoteResponse quote = marketDataService.quote(entity.stockCode);
         FinanceSnapshotResponse finance = marketDataService.finance(entity.stockCode);
@@ -175,6 +198,17 @@ public class WatchlistServiceImpl implements WatchlistService {
                 finance.profitGrowth(),
                 entity.groupName
         );
+    }
+
+    private static List<String> normalizeCodes(List<String> codes) {
+        if (codes == null) {
+            return List.of();
+        }
+        return codes.stream()
+                .filter(code -> code != null && !code.isBlank())
+                .map(String::trim)
+                .distinct()
+                .toList();
     }
 
     private static class WatchlistThreadFactory implements ThreadFactory {

@@ -95,14 +95,50 @@ public class MockMarketDataClient implements MarketDataClient {
     @Override
     public FinanceSnapshotResponse fetchFinance(String stockCode) {
         return switch (stockCode) {
-            case "600519" -> new FinanceSnapshotResponse(bd("28.4"), bd("9.3"), bd("16.8"), bd("15.4"));
-            case "300750" -> new FinanceSnapshotResponse(bd("21.8"), bd("4.6"), bd("12.1"), bd("9.8"));
-            case "688981" -> new FinanceSnapshotResponse(bd("48.6"), bd("3.21"), bd("12.8"), bd("9.4"));
-            case "600036" -> new FinanceSnapshotResponse(bd("6.8"), bd("0.92"), bd("3.1"), bd("5.6"));
-            case "002594" -> new FinanceSnapshotResponse(bd("24.2"), bd("4.1"), bd("18.4"), bd("11.2"));
-            case "688256" -> new FinanceSnapshotResponse(bd("0"), bd("13.4"), bd("28.1"), bd("-6.8"));
-            default -> new FinanceSnapshotResponse(bd("0"), bd("0"), bd("0"), bd("0"));
+            case "600519" -> finance("28.4", "9.3", "2100000000000", "2100000000000", "49.3", "216.3", "54702912385", "16.8", "27242512886", "15.4", "10.57", "89.76", "52.22", "12.12", "21.49");
+            case "300750" -> finance("21.8", "4.6", "980000000000", "760000000000", "8.1", "43.2", "79700000000", "12.1", "12800000000", "9.8", "7.84", "24.18", "12.03", "62.31", "5.42");
+            case "688981" -> finance("48.6", "3.21", "720000000000", "410000000000", "1.6", "27.8", "13100000000", "12.8", "3400000000", "9.4", "3.61", "22.64", "8.41", "38.52", "1.82");
+            case "600036" -> finance("6.8", "0.92", "910000000000", "760000000000", "5.9", "39.4", "92000000000", "3.1", "38000000000", "5.6", "4.23", "0", "41.32", "91.48", "0");
+            case "002594" -> finance("24.2", "4.1", "850000000000", "326000000000", "0.45", "25.44", "150225314000", "18.4", "4084551000", "11.2", "1.65", "18.81", "2.67", "76.28", "0.31");
+            case "688256" -> finance("0", "13.4", "260000000000", "110000000000", "-1.2", "18.4", "1800000000", "28.1", "-620000000", "-6.8", "-3.42", "61.20", "-34.44", "21.36", "-0.86");
+            default -> FinanceSnapshotResponse.empty();
         };
+    }
+
+    private static FinanceSnapshotResponse finance(
+            String pe,
+            String pb,
+            String totalMarketValue,
+            String circulatingMarketValue,
+            String eps,
+            String bps,
+            String revenue,
+            String revenueGrowth,
+            String netProfit,
+            String profitGrowth,
+            String roe,
+            String grossMargin,
+            String netMargin,
+            String debtRatio,
+            String operatingCashFlowPerShare
+    ) {
+        return new FinanceSnapshotResponse(
+                bd(pe),
+                bd(pb),
+                bd(totalMarketValue),
+                bd(circulatingMarketValue),
+                bd(eps),
+                bd(bps),
+                bd(revenue),
+                bd(revenueGrowth),
+                bd(netProfit),
+                bd(profitGrowth),
+                bd(roe),
+                bd(grossMargin),
+                bd(netMargin),
+                bd(debtRatio),
+                bd(operatingCashFlowPerShare)
+        );
     }
 
     private static MarketIndexResponse index(String name, String code, String value, String change, String percent, List<String> trend) {

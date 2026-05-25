@@ -222,17 +222,53 @@ public class SinaMarketDataClient implements MarketDataClient {
     public FinanceSnapshotResponse fetchFinance(String stockCode) {
         String sinaSymbol = toSinaSymbol(stockCode);
         String eastmoneyCode = toEastmoneyCode(sinaSymbol);
+        JsonNode quote = null;
+        JsonNode finance = null;
+
         try {
-            JsonNode quote = fetchEastmoneyQuote(eastmoneyCode);
-            JsonNode finance = fetchEastmoneyFinance(sinaSymbol);
+            quote = fetchEastmoneyQuote(eastmoneyCode);
+        } catch (Exception ignored) {
+            // 估值接口偶发断连，不应影响财报类指标展示。
+        }
+        try {
+            finance = fetchEastmoneyFinance(sinaSymbol);
+        } catch (Exception ignored) {
+            // 财报接口失败时仍尽量返回估值类指标。
+        }
+
+        if (quote == null && finance == null) {
+            return FinanceSnapshotResponse.empty();
+        }
+
+        try {
+            BigDecimal eps = decimal(path(finance, "EPSJB"));
+            BigDecimal bps = decimal(path(finance, "BPS"));
+            BigDecimal pe = eastmoneyScaledValue(quote, "f162");
+            BigDecimal pb = eastmoneyScaledValue(quote, "f167");
+            if ((pe.signum() == 0 || pb.signum() == 0) && finance != null) {
+                StockQuoteResponse stockQuote = fetchQuote(stockCode);
+                pe = pe.signum() == 0 ? estimatePe(stockQuote.price(), eps) : pe;
+                pb = pb.signum() == 0 ? divide(stockQuote.price(), bps) : pb;
+            }
             return new FinanceSnapshotResponse(
-                    eastmoneyScaledValue(quote, "f162"),
-                    eastmoneyScaledValue(quote, "f167"),
-                    decimal(finance.path("TOTALOPERATEREVETZ")),
-                    decimal(finance.path("PARENTNETPROFITTZ"))
+                    pe,
+                    pb,
+                    decimal(path(quote, "f116")),
+                    decimal(path(quote, "f117")),
+                    eps,
+                    bps,
+                    decimal(path(finance, "TOTALOPERATEREVE")),
+                    decimal(path(finance, "TOTALOPERATEREVETZ")),
+                    decimal(path(finance, "PARENTNETPROFIT")),
+                    decimal(path(finance, "PARENTNETPROFITTZ")),
+                    decimal(path(finance, "ROEJQ")),
+                    decimal(path(finance, "XSMLL")),
+                    decimal(path(finance, "XSJLL")),
+                    decimal(path(finance, "ZCFZL")),
+                    decimal(path(finance, "MGJYXJJE"))
             );
-        } catch (Exception ex) {
-            return new FinanceSnapshotResponse(BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
+        } catch (RuntimeException ex) {
+            return FinanceSnapshotResponse.empty();
         }
     }
 
@@ -240,10 +276,10 @@ public class SinaMarketDataClient implements MarketDataClient {
         URI uri = UriComponentsBuilder
                 .fromHttpUrl("https://push2.eastmoney.com/api/qt/stock/get")
                 .queryParam("secid", eastmoneyCode)
-                .queryParam("fields", "f57,f58,f162,f167,f152")
+                .queryParam("fields", "f57,f58,f116,f117,f162,f167,f152")
                 .build(true)
                 .toUri();
-        JsonNode root = objectMapper.readTree(getText(uri, StandardCharsets.UTF_8, "https://quote.eastmoney.com/"));
+        JsonNode root = objectMapper.readTree(getTextWithRetry(uri, StandardCharsets.UTF_8, "https://quote.eastmoney.com/"));
         JsonNode data = root.path("data");
         if (data.isMissingNode() || data.isNull()) {
             throw new IllegalStateException("东方财富估值数据为空");
@@ -310,6 +346,18 @@ public class SinaMarketDataClient implements MarketDataClient {
         return new String(body, charset);
     }
 
+    private String getTextWithRetry(URI uri, Charset charset, String referer) {
+        RuntimeException lastError = null;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try {
+                return getText(uri, charset, referer);
+            } catch (RuntimeException ex) {
+                lastError = ex;
+            }
+        }
+        throw lastError == null ? new IllegalStateException("远程接口请求失败") : lastError;
+    }
+
     private static LocalDateTime parseDateTime(String value) {
         if (value == null || value.isBlank()) {
             return LocalDateTime.now();
@@ -351,16 +399,40 @@ public class SinaMarketDataClient implements MarketDataClient {
     }
 
     private static BigDecimal eastmoneyScaledValue(JsonNode node, String field) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return BigDecimal.ZERO;
+        }
         BigDecimal value = decimal(node.path(field));
         int scale = node.path("f152").asInt(2);
         return value.divide(BigDecimal.TEN.pow(scale), 4, java.math.RoundingMode.HALF_UP);
     }
 
     private static BigDecimal decimal(JsonNode node) {
+        if (node == null) {
+            return BigDecimal.ZERO;
+        }
         if (node.isMissingNode() || node.isNull() || "-".equals(node.asText())) {
             return BigDecimal.ZERO;
         }
         return new BigDecimal(node.asText());
+    }
+
+    private static JsonNode path(JsonNode node, String field) {
+        return node == null ? null : node.path(field);
+    }
+
+    private static BigDecimal estimatePe(BigDecimal price, BigDecimal quarterlyEps) {
+        if (price == null || quarterlyEps == null || price.signum() <= 0 || quarterlyEps.signum() <= 0) {
+            return BigDecimal.ZERO;
+        }
+        return divide(price, quarterlyEps.multiply(new BigDecimal("4")));
+    }
+
+    private static BigDecimal divide(BigDecimal numerator, BigDecimal denominator) {
+        if (numerator == null || denominator == null || numerator.signum() <= 0 || denominator.signum() <= 0) {
+            return BigDecimal.ZERO;
+        }
+        return numerator.divide(denominator, 4, java.math.RoundingMode.HALF_UP);
     }
 
     private static BigDecimal bd(String value) {

@@ -11,4 +11,8 @@ public interface WatchlistService {
     WatchStockResponse add(AddWatchStockRequest request);
 
     void remove(String code);
+
+    void removeBatch(List<String> codes);
+
+    void reorder(List<String> codes);
 }

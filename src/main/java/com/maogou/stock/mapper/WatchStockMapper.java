@@ -26,4 +26,11 @@ public interface WatchStockMapper extends BaseMapper<WatchStock> {
             WHERE id = #{id}
             """)
     int restore(WatchStock entity);
+
+    @Update("""
+            UPDATE watch_stock
+            SET priority = #{priority}, updated_at = #{updatedAt}
+            WHERE user_id = #{userId} AND stock_code = #{stockCode} AND deleted = 0
+            """)
+    int updatePriority(WatchStock entity);
 }
