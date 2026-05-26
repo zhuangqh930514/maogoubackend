@@ -45,6 +45,11 @@ public class MarketDataServiceImpl implements MarketDataService {
     }
 
     @Override
+    public MarketBreadthResponse marketBreadth() {
+        return marketDataClient.fetchMarketBreadth();
+    }
+
+    @Override
     public List<IntradayPointResponse> intraday(String symbol) {
         return marketDataClient.fetchIntraday(symbol);
     }

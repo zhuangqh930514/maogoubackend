@@ -11,6 +11,8 @@ public interface MarketDataClient {
 
     List<MarketIndexResponse> fetchCoreIndexes();
 
+    MarketBreadthResponse fetchMarketBreadth();
+
     List<IntradayPointResponse> fetchIntraday(String symbol);
 
     List<KlinePointResponse> fetchKline(String symbol, String period, int limit);

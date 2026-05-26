@@ -2,6 +2,7 @@ package com.maogou.stock.controller;
 
 import com.maogou.stock.common.ApiResponse;
 import com.maogou.stock.dto.market.IntradayPointResponse;
+import com.maogou.stock.dto.market.MarketBreadthResponse;
 import com.maogou.stock.dto.market.MarketIndexResponse;
 import com.maogou.stock.service.MarketDataService;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -24,6 +25,11 @@ public class MarketController {
     @GetMapping("/indexes")
     public ApiResponse<List<MarketIndexResponse>> indexes() {
         return ApiResponse.ok(marketDataService.coreIndexes());
+    }
+
+    @GetMapping("/breadth")
+    public ApiResponse<MarketBreadthResponse> breadth() {
+        return ApiResponse.ok(marketDataService.marketBreadth());
     }
 
     @GetMapping("/indexes/{code}/intraday")

@@ -11,6 +11,8 @@ public interface MarketDataService {
 
     List<MarketIndexResponse> coreIndexes();
 
+    MarketBreadthResponse marketBreadth();
+
     List<IntradayPointResponse> intraday(String symbol);
 
     List<KlinePointResponse> kline(String symbol, String period, int limit);

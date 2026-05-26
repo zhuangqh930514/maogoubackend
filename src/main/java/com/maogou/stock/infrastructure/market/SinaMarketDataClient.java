@@ -61,15 +61,34 @@ public class SinaMarketDataClient implements MarketDataClient {
 
     @Override
     public List<StockSearchResponse> searchStocks(String keyword, int limit) {
-        URI uri = URI.create("https://suggest3.sinajs.cn/suggest/type=11,12,13,14,15&key="
-                + URLEncoder.encode(keyword, StandardCharsets.UTF_8));
+        String normalized = keyword == null ? "" : keyword.trim();
+        if (normalized.isBlank()) {
+            return List.of();
+        }
+        int size = Math.max(1, Math.min(limit, 50));
+        String lowered = normalized.toLowerCase(Locale.ROOT);
+        Map<String, StockSearchResponse> results = new LinkedHashMap<>();
         try {
+            for (StockSearchResponse stock : fetchEastmoneyStockList()) {
+                if (stock.code().contains(normalized)
+                        || stock.name().contains(normalized)
+                        || stock.symbol().toLowerCase(Locale.ROOT).contains(lowered)) {
+                    results.putIfAbsent(stock.code(), stock);
+                    if (results.size() >= size) {
+                        return new ArrayList<>(results.values());
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        try {
+            URI uri = URI.create("https://suggest3.sinajs.cn/suggest/type=11,12,13,14,15&key="
+                    + URLEncoder.encode(normalized, StandardCharsets.UTF_8));
             String text = getText(uri, GBK, "https://finance.sina.com.cn/");
             Matcher matcher = SUGGEST_PATTERN.matcher(text);
             if (!matcher.find() || matcher.group(1).isBlank()) {
-                return List.of();
+                return new ArrayList<>(results.values());
             }
-            Map<String, StockSearchResponse> results = new LinkedHashMap<>();
             String[] rows = matcher.group(1).split(";");
             for (String row : rows) {
                 String[] fields = row.split(",", -1);
@@ -84,14 +103,48 @@ public class SinaMarketDataClient implements MarketDataClient {
                 }
                 String market = symbol.startsWith("sh") ? "SH" : "SZ";
                 results.putIfAbsent(code, new StockSearchResponse(code, name, market, symbol));
-                if (results.size() >= limit) {
+                if (results.size() >= size) {
                     break;
                 }
             }
             return new ArrayList<>(results.values());
         } catch (Exception ex) {
-            throw new IllegalStateException("搜索新浪股票失败：" + ex.getMessage(), ex);
+            if (!results.isEmpty()) {
+                return new ArrayList<>(results.values());
+            }
+            throw new IllegalStateException("搜索股票失败：" + ex.getMessage(), ex);
         }
+    }
+
+    private List<StockSearchResponse> fetchEastmoneyStockList() throws Exception {
+        URI uri = UriComponentsBuilder
+                .fromHttpUrl("https://push2.eastmoney.com/api/qt/clist/get")
+                .queryParam("pn", "1")
+                .queryParam("pz", "6000")
+                .queryParam("po", "1")
+                .queryParam("np", "1")
+                .queryParam("fltt", "2")
+                .queryParam("invt", "2")
+                .queryParam("fid", "f3")
+                .queryParam("fs", "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23")
+                .queryParam("fields", "f12,f13,f14")
+                .build(false)
+                .toUri();
+        JsonNode data = objectMapper.readTree(getText(uri, StandardCharsets.UTF_8, "https://quote.eastmoney.com/")).path("data").path("diff");
+        if (!data.isArray()) {
+            return List.of();
+        }
+        List<StockSearchResponse> stocks = new ArrayList<>();
+        for (JsonNode item : data) {
+            String code = item.path("f12").asText("");
+            String name = item.path("f14").asText("");
+            String market = item.path("f13").asInt() == 1 ? "SH" : "SZ";
+            if (!code.matches("\\d{6}") || name.isBlank()) {
+                continue;
+            }
+            stocks.add(new StockSearchResponse(code, name, market, market.toLowerCase(Locale.ROOT) + code));
+        }
+        return stocks;
     }
 
     @Override
@@ -145,6 +198,121 @@ public class SinaMarketDataClient implements MarketDataClient {
                     return new MarketIndexResponse(index.name(), index.code(), quote.price(), quote.change(), quote.percent(), trend);
                 })
                 .toList();
+    }
+
+    @Override
+    public MarketBreadthResponse fetchMarketBreadth() {
+        try {
+            int downGt10 = 0;
+            int down10To7 = 0;
+            int down7To5 = 0;
+            int down5To3 = 0;
+            int down3To0 = 0;
+            int flat = 0;
+            int up0To3 = 0;
+            int up3To5 = 0;
+            int up5To7 = 0;
+            int up7To10 = 0;
+            int upGt10 = 0;
+            int limitUp = 0;
+            int limitDown = 0;
+            int fundIn = 0;
+            int fundOut = 0;
+            int fundFlat = 0;
+            int processed = 0;
+            int total = Integer.MAX_VALUE;
+
+            for (int page = 1; processed < total; page++) {
+                URI uri = UriComponentsBuilder
+                        .fromHttpUrl("https://push2delay.eastmoney.com/api/qt/clist/get")
+                        .queryParam("pn", page)
+                        .queryParam("pz", "100")
+                        .queryParam("po", "1")
+                        .queryParam("np", "1")
+                        .queryParam("fltt", "2")
+                        .queryParam("invt", "2")
+                        .queryParam("fid", "f3")
+                        .queryParam("fs", "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23")
+                        .queryParam("fields", "f3,f62")
+                        .build(false)
+                        .toUri();
+                JsonNode data = objectMapper.readTree(getTextWithRetry(uri, StandardCharsets.UTF_8, "https://quote.eastmoney.com/"))
+                        .path("data");
+                JsonNode rows = data.path("diff");
+                if (!rows.isArray() || rows.isEmpty()) {
+                    break;
+                }
+                total = data.path("total").asInt(total);
+                processed += rows.size();
+
+                for (JsonNode row : rows) {
+                    JsonNode percentNode = row.path("f3");
+                    if (percentNode.isMissingNode() || percentNode.isNull() || "-".equals(percentNode.asText())) {
+                        continue;
+                    }
+                    BigDecimal percentValue = decimal(percentNode);
+                    double percent = percentValue.doubleValue();
+                    if (percentValue.signum() == 0) {
+                        flat++;
+                    } else if (percent < -10) {
+                        downGt10++;
+                    } else if (percent <= -7) {
+                        down10To7++;
+                    } else if (percent <= -5) {
+                        down7To5++;
+                    } else if (percent <= -3) {
+                        down5To3++;
+                    } else if (percent < 0) {
+                        down3To0++;
+                    } else if (percent < 3) {
+                        up0To3++;
+                    } else if (percent < 5) {
+                        up3To5++;
+                    } else if (percent < 7) {
+                        up5To7++;
+                    } else if (percent <= 10) {
+                        up7To10++;
+                    } else {
+                        upGt10++;
+                    }
+
+                    if (percent >= 9.8) {
+                        limitUp++;
+                    }
+                    if (percent <= -9.8) {
+                        limitDown++;
+                    }
+
+                    int fundSign = decimal(row.path("f62")).signum();
+                    if (fundSign > 0) {
+                        fundIn++;
+                    } else if (fundSign < 0) {
+                        fundOut++;
+                    } else {
+                        fundFlat++;
+                    }
+                }
+            }
+
+            List<MarketBreadthBucketResponse> buckets = List.of(
+                    new MarketBreadthBucketResponse(">10%", downGt10, "down"),
+                    new MarketBreadthBucketResponse("10~7", down10To7, "down"),
+                    new MarketBreadthBucketResponse("7~5", down7To5, "down"),
+                    new MarketBreadthBucketResponse("5~3", down5To3, "down"),
+                    new MarketBreadthBucketResponse("3~0", down3To0, "down"),
+                    new MarketBreadthBucketResponse("0", flat, "flat"),
+                    new MarketBreadthBucketResponse("0~3", up0To3, "up"),
+                    new MarketBreadthBucketResponse("3~5", up3To5, "up"),
+                    new MarketBreadthBucketResponse("5~7", up5To7, "up"),
+                    new MarketBreadthBucketResponse("7~10", up7To10, "up"),
+                    new MarketBreadthBucketResponse(">10%", upGt10, "up")
+            );
+            int downCount = downGt10 + down10To7 + down7To5 + down5To3 + down3To0;
+            int upCount = up0To3 + up3To5 + up5To7 + up7To10 + upGt10;
+            return new MarketBreadthResponse(buckets, upCount, downCount, flat, limitUp, limitDown, fundIn, fundOut, fundFlat, LocalDateTime.now());
+        } catch (Exception ex) {
+            throw new IllegalStateException("获取东方财富涨跌分布失败：" + ex.getMessage(), ex);
+        }
     }
 
     @Override

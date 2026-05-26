@@ -12,7 +12,7 @@ import java.util.List;
 import java.util.Map;
 
 @Component
-@ConditionalOnProperty(prefix = "maogou.market", name = "provider", havingValue = "mock", matchIfMissing = true)
+@ConditionalOnProperty(prefix = "maogou.market", name = "provider", havingValue = "mock")
 public class MockMarketDataClient implements MarketDataClient {
 
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm");
@@ -58,6 +58,24 @@ public class MockMarketDataClient implements MarketDataClient {
                 index("创业板指", "399006.SZ", "2114.37", "-7.61", "-0.36", List.of("2132", "2128", "2134", "2116", "2122", "2108", "2110", "2114")),
                 index("科创板指", "000688.SH", "889.26", "5.13", "0.58", List.of("872", "878", "874", "882", "880", "886", "884", "889"))
         );
+    }
+
+    @Override
+    public MarketBreadthResponse fetchMarketBreadth() {
+        List<MarketBreadthBucketResponse> buckets = List.of(
+                new MarketBreadthBucketResponse(">10%", 15, "down"),
+                new MarketBreadthBucketResponse("10~7", 43, "down"),
+                new MarketBreadthBucketResponse("7~5", 97, "down"),
+                new MarketBreadthBucketResponse("5~3", 482, "down"),
+                new MarketBreadthBucketResponse("3~0", 2688, "down"),
+                new MarketBreadthBucketResponse("0", 120, "flat"),
+                new MarketBreadthBucketResponse("0~3", 1445, "up"),
+                new MarketBreadthBucketResponse("3~5", 291, "up"),
+                new MarketBreadthBucketResponse("5~7", 124, "up"),
+                new MarketBreadthBucketResponse("7~10", 135, "up"),
+                new MarketBreadthBucketResponse(">10%", 64, "up")
+        );
+        return new MarketBreadthResponse(buckets, 2059, 3325, 120, 99, 16, 1947, 3006, 120, LocalDateTime.now());
     }
 
     @Override
