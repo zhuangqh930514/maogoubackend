@@ -55,6 +55,11 @@ public class MarketDataServiceImpl implements MarketDataService {
     }
 
     @Override
+    public List<SectorHotStockResponse> marketHotStocks(int limit) {
+        return marketDataClient.fetchMarketHotStocks(limit);
+    }
+
+    @Override
     public List<SectorHotStockResponse> sectorHotStocks(String sectorCode, int limit) {
         if (sectorCode == null || sectorCode.isBlank()) {
             return List.of();

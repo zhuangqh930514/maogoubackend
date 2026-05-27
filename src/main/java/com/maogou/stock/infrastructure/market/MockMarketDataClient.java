@@ -97,6 +97,22 @@ public class MockMarketDataClient implements MarketDataClient {
     }
 
     @Override
+    public List<SectorHotStockResponse> fetchMarketHotStocks(int limit) {
+        return List.of(
+                new SectorHotStockResponse("300750", "宁德时代", bd("198.64"), bd("-0.82"), bd("382615420"), 1287032L, bd("51280880550"), 1),
+                new SectorHotStockResponse("600519", "贵州茅台", bd("1672.80"), bd("1.42"), bd("361225118"), 436171L, bd("39110660941.32"), 2),
+                new SectorHotStockResponse("688256", "寒武纪", bd("432.18"), bd("4.82"), bd("318415728"), 887032L, bd("1882880550"), 3),
+                new SectorHotStockResponse("002594", "比亚迪", bd("226.40"), bd("1.76"), bd("286300000"), 920000L, bd("21010000000"), 4),
+                new SectorHotStockResponse("688981", "中芯国际", bd("89.32"), bd("3.18"), bd("245800000"), 1680000L, bd("15080000000"), 5),
+                new SectorHotStockResponse("300308", "中际旭创", bd("148.52"), bd("2.64"), bd("211300000"), 756000L, bd("11230000000"), 6),
+                new SectorHotStockResponse("300033", "同花顺", bd("126.75"), bd("1.21"), bd("198400000"), 622000L, bd("7850000000"), 7),
+                new SectorHotStockResponse("601318", "中国平安", bd("52.18"), bd("0.94"), bd("186500000"), 1338000L, bd("9680000000"), 8),
+                new SectorHotStockResponse("600036", "招商银行", bd("37.18"), bd("0.46"), bd("172800000"), 1100000L, bd("6200000000"), 9),
+                new SectorHotStockResponse("000063", "中兴通讯", bd("34.67"), bd("2.11"), bd("165300000"), 845000L, bd("5360000000"), 10)
+        ).stream().limit(Math.max(1, limit)).toList();
+    }
+
+    @Override
     public List<SectorHotStockResponse> fetchSectorHotStocks(String sectorCode, int limit) {
         return List.of(
                 new SectorHotStockResponse("001257", "盛龙股份", bd("28.41"), bd("9.99"), bd("175232194"), 396171L, bd("1106609414.32"), 1),

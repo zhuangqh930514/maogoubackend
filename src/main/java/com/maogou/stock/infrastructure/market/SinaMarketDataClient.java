@@ -400,8 +400,17 @@ public class SinaMarketDataClient implements MarketDataClient {
     }
 
     @Override
+    public List<SectorHotStockResponse> fetchMarketHotStocks(int limit) {
+        return fetchHotStocks("m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23", Math.max(1, Math.min(limit, 20)), "https://quote.eastmoney.com/center/gridlist.html", "获取东方财富全市场热门股票失败");
+    }
+
+    @Override
     public List<SectorHotStockResponse> fetchSectorHotStocks(String sectorCode, int limit) {
         int size = Math.max(1, Math.min(limit, 20));
+        return fetchHotStocks("b:" + sectorCode, size, "https://quote.eastmoney.com/center/boardlist.html", "获取东方财富板块热门股票失败");
+    }
+
+    private List<SectorHotStockResponse> fetchHotStocks(String fs, int size, String referer, String errorMessage) {
         URI uri = UriComponentsBuilder
                 .fromHttpUrl("https://push2.eastmoney.com/api/qt/clist/get")
                 .queryParam("pn", "1")
@@ -411,12 +420,12 @@ public class SinaMarketDataClient implements MarketDataClient {
                 .queryParam("fltt", "2")
                 .queryParam("invt", "2")
                 .queryParam("fid", "f62")
-                .queryParam("fs", "b:" + sectorCode)
+                .queryParam("fs", fs)
                 .queryParam("fields", "f12,f14,f2,f3,f5,f6,f62")
                 .build(false)
                 .toUri();
         try {
-            JsonNode rows = objectMapper.readTree(getTextWithRetry(uri, StandardCharsets.UTF_8, "https://quote.eastmoney.com/center/boardlist.html"))
+            JsonNode rows = objectMapper.readTree(getTextWithRetry(uri, StandardCharsets.UTF_8, referer))
                     .path("data")
                     .path("diff");
             if (!rows.isArray()) {
@@ -443,7 +452,7 @@ public class SinaMarketDataClient implements MarketDataClient {
             }
             return result;
         } catch (Exception ex) {
-            throw new IllegalStateException("获取东方财富板块热门股票失败：" + ex.getMessage(), ex);
+            throw new IllegalStateException(errorMessage + "：" + ex.getMessage(), ex);
         }
     }
 

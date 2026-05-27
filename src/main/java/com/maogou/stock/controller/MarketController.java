@@ -41,6 +41,13 @@ public class MarketController {
         return ApiResponse.ok(marketDataService.sectorHeatmap());
     }
 
+    @GetMapping("/hot-stocks")
+    public ApiResponse<List<SectorHotStockResponse>> marketHotStocks(
+            @RequestParam(defaultValue = "10") int limit
+    ) {
+        return ApiResponse.ok(marketDataService.marketHotStocks(limit));
+    }
+
     @GetMapping("/sectors/{code}/hot-stocks")
     public ApiResponse<List<SectorHotStockResponse>> sectorHotStocks(
             @PathVariable String code,

@@ -15,6 +15,8 @@ public interface MarketDataService {
 
     SectorHeatmapResponse sectorHeatmap();
 
+    List<SectorHotStockResponse> marketHotStocks(int limit);
+
     List<SectorHotStockResponse> sectorHotStocks(String sectorCode, int limit);
 
     List<IntradayPointResponse> intraday(String symbol);

@@ -15,6 +15,8 @@ public interface MarketDataClient {
 
     SectorHeatmapResponse fetchSectorHeatmap();
 
+    List<SectorHotStockResponse> fetchMarketHotStocks(int limit);
+
     List<SectorHotStockResponse> fetchSectorHotStocks(String sectorCode, int limit);
 
     List<IntradayPointResponse> fetchIntraday(String symbol);
