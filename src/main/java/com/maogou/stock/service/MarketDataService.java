@@ -13,6 +13,10 @@ public interface MarketDataService {
 
     MarketBreadthResponse marketBreadth();
 
+    SectorHeatmapResponse sectorHeatmap();
+
+    List<SectorHotStockResponse> sectorHotStocks(String sectorCode, int limit);
+
     List<IntradayPointResponse> intraday(String symbol);
 
     List<KlinePointResponse> kline(String symbol, String period, int limit);

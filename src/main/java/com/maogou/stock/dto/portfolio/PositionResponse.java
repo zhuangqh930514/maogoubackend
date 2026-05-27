@@ -11,6 +11,8 @@ public record PositionResponse(
         BigDecimal cost,
         BigDecimal marketValue,
         BigDecimal profit,
-        BigDecimal profitRate
+        BigDecimal profitRate,
+        BigDecimal todayProfit,
+        BigDecimal todayProfitRate
 ) {
 }

@@ -8,6 +8,8 @@ public record PortfolioSummaryResponse(
         BigDecimal totalMarketValue,
         BigDecimal totalProfit,
         BigDecimal profitRate,
+        BigDecimal todayProfit,
+        BigDecimal todayProfitRate,
         List<PositionResponse> positions
 ) {
 }

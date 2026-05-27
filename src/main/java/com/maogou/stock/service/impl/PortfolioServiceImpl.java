@@ -1,6 +1,7 @@
 package com.maogou.stock.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.maogou.stock.domain.entity.TradeRecord;
 import com.maogou.stock.domain.enums.TradeSide;
 import com.maogou.stock.dto.market.StockQuoteResponse;
@@ -61,6 +62,24 @@ public class PortfolioServiceImpl implements PortfolioService {
     }
 
     @Override
+    @Transactional
+    public void removePositions(List<String> codes) {
+        List<String> normalizedCodes = codes.stream()
+                .filter(code -> code != null && !code.isBlank())
+                .map(String::trim)
+                .distinct()
+                .toList();
+        if (normalizedCodes.isEmpty()) {
+            return;
+        }
+        tradeRecordMapper.update(null, new UpdateWrapper<TradeRecord>()
+                .eq("user_id", AuthContext.currentUserIdOrDefault())
+                .in("stock_code", normalizedCodes)
+                .set("deleted", 1)
+                .set("updated_at", LocalDateTime.now()));
+    }
+
+    @Override
     public PortfolioSummaryResponse portfolio() {
         Map<String, AggregatedPosition> grouped = new LinkedHashMap<>();
         for (TradeRecord trade : tradeRecordMapper.selectList(baseTradeQuery())) {
@@ -78,7 +97,12 @@ public class PortfolioServiceImpl implements PortfolioService {
         BigDecimal profitRate = totalCost.signum() == 0 ? BigDecimal.ZERO : totalProfit
                 .multiply(new BigDecimal("100"))
                 .divide(totalCost, 2, RoundingMode.HALF_UP);
-        return new PortfolioSummaryResponse(totalCost, totalMarketValue, totalProfit, profitRate, positions);
+        BigDecimal todayProfit = positions.stream().map(PositionResponse::todayProfit).reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal todayBase = totalMarketValue.subtract(todayProfit);
+        BigDecimal todayProfitRate = todayBase.signum() == 0 ? BigDecimal.ZERO : todayProfit
+                .multiply(new BigDecimal("100"))
+                .divide(todayBase, 2, RoundingMode.HALF_UP);
+        return new PortfolioSummaryResponse(totalCost, totalMarketValue, totalProfit, profitRate, todayProfit, todayProfitRate, positions);
     }
 
     private QueryWrapper<TradeRecord> baseTradeQuery() {
@@ -107,6 +131,7 @@ public class PortfolioServiceImpl implements PortfolioService {
         BigDecimal profitRate = cost.signum() == 0 ? BigDecimal.ZERO : profit
                 .multiply(new BigDecimal("100"))
                 .divide(cost, 2, RoundingMode.HALF_UP);
+        BigDecimal todayProfit = quote.change().multiply(BigDecimal.valueOf(position.quantity));
         return new PositionResponse(
                 position.code,
                 position.name,
@@ -116,7 +141,9 @@ public class PortfolioServiceImpl implements PortfolioService {
                 cost,
                 marketValue,
                 profit,
-                profitRate
+                profitRate,
+                todayProfit,
+                quote.percent()
         );
     }
 

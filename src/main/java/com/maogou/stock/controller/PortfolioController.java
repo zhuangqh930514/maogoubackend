@@ -1,6 +1,7 @@
 package com.maogou.stock.controller;
 
 import com.maogou.stock.common.ApiResponse;
+import com.maogou.stock.dto.portfolio.BatchPortfolioPositionRequest;
 import com.maogou.stock.dto.portfolio.PortfolioSummaryResponse;
 import com.maogou.stock.dto.portfolio.TradeRecordCreateRequest;
 import com.maogou.stock.dto.portfolio.TradeRecordResponse;
@@ -32,6 +33,12 @@ public class PortfolioController {
     @PostMapping("/trades")
     public ApiResponse<TradeRecordResponse> addBuy(@RequestBody @Valid TradeRecordCreateRequest request) {
         return ApiResponse.ok(portfolioService.addBuyRecord(request));
+    }
+
+    @PostMapping("/positions/batch-delete")
+    public ApiResponse<Void> removePositions(@RequestBody @Valid BatchPortfolioPositionRequest request) {
+        portfolioService.removePositions(request.codes());
+        return ApiResponse.ok(null);
     }
 
     @GetMapping("/positions")

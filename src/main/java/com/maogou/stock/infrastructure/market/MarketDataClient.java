@@ -13,6 +13,10 @@ public interface MarketDataClient {
 
     MarketBreadthResponse fetchMarketBreadth();
 
+    SectorHeatmapResponse fetchSectorHeatmap();
+
+    List<SectorHotStockResponse> fetchSectorHotStocks(String sectorCode, int limit);
+
     List<IntradayPointResponse> fetchIntraday(String symbol);
 
     List<KlinePointResponse> fetchKline(String symbol, String period, int limit);

@@ -59,9 +59,7 @@ public class ModelConfigServiceImpl implements ModelConfigService {
         entity.intradayIntervalMinutes = request.intradayInterval() == null ? 30 : request.intradayInterval();
         entity.closeAnalysisTime = request.closeTime() == null || request.closeTime().isBlank() ? "15:30" : request.closeTime();
         entity.analysisScope = request.analysisScope() == null || request.analysisScope().isBlank() ? "全部自选股" : request.analysisScope();
-        entity.promptTemplate = request.promptTemplate() == null || request.promptTemplate().isBlank()
-                ? DEFAULT_PROMPT_TEMPLATE
-                : request.promptTemplate();
+        entity.promptTemplate = resolvePromptTemplate(request.promptTemplate(), entity.promptTemplate);
         entity.deleted = 0;
         entity.updatedAt = LocalDateTime.now();
         if (insert) {
@@ -112,7 +110,7 @@ public class ModelConfigServiceImpl implements ModelConfigService {
         config.timeoutMs = request.timeout() == null ? properties.getAi().getTimeoutMs() : request.timeout();
         config.temperature = request.temperature() == null ? BigDecimal.valueOf(properties.getAi().getTemperature()) : request.temperature();
         config.maxTokens = request.maxTokens() == null ? properties.getAi().getMaxTokens() : request.maxTokens();
-        config.promptTemplate = request.promptTemplate();
+        config.promptTemplate = resolvePromptTemplate(request.promptTemplate(), existing == null ? null : existing.promptTemplate);
         return config;
     }
 
@@ -154,5 +152,12 @@ public class ModelConfigServiceImpl implements ModelConfigService {
             return existing;
         }
         return requested.trim();
+    }
+
+    private static String resolvePromptTemplate(String requested, String existing) {
+        if (requested == null || requested.isBlank()) {
+            return existing == null || existing.isBlank() ? DEFAULT_PROMPT_TEMPLATE : existing;
+        }
+        return requested;
     }
 }

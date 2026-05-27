@@ -38,8 +38,9 @@ public class SinaMarketDataClient implements MarketDataClient {
 
     private static final Charset GBK = Charset.forName("GBK");
     private static final DateTimeFormatter NEWS_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-    private static final Pattern QUOTE_PATTERN = Pattern.compile("var hq_str_([a-z0-9]+)=\\\"(.*?)\\\";");
+    private static final Pattern QUOTE_PATTERN = Pattern.compile("var hq_str_([A-Za-z0-9_]+)=\\\"(.*?)\\\";");
     private static final Pattern JSONP_ARRAY_PATTERN = Pattern.compile("\\((\\[.*])\\)", Pattern.DOTALL);
+    private static final Pattern JSONP_OBJECT_PATTERN = Pattern.compile("\\((\\{.*})\\)", Pattern.DOTALL);
     private static final Pattern EASTMONEY_NEWS_PATTERN = Pattern.compile("var ajaxResult=(\\{.*});?", Pattern.DOTALL);
     private static final Pattern SUGGEST_PATTERN = Pattern.compile("var suggestvalue=\\\"(.*?)\\\";", Pattern.DOTALL);
     private static final List<IndexSymbol> CORE_INDEXES = List.of(
@@ -186,7 +187,7 @@ public class SinaMarketDataClient implements MarketDataClient {
     @Override
     public List<MarketIndexResponse> fetchCoreIndexes() {
         Map<String, Quote> quotes = fetchQuotes(CORE_INDEXES.stream().map(IndexSymbol::sinaSymbol).toList());
-        return CORE_INDEXES.stream()
+        List<MarketIndexResponse> indexes = new ArrayList<>(CORE_INDEXES.stream()
                 .map(index -> {
                     Quote quote = quotes.get(index.sinaSymbol());
                     if (quote == null) {
@@ -197,7 +198,37 @@ public class SinaMarketDataClient implements MarketDataClient {
                             .toList();
                     return new MarketIndexResponse(index.name(), index.code(), quote.price(), quote.change(), quote.percent(), trend);
                 })
-                .toList();
+                .toList());
+        indexes.add(fetchA50Index());
+        return indexes;
+    }
+
+    private MarketIndexResponse fetchA50Index() {
+        URI uri = UriComponentsBuilder
+                .fromHttpUrl(properties.getMarket().getSinaBaseUrl())
+                .queryParam("list", "hf_CHA50CFD")
+                .build(true)
+                .toUri();
+        try {
+            String text = getText(uri, GBK, "https://finance.sina.com.cn/");
+            Matcher matcher = QUOTE_PATTERN.matcher(text);
+            if (!matcher.find()) {
+                throw new IllegalStateException("新浪 A50 行情返回为空");
+            }
+            String[] fields = matcher.group(2).split(",", -1);
+            if (fields.length < 14 || fields[0].isBlank()) {
+                throw new IllegalStateException("新浪 A50 行情格式异常");
+            }
+            BigDecimal price = bd(fields[0]);
+            BigDecimal prevClose = bd(fields[7]);
+            BigDecimal change = price.subtract(prevClose);
+            BigDecimal percent = prevClose.compareTo(BigDecimal.ZERO) == 0
+                    ? BigDecimal.ZERO
+                    : change.multiply(new BigDecimal("100")).divide(prevClose, 4, java.math.RoundingMode.HALF_UP);
+            return new MarketIndexResponse("富时中国A50", "A50.CFD", price, change, percent, List.of());
+        } catch (Exception ex) {
+            throw new IllegalStateException("获取新浪 A50 行情失败：" + ex.getMessage(), ex);
+        }
     }
 
     @Override
@@ -316,7 +347,111 @@ public class SinaMarketDataClient implements MarketDataClient {
     }
 
     @Override
+    public SectorHeatmapResponse fetchSectorHeatmap() {
+        List<SectorHeatmapItemResponse> items = new ArrayList<>();
+        items.addAll(fetchSectorHeatmapItems(1, "up"));
+        items.addAll(fetchSectorHeatmapItems(0, "down"));
+        return new SectorHeatmapResponse(items, LocalDateTime.now());
+    }
+
+    private List<SectorHeatmapItemResponse> fetchSectorHeatmapItems(int order, String direction) {
+        URI uri = UriComponentsBuilder
+                .fromHttpUrl("https://push2.eastmoney.com/api/qt/clist/get")
+                .queryParam("pn", "1")
+                .queryParam("pz", "10")
+                .queryParam("po", order)
+                .queryParam("np", "1")
+                .queryParam("fltt", "2")
+                .queryParam("invt", "2")
+                .queryParam("fid", "f3")
+                .queryParam("fs", "m:90+t:2")
+                .queryParam("fields", "f12,f14,f2,f3,f62")
+                .build(false)
+                .toUri();
+        try {
+            JsonNode rows = objectMapper.readTree(getTextWithRetry(uri, StandardCharsets.UTF_8, "https://quote.eastmoney.com/center/boardlist.html"))
+                    .path("data")
+                    .path("diff");
+            if (!rows.isArray()) {
+                throw new IllegalStateException("东方财富板块热力数据为空");
+            }
+            List<SectorHeatmapItemResponse> result = new ArrayList<>();
+            int rank = 1;
+            for (JsonNode row : rows) {
+                String code = row.path("f12").asText("");
+                String name = row.path("f14").asText("");
+                if (code.isBlank() || name.isBlank()) {
+                    continue;
+                }
+                result.add(new SectorHeatmapItemResponse(
+                        code,
+                        name,
+                        decimal(row.path("f2")),
+                        decimal(row.path("f3")),
+                        decimal(row.path("f62")),
+                        direction,
+                        rank++
+                ));
+            }
+            return result;
+        } catch (Exception ex) {
+            throw new IllegalStateException("获取东方财富板块热力图失败：" + ex.getMessage(), ex);
+        }
+    }
+
+    @Override
+    public List<SectorHotStockResponse> fetchSectorHotStocks(String sectorCode, int limit) {
+        int size = Math.max(1, Math.min(limit, 20));
+        URI uri = UriComponentsBuilder
+                .fromHttpUrl("https://push2.eastmoney.com/api/qt/clist/get")
+                .queryParam("pn", "1")
+                .queryParam("pz", size)
+                .queryParam("po", "1")
+                .queryParam("np", "1")
+                .queryParam("fltt", "2")
+                .queryParam("invt", "2")
+                .queryParam("fid", "f62")
+                .queryParam("fs", "b:" + sectorCode)
+                .queryParam("fields", "f12,f14,f2,f3,f5,f6,f62")
+                .build(false)
+                .toUri();
+        try {
+            JsonNode rows = objectMapper.readTree(getTextWithRetry(uri, StandardCharsets.UTF_8, "https://quote.eastmoney.com/center/boardlist.html"))
+                    .path("data")
+                    .path("diff");
+            if (!rows.isArray()) {
+                return List.of();
+            }
+            List<SectorHotStockResponse> result = new ArrayList<>();
+            int rank = 1;
+            for (JsonNode row : rows) {
+                String code = row.path("f12").asText("");
+                String name = row.path("f14").asText("");
+                if (code.isBlank() || name.isBlank()) {
+                    continue;
+                }
+                result.add(new SectorHotStockResponse(
+                        code,
+                        name,
+                        decimal(row.path("f2")),
+                        decimal(row.path("f3")),
+                        decimal(row.path("f62")),
+                        row.path("f5").asLong(0),
+                        decimal(row.path("f6")),
+                        rank++
+                ));
+            }
+            return result;
+        } catch (Exception ex) {
+            throw new IllegalStateException("获取东方财富板块热门股票失败：" + ex.getMessage(), ex);
+        }
+    }
+
+    @Override
     public List<IntradayPointResponse> fetchIntraday(String symbol) {
+        if ("A50.CFD".equalsIgnoreCase(symbol) || "CHA50CFD".equalsIgnoreCase(symbol)) {
+            return fetchA50Intraday();
+        }
         String sinaSymbol = toSinaSymbol(symbol);
         URI uri = URI.create("https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20_" + sinaSymbol
                 + "_1_1=/CN_MinlineService.getMinlineData?symbol=" + sinaSymbol);
@@ -341,8 +476,45 @@ public class SinaMarketDataClient implements MarketDataClient {
         }
     }
 
+    private List<IntradayPointResponse> fetchA50Intraday() {
+        URI uri = URI.create("https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20_CHA50CFD="
+                + "/GlobalFuturesService.getGlobalFuturesMinLine?symbol=CHA50CFD&_=" + System.currentTimeMillis());
+        try {
+            String text = getText(uri, StandardCharsets.UTF_8, "https://finance.sina.com.cn/");
+            Matcher matcher = JSONP_OBJECT_PATTERN.matcher(text);
+            if (!matcher.find()) {
+                throw new IllegalStateException("新浪 A50 分时返回格式异常");
+            }
+            JsonNode points = objectMapper.readTree(matcher.group(1)).path("minLine_1d");
+            if (!points.isArray()) {
+                throw new IllegalStateException("新浪 A50 分时数据为空");
+            }
+            List<IntradayPointResponse> result = new ArrayList<>();
+            for (JsonNode point : points) {
+                if (!point.isArray() || point.size() < 2) {
+                    continue;
+                }
+                String time = point.get(0).asText("");
+                if (time.length() > 5) {
+                    time = point.size() > 4 ? point.get(4).asText(time) : time;
+                }
+                result.add(new IntradayPointResponse(
+                        normalizeTime(time),
+                        bd(point.get(1).asText("0")),
+                        point.size() > 2 ? bdOrZero(point.get(2).asText("0")) : BigDecimal.ZERO
+                ));
+            }
+            return result;
+        } catch (Exception ex) {
+            throw new IllegalStateException("获取新浪 A50 分时行情失败：" + ex.getMessage(), ex);
+        }
+    }
+
     @Override
     public List<KlinePointResponse> fetchKline(String symbol, String period, int limit) {
+        if ("A50.CFD".equalsIgnoreCase(symbol) || "CHA50CFD".equalsIgnoreCase(symbol)) {
+            return fetchA50Kline(period, limit);
+        }
         String sinaSymbol = toSinaSymbol(symbol);
         String scale = switch (period == null ? "day" : period.toLowerCase(Locale.ROOT)) {
             case "week", "weekly" -> "1200";
@@ -376,6 +548,51 @@ public class SinaMarketDataClient implements MarketDataClient {
         } catch (Exception ex) {
             throw new IllegalStateException("获取新浪 K 线行情失败：" + symbol + "，" + ex.getMessage(), ex);
         }
+    }
+
+    private List<KlinePointResponse> fetchA50Kline(String period, int limit) {
+        URI uri = URI.create("https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20_CHA50CFD="
+                + "/GlobalFuturesService.getGlobalFuturesDailyKLine?symbol=CHA50CFD&_=" + System.currentTimeMillis());
+        try {
+            String text = getText(uri, StandardCharsets.UTF_8, "https://finance.sina.com.cn/");
+            Matcher matcher = JSONP_ARRAY_PATTERN.matcher(text);
+            if (!matcher.find()) {
+                throw new IllegalStateException("新浪 A50 K 线返回格式异常");
+            }
+            JsonNode points = objectMapper.readTree(matcher.group(1));
+            List<KlinePointResponse> daily = new ArrayList<>();
+            for (JsonNode point : points) {
+                daily.add(new KlinePointResponse(
+                        LocalDate.parse(point.path("date").asText()),
+                        bd(point.path("open").asText("0")),
+                        bd(point.path("close").asText("0")),
+                        bd(point.path("low").asText("0")),
+                        bd(point.path("high").asText("0")),
+                        point.path("volume").asLong(0),
+                        BigDecimal.ZERO
+                ));
+            }
+            List<KlinePointResponse> result = aggregateA50Kline(daily, period);
+            int size = Math.max(1, Math.min(limit, 240));
+            return result.size() > size ? result.subList(result.size() - size, result.size()) : result;
+        } catch (Exception ex) {
+            throw new IllegalStateException("获取新浪 A50 K 线行情失败：" + ex.getMessage(), ex);
+        }
+    }
+
+    private static List<KlinePointResponse> aggregateA50Kline(List<KlinePointResponse> daily, String period) {
+        String normalized = period == null ? "day" : period.toLowerCase(Locale.ROOT);
+        if (!List.of("week", "weekly", "month", "monthly").contains(normalized)) {
+            return daily;
+        }
+        Map<String, KlineAccumulator> grouped = new LinkedHashMap<>();
+        for (KlinePointResponse point : daily) {
+            String key = normalized.startsWith("month")
+                    ? point.tradeDate().format(DateTimeFormatter.ofPattern("yyyy-MM"))
+                    : point.tradeDate().getYear() + "-" + point.tradeDate().get(java.time.temporal.WeekFields.ISO.weekOfWeekBasedYear());
+            grouped.computeIfAbsent(key, ignored -> new KlineAccumulator()).add(point);
+        }
+        return grouped.values().stream().map(KlineAccumulator::toResponse).toList();
     }
 
     @Override
@@ -610,9 +827,46 @@ public class SinaMarketDataClient implements MarketDataClient {
         return new BigDecimal(value);
     }
 
+    private static BigDecimal bdOrZero(String value) {
+        try {
+            return bd(value);
+        } catch (NumberFormatException ex) {
+            return BigDecimal.ZERO;
+        }
+    }
+
     private record IndexSymbol(String name, String code, String sinaSymbol) {
     }
 
     private record Quote(String name, BigDecimal price, BigDecimal change, BigDecimal percent) {
+    }
+
+    private static class KlineAccumulator {
+        private LocalDate tradeDate;
+        private BigDecimal open;
+        private BigDecimal close;
+        private BigDecimal low;
+        private BigDecimal high;
+        private long volume;
+
+        private void add(KlinePointResponse point) {
+            if (tradeDate == null) {
+                tradeDate = point.tradeDate();
+                open = point.open();
+                low = point.low();
+                high = point.high();
+            }
+            close = point.close();
+            low = low.min(point.low());
+            high = high.max(point.high());
+            volume += point.volume() == null ? 0 : point.volume();
+            if (point.tradeDate().isAfter(tradeDate)) {
+                tradeDate = point.tradeDate();
+            }
+        }
+
+        private KlinePointResponse toResponse() {
+            return new KlinePointResponse(tradeDate, open, close, low, high, volume, BigDecimal.ZERO);
+        }
     }
 }

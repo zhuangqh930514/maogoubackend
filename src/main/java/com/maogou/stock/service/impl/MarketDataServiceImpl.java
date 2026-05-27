@@ -50,6 +50,19 @@ public class MarketDataServiceImpl implements MarketDataService {
     }
 
     @Override
+    public SectorHeatmapResponse sectorHeatmap() {
+        return marketDataClient.fetchSectorHeatmap();
+    }
+
+    @Override
+    public List<SectorHotStockResponse> sectorHotStocks(String sectorCode, int limit) {
+        if (sectorCode == null || sectorCode.isBlank()) {
+            return List.of();
+        }
+        return marketDataClient.fetchSectorHotStocks(sectorCode.trim(), limit);
+    }
+
+    @Override
     public List<IntradayPointResponse> intraday(String symbol) {
         return marketDataClient.fetchIntraday(symbol);
     }

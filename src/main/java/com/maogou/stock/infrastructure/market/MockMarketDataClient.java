@@ -56,7 +56,8 @@ public class MockMarketDataClient implements MarketDataClient {
                 index("上证指数", "000001.SH", "3168.42", "26.45", "0.84", List.of("3118", "3126", "3121", "3140", "3136", "3152", "3148", "3168")),
                 index("深证成指", "399001.SZ", "10248.91", "113.21", "1.12", List.of("10020", "10086", "10042", "10128", "10156", "10132", "10210", "10248")),
                 index("创业板指", "399006.SZ", "2114.37", "-7.61", "-0.36", List.of("2132", "2128", "2134", "2116", "2122", "2108", "2110", "2114")),
-                index("科创板指", "000688.SH", "889.26", "5.13", "0.58", List.of("872", "878", "874", "882", "880", "886", "884", "889"))
+                index("科创板指", "000688.SH", "889.26", "5.13", "0.58", List.of("872", "878", "874", "882", "880", "886", "884", "889")),
+                index("富时中国A50", "A50.CFD", "15669.52", "-98.48", "-0.63", List.of())
         );
     }
 
@@ -76,6 +77,32 @@ public class MockMarketDataClient implements MarketDataClient {
                 new MarketBreadthBucketResponse(">10%", 64, "up")
         );
         return new MarketBreadthResponse(buckets, 2059, 3325, 120, 99, 16, 1947, 3006, 120, LocalDateTime.now());
+    }
+
+    @Override
+    public SectorHeatmapResponse fetchSectorHeatmap() {
+        List<SectorHeatmapItemResponse> items = List.of(
+                new SectorHeatmapItemResponse("BK1623", "钼", bd("1658.99"), bd("7.53"), bd("279734016"), "up", 1),
+                new SectorHeatmapItemResponse("BK1298", "文字媒体", bd("2913.70"), bd("6.66"), bd("575816895"), "up", 2),
+                new SectorHeatmapItemResponse("BK1552", "超市", bd("1768.48"), bd("4.39"), bd("499536736"), "up", 3),
+                new SectorHeatmapItemResponse("BK1327", "分立器件", bd("18268.58"), bd("3.88"), bd("1325649152"), "up", 4),
+                new SectorHeatmapItemResponse("BK1320", "逆变器", bd("23682.73"), bd("3.40"), bd("598794752"), "up", 5),
+                new SectorHeatmapItemResponse("BK1031", "个护小家电", bd("920.88"), bd("-7.30"), bd("-180000000"), "down", 1),
+                new SectorHeatmapItemResponse("BK0732", "白银", bd("1685.22"), bd("-6.07"), bd("-640000000"), "down", 2),
+                new SectorHeatmapItemResponse("BK0733", "贵金属", bd("1098.42"), bd("-5.60"), bd("-520000000"), "down", 3),
+                new SectorHeatmapItemResponse("BK0734", "黄金", bd("2108.12"), bd("-5.46"), bd("-710000000"), "down", 4),
+                new SectorHeatmapItemResponse("BK0735", "铅锌", bd("1560.32"), bd("-5.02"), bd("-330000000"), "down", 5)
+        );
+        return new SectorHeatmapResponse(items, LocalDateTime.now());
+    }
+
+    @Override
+    public List<SectorHotStockResponse> fetchSectorHotStocks(String sectorCode, int limit) {
+        return List.of(
+                new SectorHotStockResponse("001257", "盛龙股份", bd("28.41"), bd("9.99"), bd("175232194"), 396171L, bd("1106609414.32"), 1),
+                new SectorHotStockResponse("601958", "金钼股份", bd("24.46"), bd("5.29"), bd("114415728"), 1187032L, bd("2882880550"), 2),
+                new SectorHotStockResponse("600000", "示例股份", bd("12.36"), bd("3.18"), bd("86300000"), 820000L, bd("1010000000"), 3)
+        ).stream().limit(Math.max(1, limit)).toList();
     }
 
     @Override

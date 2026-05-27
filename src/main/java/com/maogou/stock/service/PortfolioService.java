@@ -11,5 +11,7 @@ public interface PortfolioService {
 
     TradeRecordResponse addBuyRecord(TradeRecordCreateRequest request);
 
+    void removePositions(List<String> codes);
+
     PortfolioSummaryResponse portfolio();
 }

@@ -1,0 +1,10 @@
+CREATE TABLE IF NOT EXISTS ai_prompt_template (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    title VARCHAR(128) NOT NULL,
+    content TEXT NOT NULL,
+    deleted TINYINT NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_ai_prompt_template_user_updated (user_id, updated_at)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
