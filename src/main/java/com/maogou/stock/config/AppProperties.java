@@ -9,6 +9,7 @@ public class AppProperties {
     private final Ai ai = new Ai();
     private final Scheduler scheduler = new Scheduler();
     private final Auth auth = new Auth();
+    private final WebSearch webSearch = new WebSearch();
 
     public Market getMarket() {
         return market;
@@ -24,6 +25,10 @@ public class AppProperties {
 
     public Auth getAuth() {
         return auth;
+    }
+
+    public WebSearch getWebSearch() {
+        return webSearch;
     }
 
     public static class Market {
@@ -215,6 +220,54 @@ public class AppProperties {
 
         public void setAccessTokenTtlMinutes(long accessTokenTtlMinutes) {
             this.accessTokenTtlMinutes = accessTokenTtlMinutes;
+        }
+    }
+
+    public static class WebSearch {
+        private boolean enabled = true;
+        private String provider = "duckduckgo";
+        private String duckDuckGoHtmlUrl = "https://html.duckduckgo.com/html/";
+        private int timeoutMs = 8000;
+        private int maxResults = 5;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public String getProvider() {
+            return provider;
+        }
+
+        public void setProvider(String provider) {
+            this.provider = provider;
+        }
+
+        public String getDuckDuckGoHtmlUrl() {
+            return duckDuckGoHtmlUrl;
+        }
+
+        public void setDuckDuckGoHtmlUrl(String duckDuckGoHtmlUrl) {
+            this.duckDuckGoHtmlUrl = duckDuckGoHtmlUrl;
+        }
+
+        public int getTimeoutMs() {
+            return timeoutMs;
+        }
+
+        public void setTimeoutMs(int timeoutMs) {
+            this.timeoutMs = timeoutMs;
+        }
+
+        public int getMaxResults() {
+            return maxResults;
+        }
+
+        public void setMaxResults(int maxResults) {
+            this.maxResults = maxResults;
         }
     }
 }

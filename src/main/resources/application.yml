@@ -56,3 +56,9 @@ maogou:
   auth:
     jwt-secret: ${MAOGOU_JWT_SECRET:maogou-local-dev-secret-change-me}
     access-token-ttl-minutes: ${MAOGOU_ACCESS_TOKEN_TTL_MINUTES:1440}
+  web-search:
+    enabled: ${MAOGOU_WEB_SEARCH_ENABLED:true}
+    provider: ${MAOGOU_WEB_SEARCH_PROVIDER:duckduckgo}
+    duck-duck-go-html-url: ${MAOGOU_DUCKDUCKGO_HTML_URL:https://html.duckduckgo.com/html/}
+    timeout-ms: ${MAOGOU_WEB_SEARCH_TIMEOUT_MS:8000}
+    max-results: ${MAOGOU_WEB_SEARCH_MAX_RESULTS:5}
