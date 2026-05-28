@@ -742,14 +742,26 @@ public class SinaMarketDataClient implements MarketDataClient {
 
     private String getTextWithRetry(URI uri, Charset charset, String referer) {
         RuntimeException lastError = null;
-        for (int attempt = 0; attempt < 2; attempt++) {
+        for (int attempt = 0; attempt < 3; attempt++) {
             try {
                 return getText(uri, charset, referer);
             } catch (RuntimeException ex) {
                 lastError = ex;
+                sleepBeforeRetry(attempt);
             }
         }
         throw lastError == null ? new IllegalStateException("远程接口请求失败") : lastError;
+    }
+
+    private static void sleepBeforeRetry(int attempt) {
+        if (attempt >= 2) {
+            return;
+        }
+        try {
+            Thread.sleep(200L * (attempt + 1));
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private static LocalDateTime parseDateTime(String value) {

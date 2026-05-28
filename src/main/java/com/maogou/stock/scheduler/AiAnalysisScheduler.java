@@ -27,7 +27,7 @@ public class AiAnalysisScheduler {
         }
         log.info("start intraday AI analysis for watchlist");
         try {
-            aiAnalysisService.analyzeWatchlist();
+            aiAnalysisService.analyzeWatchlist(null);
         } catch (Exception ex) {
             log.warn("intraday AI analysis skipped: {}", ex.getMessage());
         }
@@ -40,7 +40,7 @@ public class AiAnalysisScheduler {
         }
         log.info("start close AI analysis for watchlist");
         try {
-            aiAnalysisService.analyzeWatchlist();
+            aiAnalysisService.analyzeWatchlist(null);
         } catch (Exception ex) {
             log.warn("close AI analysis skipped: {}", ex.getMessage());
         }

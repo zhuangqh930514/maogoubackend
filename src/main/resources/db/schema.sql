@@ -97,14 +97,18 @@ CREATE TABLE IF NOT EXISTS ai_analysis_report (
     prompt_summary TEXT NULL,
     raw_prompt MEDIUMTEXT NULL,
     raw_response MEDIUMTEXT NULL,
+    source_model VARCHAR(128) NULL,
+    prompt_template_id BIGINT NOT NULL DEFAULT 0,
     status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
     error_message TEXT NULL,
+    report_date DATE NOT NULL,
     generated_at DATETIME NOT NULL,
     deleted TINYINT NOT NULL DEFAULT 0,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_ai_report_user_time (user_id, generated_at),
-    KEY idx_ai_report_stock_time (stock_code, generated_at)
+    KEY idx_ai_report_stock_time (stock_code, generated_at),
+    UNIQUE KEY uk_ai_report_daily_source (user_id, stock_code, report_date, source_model, deleted)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 
 CREATE TABLE IF NOT EXISTS ai_chat_session (

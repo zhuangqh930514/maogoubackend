@@ -15,7 +15,9 @@ public record AiAnalysisReportResponse(
         String riskWarning,
         String buySellPoints,
         String promptSummary,
-        String status
+        String sourceModel,
+        String status,
+        String errorMessage
 ) {
     public static AiAnalysisReportResponse from(AiAnalysisReport entity) {
         return new AiAnalysisReportResponse(
@@ -29,7 +31,9 @@ public record AiAnalysisReportResponse(
                 entity.riskWarning,
                 entity.buySellPoints,
                 entity.promptSummary,
-                entity.status == null ? null : entity.status.name()
+                entity.sourceModel,
+                entity.status == null ? null : entity.status.name(),
+                entity.errorMessage
         );
     }
 }

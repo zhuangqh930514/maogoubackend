@@ -20,6 +20,8 @@ public class MarketDataServiceImpl implements MarketDataService {
     private final AppProperties properties;
     private final ConcurrentMap<String, CacheEntry<StockQuoteResponse>> quoteCache = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, CacheEntry<FinanceSnapshotResponse>> financeCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, CacheEntry<SectorHeatmapResponse>> sectorHeatmapCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, CacheEntry<List<SectorHotStockResponse>>> hotStocksCache = new ConcurrentHashMap<>();
 
     public MarketDataServiceImpl(MarketDataClient marketDataClient, AppProperties properties) {
         this.marketDataClient = marketDataClient;
@@ -51,12 +53,23 @@ public class MarketDataServiceImpl implements MarketDataService {
 
     @Override
     public SectorHeatmapResponse sectorHeatmap() {
-        return marketDataClient.fetchSectorHeatmap();
+        return cachedWithStaleFallback(
+                sectorHeatmapCache,
+                "sector-heatmap",
+                Duration.ofSeconds(properties.getMarket().getSectorHeatmapCacheTtlSeconds()),
+                marketDataClient::fetchSectorHeatmap
+        );
     }
 
     @Override
     public List<SectorHotStockResponse> marketHotStocks(int limit) {
-        return marketDataClient.fetchMarketHotStocks(limit);
+        int size = Math.max(1, Math.min(limit, 20));
+        return cachedWithStaleFallback(
+                hotStocksCache,
+                "market:" + size,
+                Duration.ofSeconds(properties.getMarket().getSectorHotStocksCacheTtlSeconds()),
+                () -> marketDataClient.fetchMarketHotStocks(size)
+        );
     }
 
     @Override
@@ -64,7 +77,14 @@ public class MarketDataServiceImpl implements MarketDataService {
         if (sectorCode == null || sectorCode.isBlank()) {
             return List.of();
         }
-        return marketDataClient.fetchSectorHotStocks(sectorCode.trim(), limit);
+        String normalizedCode = sectorCode.trim();
+        int size = Math.max(1, Math.min(limit, 20));
+        return cachedWithStaleFallback(
+                hotStocksCache,
+                "sector:" + normalizedCode + ":" + size,
+                Duration.ofSeconds(properties.getMarket().getSectorHotStocksCacheTtlSeconds()),
+                () -> marketDataClient.fetchSectorHotStocks(normalizedCode, size)
+        );
     }
 
     @Override
@@ -137,6 +157,23 @@ public class MarketDataServiceImpl implements MarketDataService {
             }
             return new CacheEntry<>(loader.get(), computeNow + ttlMillis);
         }).value;
+    }
+
+    private static <T> T cachedWithStaleFallback(
+            ConcurrentMap<String, CacheEntry<T>> cache,
+            String key,
+            Duration ttl,
+            Supplier<T> loader
+    ) {
+        try {
+            return cached(cache, key, ttl, loader);
+        } catch (RuntimeException ex) {
+            CacheEntry<T> existing = cache.get(key);
+            if (existing != null) {
+                return existing.value;
+            }
+            throw ex;
+        }
     }
 
     private static String normalizeCode(String code) {

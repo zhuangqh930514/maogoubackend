@@ -39,6 +39,8 @@ maogou:
     timeout-ms: ${MAOGOU_MARKET_TIMEOUT_MS:5000}
     quote-cache-ttl-seconds: ${MAOGOU_QUOTE_CACHE_TTL_SECONDS:15}
     finance-cache-ttl-seconds: ${MAOGOU_FINANCE_CACHE_TTL_SECONDS:1800}
+    sector-heatmap-cache-ttl-seconds: ${MAOGOU_SECTOR_HEATMAP_CACHE_TTL_SECONDS:60}
+    sector-hot-stocks-cache-ttl-seconds: ${MAOGOU_SECTOR_HOT_STOCKS_CACHE_TTL_SECONDS:60}
   ai:
     api-base-url: ${MAOGOU_AI_API_BASE_URL:http://localhost:11434/v1}
     model-name: ${MAOGOU_AI_MODEL_NAME:qwen3.6}

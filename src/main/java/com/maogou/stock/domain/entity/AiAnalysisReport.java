@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.maogou.stock.domain.enums.AnalysisStatus;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 @TableName("ai_analysis_report")
@@ -23,8 +24,11 @@ public class AiAnalysisReport {
     public String promptSummary;
     public String rawPrompt;
     public String rawResponse;
+    public String sourceModel;
+    public Long promptTemplateId;
     public AnalysisStatus status;
     public String errorMessage;
+    public LocalDate reportDate;
     public LocalDateTime generatedAt;
     @TableLogic
     public Integer deleted;

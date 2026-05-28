@@ -19,7 +19,7 @@ import java.time.LocalDateTime;
 @Service
 public class ModelConfigServiceImpl implements ModelConfigService {
 
-    private static final String DEFAULT_PROMPT_TEMPLATE = "你是一名A股投研助手。请基于以下行情、K线、财务和持仓数据，输出 JSON 结构：technicalAnalysis、riskWarning、buySellPoints、score。";
+    private static final String DEFAULT_PROMPT_TEMPLATE = "你是一名偏投顾可执行风格的A股投研助手。请基于给定行情、K线与财务数据输出严格 JSON，不要输出 markdown、不要输出代码块、不要补充任何解释文字。JSON 顶层必须包含 technicalAnalysis、riskWarning、buySellPoints、promptSummary、score 五个字段。technicalAnalysis 需给出趋势判断、均线关系、K线形态、量能表现、支撑压力；riskWarning 必须结合当前个股写出具体风险、风险触发条件、后续观察点，禁止空话；buySellPoints 必须给出当前动作建议、观察买点、减仓或卖出触发条件、止损位或失效条件、仓位建议；promptSummary 必须覆盖实时价、涨跌幅、量比、PE、PB、营收同比、净利同比、近阶段K线特征、量能概览，内容供客户直接阅读；score 输出 0-100 整数。";
 
     private final AiModelConfigMapper configMapper;
     private final AppProperties properties;

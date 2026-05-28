@@ -13,4 +13,6 @@ public interface PromptTemplateService {
     PromptTemplateResponse update(Long id, PromptTemplateRequest request);
 
     void remove(Long id);
+
+    String resolveContent(Long id, String fallback);
 }

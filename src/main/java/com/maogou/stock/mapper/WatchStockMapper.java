@@ -33,4 +33,11 @@ public interface WatchStockMapper extends BaseMapper<WatchStock> {
             WHERE user_id = #{userId} AND stock_code = #{stockCode} AND deleted = 0
             """)
     int updatePriority(WatchStock entity);
+
+    @Select("""
+            SELECT MIN(priority)
+            FROM watch_stock
+            WHERE user_id = #{userId} AND deleted = 0
+            """)
+    Integer selectMinPriorityByUserId(@Param("userId") Long userId);
 }

@@ -33,6 +33,8 @@ public class AppProperties {
         private int timeoutMs = 5000;
         private long quoteCacheTtlSeconds = 15;
         private long financeCacheTtlSeconds = 1800;
+        private long sectorHeatmapCacheTtlSeconds = 60;
+        private long sectorHotStocksCacheTtlSeconds = 60;
 
         public String getProvider() {
             return provider;
@@ -80,6 +82,22 @@ public class AppProperties {
 
         public void setFinanceCacheTtlSeconds(long financeCacheTtlSeconds) {
             this.financeCacheTtlSeconds = financeCacheTtlSeconds;
+        }
+
+        public long getSectorHeatmapCacheTtlSeconds() {
+            return sectorHeatmapCacheTtlSeconds;
+        }
+
+        public void setSectorHeatmapCacheTtlSeconds(long sectorHeatmapCacheTtlSeconds) {
+            this.sectorHeatmapCacheTtlSeconds = sectorHeatmapCacheTtlSeconds;
+        }
+
+        public long getSectorHotStocksCacheTtlSeconds() {
+            return sectorHotStocksCacheTtlSeconds;
+        }
+
+        public void setSectorHotStocksCacheTtlSeconds(long sectorHotStocksCacheTtlSeconds) {
+            this.sectorHotStocksCacheTtlSeconds = sectorHotStocksCacheTtlSeconds;
         }
     }
 

@@ -81,7 +81,7 @@ public class WatchlistServiceImpl implements WatchlistService {
             existing.stockName = quote.name();
             existing.market = quote.market();
             existing.groupName = groupName;
-            existing.priority = existing.priority == null ? 100 : existing.priority;
+            existing.priority = resolveTopPriority(userId);
             existing.deleted = 0;
             existing.updatedAt = LocalDateTime.now();
             watchStockMapper.restore(existing);
@@ -94,7 +94,7 @@ public class WatchlistServiceImpl implements WatchlistService {
         entity.stockName = quote.name();
         entity.market = quote.market();
         entity.groupName = groupName;
-        entity.priority = 100;
+        entity.priority = resolveTopPriority(userId);
         entity.deleted = 0;
         entity.createdAt = LocalDateTime.now();
         entity.updatedAt = entity.createdAt;
@@ -144,6 +144,14 @@ public class WatchlistServiceImpl implements WatchlistService {
             entity.updatedAt = now;
             watchStockMapper.updatePriority(entity);
         }
+    }
+
+    private int resolveTopPriority(Long userId) {
+        Integer minPriority = watchStockMapper.selectMinPriorityByUserId(userId);
+        if (minPriority == null) {
+            return 10;
+        }
+        return minPriority - 10;
     }
 
     private WatchStockResponse toResponse(WatchStock entity) {

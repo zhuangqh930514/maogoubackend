@@ -7,7 +7,9 @@ import java.util.List;
 public interface AiAnalysisService {
     List<AiAnalysisReportResponse> listReports(String code);
 
-    AiAnalysisReportResponse analyzeStock(String code, boolean forceRefresh);
+    void removeReports(List<Long> ids);
 
-    void analyzeWatchlist();
+    AiAnalysisReportResponse analyzeStock(String code, boolean forceRefresh, Long promptTemplateId, Long targetReportId);
+
+    void analyzeWatchlist(Long promptTemplateId);
 }
