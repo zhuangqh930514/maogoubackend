@@ -111,6 +111,127 @@ CREATE TABLE IF NOT EXISTS ai_analysis_report (
     UNIQUE KEY uk_ai_report_daily_source (user_id, stock_code, report_date, source_model, deleted)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 
+CREATE TABLE IF NOT EXISTS ai_analysis_outcome (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    report_id BIGINT NOT NULL,
+    stock_code VARCHAR(16) NOT NULL,
+    stock_name VARCHAR(64) NULL,
+    report_date DATE NOT NULL,
+    horizon_days INT NOT NULL,
+    prediction_direction VARCHAR(16) NOT NULL,
+    actual_direction VARCHAR(16) NOT NULL,
+    entry_price DECIMAL(18, 4) NOT NULL DEFAULT 0,
+    close_price DECIMAL(18, 4) NOT NULL DEFAULT 0,
+    high_price DECIMAL(18, 4) NOT NULL DEFAULT 0,
+    low_price DECIMAL(18, 4) NOT NULL DEFAULT 0,
+    pct_change DECIMAL(10, 4) NOT NULL DEFAULT 0,
+    max_drawdown DECIMAL(10, 4) NOT NULL DEFAULT 0,
+    direction_correct TINYINT NOT NULL DEFAULT 0,
+    success TINYINT NOT NULL DEFAULT 0,
+    success_score DECIMAL(10, 4) NOT NULL DEFAULT 0,
+    evaluated_at DATETIME NOT NULL,
+    deleted TINYINT NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_ai_outcome_report_horizon (user_id, report_id, horizon_days, deleted),
+    KEY idx_ai_outcome_user_eval (user_id, evaluated_at),
+    KEY idx_ai_outcome_stock_date (stock_code, report_date)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_analysis_decision (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    report_id BIGINT NOT NULL,
+    stock_code VARCHAR(16) NOT NULL,
+    stock_name VARCHAR(64) NULL,
+    decision VARCHAR(16) NOT NULL DEFAULT 'WATCH',
+    confidence DECIMAL(8, 4) NOT NULL DEFAULT 0,
+    holding_period VARCHAR(32) NOT NULL DEFAULT '1-3d',
+    target_direction VARCHAR(16) NOT NULL DEFAULT 'SIDEWAYS',
+    risk_level VARCHAR(16) NOT NULL DEFAULT 'MEDIUM',
+    summary VARCHAR(1024) NULL,
+    factors_json MEDIUMTEXT NULL,
+    raw_decision_json MEDIUMTEXT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_ai_decision_user_report (user_id, report_id),
+    KEY idx_ai_decision_stock (user_id, stock_code),
+    KEY idx_ai_decision_direction (user_id, target_direction)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_analysis_factor_hit (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    report_id BIGINT NOT NULL,
+    outcome_id BIGINT NOT NULL,
+    stock_code VARCHAR(16) NOT NULL,
+    factor_code VARCHAR(64) NOT NULL,
+    factor_name VARCHAR(128) NOT NULL,
+    factor_group VARCHAR(32) NOT NULL,
+    direction VARCHAR(16) NOT NULL,
+    weight_score DECIMAL(10, 4) NOT NULL DEFAULT 0,
+    reason VARCHAR(512) NULL,
+    success_score DECIMAL(10, 4) NOT NULL DEFAULT 0,
+    pct_change DECIMAL(10, 4) NOT NULL DEFAULT 0,
+    market_regime VARCHAR(32) NOT NULL DEFAULT '未知',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_factor_hit_user_factor (user_id, factor_code),
+    KEY idx_factor_hit_outcome (outcome_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_factor_stat (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    factor_code VARCHAR(64) NOT NULL,
+    factor_name VARCHAR(128) NOT NULL,
+    factor_group VARCHAR(32) NOT NULL,
+    market_regime VARCHAR(32) NOT NULL DEFAULT '未知',
+    sample_count INT NOT NULL DEFAULT 0,
+    success_count INT NOT NULL DEFAULT 0,
+    success_rate DECIMAL(10, 4) NOT NULL DEFAULT 0,
+    avg_return DECIMAL(10, 4) NOT NULL DEFAULT 0,
+    avg_drawdown DECIMAL(10, 4) NOT NULL DEFAULT 0,
+    weight_score DECIMAL(10, 4) NOT NULL DEFAULT 0,
+    last_evaluated_at DATETIME NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_factor_stat_user_factor_regime (user_id, factor_code, market_regime),
+    KEY idx_factor_stat_user_weight (user_id, weight_score)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_strategy_version (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    version_no VARCHAR(64) NOT NULL,
+    title VARCHAR(128) NOT NULL,
+    strategy_summary TEXT NULL,
+    factor_snapshot MEDIUMTEXT NULL,
+    prompt_template MEDIUMTEXT NULL,
+    avg_success_rate DECIMAL(10, 4) NOT NULL DEFAULT 0,
+    avg_return DECIMAL(10, 4) NOT NULL DEFAULT 0,
+    max_drawdown DECIMAL(10, 4) NOT NULL DEFAULT 0,
+    sample_count INT NOT NULL DEFAULT 0,
+    active TINYINT NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_strategy_version_user_no (user_id, version_no),
+    KEY idx_strategy_version_user_active (user_id, active)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_strategy_evolution_log (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    strategy_version_id BIGINT NULL,
+    action_type VARCHAR(32) NOT NULL,
+    action_summary VARCHAR(512) NULL,
+    before_snapshot MEDIUMTEXT NULL,
+    after_snapshot MEDIUMTEXT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_strategy_log_user_time (user_id, created_at),
+    KEY idx_strategy_log_version (strategy_version_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
 CREATE TABLE IF NOT EXISTS ai_chat_session (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     user_id BIGINT NOT NULL,

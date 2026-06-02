@@ -56,10 +56,12 @@ public class SettingsController {
                 scheduler.getNewsFixedRateMs(),
                 scheduler.getIntradayAnalysisFixedRateMs(),
                 scheduler.getCloseAnalysisCron(),
+                scheduler.getEvolutionReviewCron(),
                 config.intradayInterval(),
                 config.closeTime(),
                 config.analysisScope(),
-                nextCloseAnalysisTime(config.closeTime())
+                nextCloseAnalysisTime(config.closeTime()),
+                "交易日 16:10"
         ));
     }
 

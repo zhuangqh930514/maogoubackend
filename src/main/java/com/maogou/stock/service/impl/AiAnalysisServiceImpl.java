@@ -4,15 +4,19 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.maogou.stock.domain.entity.AiAnalysisDecision;
 import com.maogou.stock.domain.entity.AiAnalysisReport;
 import com.maogou.stock.domain.entity.AiModelConfig;
+import com.maogou.stock.domain.entity.AiStrategyVersion;
 import com.maogou.stock.domain.enums.AnalysisStatus;
 import com.maogou.stock.dto.ai.AiAnalysisReportResponse;
 import com.maogou.stock.dto.ai.AiAnalysisResultPayload;
 import com.maogou.stock.dto.market.StockDetailResponse;
 import com.maogou.stock.dto.watchlist.WatchStockResponse;
 import com.maogou.stock.infrastructure.ai.LocalAiClient;
+import com.maogou.stock.mapper.AiAnalysisDecisionMapper;
 import com.maogou.stock.mapper.AiAnalysisReportMapper;
+import com.maogou.stock.mapper.AiStrategyVersionMapper;
 import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.AiAnalysisService;
 import com.maogou.stock.service.MarketDataService;
@@ -27,6 +31,8 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClientResponseException;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -44,6 +50,8 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
     private static final Pattern FENCED_BLOCK = Pattern.compile("(?is)```(?:json)?\\s*([\\s\\S]*?)\\s*```");
 
     private final AiAnalysisReportMapper reportMapper;
+    private final AiAnalysisDecisionMapper decisionMapper;
+    private final AiStrategyVersionMapper strategyVersionMapper;
     private final MarketDataService marketDataService;
     private final WatchlistService watchlistService;
     private final ModelConfigService modelConfigService;
@@ -53,6 +61,8 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
 
     public AiAnalysisServiceImpl(
             AiAnalysisReportMapper reportMapper,
+            AiAnalysisDecisionMapper decisionMapper,
+            AiStrategyVersionMapper strategyVersionMapper,
             MarketDataService marketDataService,
             WatchlistService watchlistService,
             ModelConfigService modelConfigService,
@@ -61,6 +71,8 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             ObjectMapper objectMapper
     ) {
         this.reportMapper = reportMapper;
+        this.decisionMapper = decisionMapper;
+        this.strategyVersionMapper = strategyVersionMapper;
         this.marketDataService = marketDataService;
         this.watchlistService = watchlistService;
         this.modelConfigService = modelConfigService;
@@ -98,15 +110,16 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
     @Override
     @Transactional
     public AiAnalysisReportResponse analyzeStock(String code, boolean forceRefresh, Long promptTemplateId, Long targetReportId) {
+        Long userId = AuthContext.currentUserIdOrDefault();
         Long normalizedPromptTemplateId = normalizePromptTemplateId(promptTemplateId);
         StockDetailResponse detail = marketDataService.stockDetail(code);
         AiModelConfig config = modelConfigService.currentEntity();
         String selectedTemplate = promptTemplateService.resolveContent(promptTemplateId, null);
-        String prompt = buildPrompt(detail, config, selectedTemplate);
+        String prompt = buildPrompt(detail, config, selectedTemplate, activeStrategyPrompt(userId));
         LocalDateTime now = LocalDateTime.now();
         LocalDate reportDate = now.toLocalDate();
         AiAnalysisReport report = resolveTargetReport(targetReportId, detail.quote().code(), config.modelName, reportDate, now);
-        report.userId = AuthContext.currentUserIdOrDefault();
+        report.userId = userId;
         report.stockCode = detail.quote().code();
         report.stockName = detail.quote().name();
         report.rawPrompt = prompt;
@@ -124,12 +137,14 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             report.createdAt = now;
         }
 
+        AiAnalysisResultPayload parsedPayload = null;
         try {
             log.info("start AI stock analysis userId={} code={} stock={} model={} promptTemplateId={} targetReportId={}",
                     report.userId, report.stockCode, report.stockName, config.modelName, normalizedPromptTemplateId, targetReportId);
             AnalysisAttemptResult attemptResult = executeAnalysisWithRetry(prompt, config);
+            parsedPayload = attemptResult.payload();
             report.rawResponse = attemptResult.rawResponse();
-            applyPayload(report, attemptResult.payload());
+            applyPayload(report, parsedPayload);
             report.status = AnalysisStatus.SUCCESS;
             report.errorMessage = null;
             log.info("AI stock analysis success userId={} code={} reportId={} reportScore={} responseChars={}",
@@ -146,6 +161,9 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                     report.userId, report.stockCode, config.modelName, normalizedPromptTemplateId, targetReportId, ex.getMessage(), preview(report.rawResponse), ex);
         }
         saveOrUpdateReport(report);
+        if (report.status == AnalysisStatus.SUCCESS && parsedPayload != null) {
+            saveDecision(report, parsedPayload);
+        }
         return AiAnalysisReportResponse.from(report);
     }
 
@@ -219,6 +237,46 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         }
     }
 
+    private void saveDecision(AiAnalysisReport report, AiAnalysisResultPayload payload) {
+        AiAnalysisResultPayload.DecisionPayload decision = payload.decision() == null
+                ? fallbackDecisionFromText(report.rawResponse, payload.buySellPoints())
+                : normalizeDecisionPayload(payload.decision(), payload.buySellPoints(), report.rawResponse);
+        LocalDateTime now = LocalDateTime.now();
+        AiAnalysisDecision entity = decisionMapper.selectOne(new QueryWrapper<AiAnalysisDecision>()
+                .eq("user_id", report.userId)
+                .eq("report_id", report.id)
+                .last("LIMIT 1"));
+        if (entity == null) {
+            entity = new AiAnalysisDecision();
+            entity.userId = report.userId;
+            entity.reportId = report.id;
+            entity.createdAt = now;
+        }
+        entity.stockCode = report.stockCode;
+        entity.stockName = report.stockName;
+        entity.decision = decision.decision();
+        entity.confidence = decision.confidence() == null
+                ? BigDecimal.ZERO
+                : BigDecimal.valueOf(decision.confidence()).setScale(4, RoundingMode.HALF_UP);
+        entity.holdingPeriod = decision.holdingPeriod();
+        entity.targetDirection = decision.targetDirection();
+        entity.riskLevel = decision.riskLevel();
+        entity.summary = decision.summary();
+        try {
+            entity.factorsJson = writeJson(decision.factors() == null ? List.of() : decision.factors());
+            entity.rawDecisionJson = writeJson(decision);
+        } catch (JsonProcessingException ex) {
+            entity.factorsJson = "[]";
+            entity.rawDecisionJson = "{}";
+        }
+        entity.updatedAt = now;
+        if (entity.id == null) {
+            decisionMapper.insert(entity);
+        } else {
+            decisionMapper.updateById(entity);
+        }
+    }
+
     private AnalysisAttemptResult executeAnalysisWithRetry(String prompt, AiModelConfig config) throws Exception {
         Exception lastException = null;
         String lastRawResponse = "";
@@ -249,7 +307,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         if (payload.score() != null) {
             report.score = payload.score();
         }
-        report.advice = summarizeAdvice(payload.buySellPoints(), report.advice);
+        report.advice = summarizeAdvice(payload.decision(), payload.buySellPoints(), report.advice);
     }
 
     private void validatePayload(AiAnalysisResultPayload payload) {
@@ -343,12 +401,48 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         return "本次报告未获得有效风险提示，请检查模型输出格式或重新生成。";
     }
 
-    private String buildPrompt(StockDetailResponse detail, AiModelConfig config, String selectedTemplate) {
+    private String activeStrategyPrompt(Long userId) {
+        try {
+            AiStrategyVersion active = strategyVersionMapper.selectOne(new QueryWrapper<AiStrategyVersion>()
+                    .eq("user_id", userId)
+                    .eq("active", 1)
+                    .orderByDesc("created_at")
+                    .last("LIMIT 1"));
+            if (active == null || active.promptTemplate == null || active.promptTemplate.isBlank()) {
+                return "";
+            }
+            return """
+                    策略版本：%s / %s
+                    策略摘要：%s
+                    因子快照：
+                    %s
+                    Prompt 调权要求：
+                    %s
+                    """.formatted(
+                    active.versionNo,
+                    active.title,
+                    active.strategySummary == null ? "" : active.strategySummary,
+                    active.factorSnapshot == null ? "" : active.factorSnapshot,
+                    active.promptTemplate
+            );
+        } catch (RuntimeException ex) {
+            log.warn("active AI strategy unavailable, fallback to base prompt. userId={} message={}", userId, ex.getMessage());
+            return "";
+        }
+    }
+
+    private String buildPrompt(StockDetailResponse detail, AiModelConfig config, String selectedTemplate, String activeStrategyPrompt) {
         String configuredTemplate = config.promptTemplate == null || config.promptTemplate.isBlank()
                 ? "请基于行情、K线、财务数据输出技术面分析、风险提示、建议买卖点、Prompt 数据摘要和评分。"
                 : config.promptTemplate;
         String template = selectedTemplate == null || selectedTemplate.isBlank() ? configuredTemplate : selectedTemplate;
+        String strategyInstruction = activeStrategyPrompt == null || activeStrategyPrompt.isBlank()
+                ? "当前没有启用的进化策略版本。"
+                : activeStrategyPrompt;
         return """
+                %s
+
+                已启用策略版本：
                 %s
 
                 股票：%s %s
@@ -358,13 +452,18 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 输出要求：
                 所选提示词只影响分析口径和重点；无论提示词如何变化，最终必须严格映射到以下 JSON 报告结构，方便系统解析和前端展示。
                 1. 只返回 JSON 对象，不要 markdown 代码块，不要额外解释。
-                2. technicalAnalysis 必须包含 trendAssessment、trend、movingAverages、klinePattern、supportResistance、volumeAnalysis，可直接给客户阅读。
-                3. riskWarning 必须包含 headline、currentRisks、triggerConditions、observationPoints、overallAdvice，且必须结合当前股票数据写具体风险。
-                4. buySellPoints 必须包含 action、buyTriggers、reduceTriggers、stopLoss、invalidationCondition、positionSuggestion，不能写泛泛而谈的话。
-                5. promptSummary 必须包含 marketSnapshot、valuationSnapshot、growthSnapshot、klineSummary、volumeSummary，信息尽量完整。
-                6. score 输出 0-100 整数，避免保证收益。
+                2. decision 必须包含 decision、confidence、holdingPeriod、targetDirection、riskLevel、summary、factors。
+                   - decision 只能是 BUY、HOLD、REDUCE、SELL、WATCH 之一。
+                   - targetDirection 只能是 UP、DOWN、SIDEWAYS 之一，必须代表对未来 1-3 个交易日的主要方向判断。
+                   - factors 是数组，每项必须包含 code、name、group、hit、weight、direction、reason。
+                3. technicalAnalysis 必须包含 trendAssessment、trend、movingAverages、klinePattern、supportResistance、volumeAnalysis，可直接给客户阅读。
+                4. riskWarning 必须包含 headline、currentRisks、triggerConditions、observationPoints、overallAdvice，且必须结合当前股票数据写具体风险。
+                5. buySellPoints 必须包含 action、buyTriggers、reduceTriggers、stopLoss、invalidationCondition、positionSuggestion，不能写泛泛而谈的话。
+                6. promptSummary 必须包含 marketSnapshot、valuationSnapshot、growthSnapshot、klineSummary、volumeSummary，信息尽量完整。
+                7. score 输出 0-100 整数，避免保证收益。
                 """.formatted(
                 template,
+                strategyInstruction,
                 detail.quote().name(),
                 detail.quote().code(),
                 detail.quote().price(),
@@ -396,6 +495,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             return parseTextPayload(normalized);
         }
         return new AiAnalysisResultPayload(
+                parseDecision(root),
                 parseTechnicalAnalysis(field(root, "technicalAnalysis", "technical_analysis", "技术面分析")),
                 parseRiskWarning(field(root, "riskWarning", "risk_warning", "风险提示")),
                 parseBuySellPoints(field(root, "buySellPoints", "buy_sell_points", "建议买卖点")),
@@ -520,6 +620,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             summary = "模型返回为分段文本，未提供独立数据摘要。";
         }
         return new AiAnalysisResultPayload(
+                fallbackDecisionFromText(text, null),
                 textTechnicalAnalysis(technical),
                 textRiskWarning(risk),
                 textBuySellPoints(buySell),
@@ -658,6 +759,64 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         return matcher.find() ? Integer.parseInt(matcher.group()) : null;
     }
 
+    private AiAnalysisResultPayload.DecisionPayload parseDecision(JsonNode root) {
+        JsonNode node = field(root, "decision", "decisionSignal", "decision_signal", "决策", "交易决策");
+        if (node == null || !node.isObject()) {
+            node = root;
+        }
+        AiAnalysisResultPayload.DecisionPayload parsed = new AiAnalysisResultPayload.DecisionPayload(
+                normalizeDecisionText(text(node, "decision", "action", "操作", "建议")),
+                parseDouble(field(node, "confidence", "置信度")),
+                text(node, "holdingPeriod", "holding_period", "持有周期"),
+                normalizeDirection(text(node, "targetDirection", "target_direction", "direction", "方向")),
+                normalizeRiskLevel(text(node, "riskLevel", "risk_level", "风险等级")),
+                text(node, "summary", "决策摘要", "summaryText"),
+                parseFactors(field(node, "factors", "因子", "factorList"))
+        );
+        return normalizeDecisionPayload(parsed, null, root == null ? "" : root.toString());
+    }
+
+    private List<AiAnalysisResultPayload.FactorPayload> parseFactors(JsonNode node) {
+        if (node == null || node.isNull() || node.isMissingNode()) {
+            return List.of();
+        }
+        List<AiAnalysisResultPayload.FactorPayload> values = new ArrayList<>();
+        if (node.isArray()) {
+            node.forEach(item -> {
+                AiAnalysisResultPayload.FactorPayload factor = parseFactor(item);
+                if (factor != null) {
+                    values.add(factor);
+                }
+            });
+        } else if (node.isObject()) {
+            AiAnalysisResultPayload.FactorPayload factor = parseFactor(node);
+            if (factor != null) {
+                values.add(factor);
+            }
+        }
+        return values;
+    }
+
+    private AiAnalysisResultPayload.FactorPayload parseFactor(JsonNode node) {
+        if (node == null || !node.isObject()) {
+            return null;
+        }
+        String name = text(node, "name", "factorName", "factor_name", "名称");
+        String code = text(node, "code", "factorCode", "factor_code", "编码");
+        if (code.isBlank() && name.isBlank()) {
+            return null;
+        }
+        return new AiAnalysisResultPayload.FactorPayload(
+                code.isBlank() ? normalizeFactorCode(name) : code,
+                name.isBlank() ? code : name,
+                normalizeFactorGroup(text(node, "group", "factorGroup", "factor_group", "类型")),
+                parseBoolean(field(node, "hit", "命中")),
+                parseDouble(field(node, "weight", "weightScore", "weight_score", "权重")),
+                normalizeFactorDirection(text(node, "direction", "方向")),
+                text(node, "reason", "理由", "原因")
+        );
+    }
+
     private AiAnalysisResultPayload.TechnicalAnalysisPayload textTechnicalAnalysis(String text) {
         return new AiAnalysisResultPayload.TechnicalAnalysisPayload(text, null, null, null, null, null, null, text);
     }
@@ -729,7 +888,17 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         return objectMapper.writeValueAsString(value);
     }
 
-    private String summarizeAdvice(AiAnalysisResultPayload.BuySellPointsPayload buySellPoints, String fallback) {
+    private String summarizeAdvice(AiAnalysisResultPayload.DecisionPayload decision, AiAnalysisResultPayload.BuySellPointsPayload buySellPoints, String fallback) {
+        if (decision != null && decision.decision() != null && !decision.decision().isBlank()) {
+            return switch (decision.decision()) {
+                case "BUY" -> "建议买入";
+                case "REDUCE" -> "建议减仓";
+                case "SELL" -> "建议卖出";
+                case "WATCH" -> "继续观察";
+                case "HOLD" -> "稳健持有";
+                default -> fallback;
+            };
+        }
         if (buySellPoints == null) {
             return fallback;
         }
@@ -742,6 +911,209 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         return fallback;
     }
 
+    private AiAnalysisResultPayload.DecisionPayload normalizeDecisionPayload(
+            AiAnalysisResultPayload.DecisionPayload decision,
+            AiAnalysisResultPayload.BuySellPointsPayload buySellPoints,
+            String rawText
+    ) {
+        if (decision == null) {
+            return fallbackDecisionFromText(rawText, buySellPoints);
+        }
+        String normalizedDecision = normalizeDecisionText(decision.decision());
+        if (normalizedDecision.isBlank()) {
+            normalizedDecision = inferDecision(rawText, buySellPoints);
+        }
+        String direction = normalizeDirection(decision.targetDirection());
+        if (direction.isBlank()) {
+            direction = directionFromDecision(normalizedDecision);
+        }
+        String holdingPeriod = decision.holdingPeriod() == null || decision.holdingPeriod().isBlank()
+                ? "1-3d"
+                : decision.holdingPeriod();
+        String riskLevel = normalizeRiskLevel(decision.riskLevel());
+        String summary = decision.summary() == null || decision.summary().isBlank()
+                ? "模型已输出结构化决策，按当前行情和策略权重归档。"
+                : decision.summary();
+        List<AiAnalysisResultPayload.FactorPayload> factors = decision.factors() == null || decision.factors().isEmpty()
+                ? fallbackFactors(rawText)
+                : decision.factors();
+        return new AiAnalysisResultPayload.DecisionPayload(
+                normalizedDecision,
+                decision.confidence() == null ? 0.50 : Math.max(0.0, Math.min(1.0, decision.confidence())),
+                holdingPeriod,
+                direction,
+                riskLevel.isBlank() ? "MEDIUM" : riskLevel,
+                summary,
+                factors
+        );
+    }
+
+    private AiAnalysisResultPayload.DecisionPayload fallbackDecisionFromText(String rawText, AiAnalysisResultPayload.BuySellPointsPayload buySellPoints) {
+        String decision = inferDecision(rawText, buySellPoints);
+        return new AiAnalysisResultPayload.DecisionPayload(
+                decision,
+                0.50,
+                "1-3d",
+                directionFromDecision(decision),
+                "MEDIUM",
+                "模型未完整输出 decision 字段，系统根据买卖点和报告文本生成保守决策。",
+                fallbackFactors(rawText)
+        );
+    }
+
+    private String inferDecision(String rawText, AiAnalysisResultPayload.BuySellPointsPayload buySellPoints) {
+        String actionText = buySellPoints == null ? "" : normalizeText(buySellPoints.action(), buySellPoints.positionSuggestion());
+        String text = normalizeText(actionText, rawText);
+        if (containsAny(text, "卖出", "清仓")) {
+            return "SELL";
+        }
+        if (containsAny(text, "减仓", "控制仓位", "降低仓位")) {
+            return "REDUCE";
+        }
+        if (containsAny(text, "买入", "低吸", "加仓", "突破")) {
+            return "BUY";
+        }
+        if (containsAny(text, "观察", "等待")) {
+            return "WATCH";
+        }
+        return "HOLD";
+    }
+
+    private List<AiAnalysisResultPayload.FactorPayload> fallbackFactors(String rawText) {
+        String text = normalizeText(rawText);
+        List<AiAnalysisResultPayload.FactorPayload> factors = new ArrayList<>();
+        if (containsAny(text, "突破", "放量", "均线", "支撑")) {
+            factors.add(new AiAnalysisResultPayload.FactorPayload("TEXT_TECHNICAL_SIGNAL", "文本技术信号", "TECHNICAL", true, 0.35, "POSITIVE", "报告文本包含技术信号关键词"));
+        }
+        if (containsAny(text, "风险", "止损", "破位", "回撤", "高位")) {
+            factors.add(new AiAnalysisResultPayload.FactorPayload("TEXT_RISK_SIGNAL", "文本风险信号", "RISK", true, -0.30, "NEGATIVE", "报告文本包含风险或失效条件"));
+        }
+        if (factors.isEmpty()) {
+            factors.add(new AiAnalysisResultPayload.FactorPayload("GENERAL_AI_JUDGEMENT", "综合判断", "DECISION", true, 0.20, "NEUTRAL", "模型未输出明确因子，按综合判断归档"));
+        }
+        return factors;
+    }
+
+    private Double parseDouble(JsonNode node) {
+        if (node == null || node.isNull() || node.isMissingNode()) {
+            return null;
+        }
+        if (node.isNumber()) {
+            return node.asDouble();
+        }
+        String value = node.asText("").replace("%", "").trim();
+        if (value.isBlank()) {
+            return null;
+        }
+        try {
+            double parsed = Double.parseDouble(value);
+            return parsed > 1 ? parsed / 100.0 : parsed;
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    private Boolean parseBoolean(JsonNode node) {
+        if (node == null || node.isNull() || node.isMissingNode()) {
+            return null;
+        }
+        if (node.isBoolean()) {
+            return node.asBoolean();
+        }
+        String value = node.asText("").trim().toLowerCase(Locale.ROOT);
+        if (value.isBlank()) {
+            return null;
+        }
+        return value.equals("true") || value.equals("yes") || value.equals("1") || value.equals("命中") || value.equals("是");
+    }
+
+    private String normalizeDecisionText(String value) {
+        String text = normalizeText(value);
+        if (text.contains("sell") || text.contains("卖出") || text.contains("清仓")) {
+            return "SELL";
+        }
+        if (text.contains("reduce") || text.contains("减仓") || text.contains("降低仓位")) {
+            return "REDUCE";
+        }
+        if (text.contains("buy") || text.contains("买入") || text.contains("加仓") || text.contains("低吸")) {
+            return "BUY";
+        }
+        if (text.contains("watch") || text.contains("观察") || text.contains("等待")) {
+            return "WATCH";
+        }
+        if (text.contains("hold") || text.contains("持有")) {
+            return "HOLD";
+        }
+        return value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private String normalizeDirection(String value) {
+        String text = normalizeText(value);
+        if (text.contains("up") || text.contains("看涨") || text.contains("上行") || text.contains("上涨")) {
+            return "UP";
+        }
+        if (text.contains("down") || text.contains("看跌") || text.contains("下行") || text.contains("下跌")) {
+            return "DOWN";
+        }
+        if (text.contains("side") || text.contains("震荡") || text.contains("横盘")) {
+            return "SIDEWAYS";
+        }
+        return "";
+    }
+
+    private String directionFromDecision(String decision) {
+        return switch (decision == null ? "" : decision) {
+            case "BUY" -> "UP";
+            case "SELL", "REDUCE" -> "DOWN";
+            default -> "SIDEWAYS";
+        };
+    }
+
+    private String normalizeRiskLevel(String value) {
+        String text = normalizeText(value);
+        if (text.contains("high") || text.contains("高")) {
+            return "HIGH";
+        }
+        if (text.contains("low") || text.contains("低")) {
+            return "LOW";
+        }
+        if (text.contains("medium") || text.contains("中")) {
+            return "MEDIUM";
+        }
+        return "";
+    }
+
+    private String normalizeFactorGroup(String value) {
+        String text = normalizeText(value);
+        if (text.contains("risk") || text.contains("风险")) {
+            return "RISK";
+        }
+        if (text.contains("fundamental") || text.contains("基本面") || text.contains("财务")) {
+            return "FUNDAMENTAL";
+        }
+        if (text.contains("decision") || text.contains("决策") || text.contains("买卖")) {
+            return "DECISION";
+        }
+        return "TECHNICAL";
+    }
+
+    private String normalizeFactorDirection(String value) {
+        String text = normalizeText(value);
+        if (text.contains("negative") || text.contains("负") || text.contains("风险") || text.contains("抑制")) {
+            return "NEGATIVE";
+        }
+        if (text.contains("neutral") || text.contains("中性")) {
+            return "NEUTRAL";
+        }
+        return "POSITIVE";
+    }
+
+    private String normalizeFactorCode(String name) {
+        String normalized = name == null ? "" : name.trim().toUpperCase(Locale.ROOT)
+                .replaceAll("[^A-Z0-9\\u4e00-\\u9fa5]+", "_");
+        return normalized.isBlank() ? "AI_FACTOR" : normalized;
+    }
+
     private String buildFallbackPromptSummary(StockDetailResponse detail) {
         return "实时价 " + detail.quote().price()
                 + "，涨跌幅 " + detail.quote().percent() + "%"
@@ -750,6 +1122,28 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 + "，PB " + detail.finance().pb()
                 + "，营收同比 " + detail.finance().revenueGrowth() + "%"
                 + "，净利同比 " + detail.finance().profitGrowth() + "%";
+    }
+
+    private static String normalizeText(String... values) {
+        StringBuilder builder = new StringBuilder();
+        for (String value : values) {
+            if (value != null) {
+                builder.append(value).append(' ');
+            }
+        }
+        return builder.toString().trim().toLowerCase(Locale.ROOT);
+    }
+
+    private static boolean containsAny(String text, String... words) {
+        if (text == null || text.isBlank()) {
+            return false;
+        }
+        for (String word : words) {
+            if (text.contains(word.toLowerCase(Locale.ROOT))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static int safeLength(String value) {

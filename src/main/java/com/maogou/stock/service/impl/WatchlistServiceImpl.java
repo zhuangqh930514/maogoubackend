@@ -10,7 +10,6 @@ import com.maogou.stock.mapper.WatchStockMapper;
 import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.MarketDataService;
 import com.maogou.stock.service.WatchlistService;
-import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DuplicateKeyException;
@@ -20,11 +19,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.Map;
 
 @Service
 public class WatchlistServiceImpl implements WatchlistService {
@@ -34,10 +29,6 @@ public class WatchlistServiceImpl implements WatchlistService {
 
     private final WatchStockMapper watchStockMapper;
     private final MarketDataService marketDataService;
-    private final ExecutorService listExecutor = Executors.newFixedThreadPool(
-            Math.min(8, Math.max(2, Runtime.getRuntime().availableProcessors())),
-            new WatchlistThreadFactory()
-    );
 
     public WatchlistServiceImpl(WatchStockMapper watchStockMapper, MarketDataService marketDataService) {
         this.watchStockMapper = watchStockMapper;
@@ -54,15 +45,39 @@ public class WatchlistServiceImpl implements WatchlistService {
             wrapper.eq("group_name", groupName);
         }
         List<WatchStock> stocks = watchStockMapper.selectList(wrapper);
-        List<CompletableFuture<WatchStockResponse>> futures = stocks.stream()
-                .map(entity -> CompletableFuture.supplyAsync(() -> toResponseSafely(entity), listExecutor))
+        Map<String, StockQuoteResponse> quotes = marketDataService.quotes(stocks.stream()
+                .map(entity -> entity.stockCode)
+                .toList());
+        return stocks.stream()
+                .map(entity -> buildLightResponse(entity, quotes.get(entity.stockCode)))
                 .toList();
-        return futures.stream().map(CompletableFuture::join).toList();
     }
 
-    @PreDestroy
-    public void shutdown() {
-        listExecutor.shutdown();
+    @Override
+    public List<String> codes(String groupName) {
+        QueryWrapper<WatchStock> wrapper = new QueryWrapper<WatchStock>()
+                .select("stock_code")
+                .eq("user_id", AuthContext.currentUserIdOrDefault())
+                .orderByAsc("priority")
+                .orderByDesc("created_at");
+        if (groupName != null && !groupName.isBlank() && !"全部".equals(groupName)) {
+            wrapper.eq("group_name", groupName);
+        }
+        return watchStockMapper.selectList(wrapper).stream()
+                .map(entity -> entity.stockCode)
+                .toList();
+    }
+
+    private WatchStockResponse buildLightResponse(WatchStock entity, StockQuoteResponse quote) {
+        try {
+            if (quote == null) {
+                return fallbackResponse(entity, "行情暂不可用");
+            }
+            return buildResponse(entity, quote, EMPTY_FINANCE);
+        } catch (RuntimeException ex) {
+            log.warn("build watch stock response failed, stockCode={}", entity.stockCode, ex);
+            return fallbackResponse(entity, "行情暂不可用");
+        }
     }
 
     @Override
@@ -73,7 +88,7 @@ public class WatchlistServiceImpl implements WatchlistService {
         String groupName = request.groupName() == null || request.groupName().isBlank() ? "全部" : request.groupName();
         WatchStock existing = watchStockMapper.selectAnyByUserIdAndCode(userId, code);
         if (existing != null && existing.deleted != null && existing.deleted == 0) {
-            return toResponse(existing);
+            return buildLightResponse(existing, marketDataService.quote(existing.stockCode));
         }
 
         StockQuoteResponse quote = marketDataService.quote(code);
@@ -85,7 +100,7 @@ public class WatchlistServiceImpl implements WatchlistService {
             existing.deleted = 0;
             existing.updatedAt = LocalDateTime.now();
             watchStockMapper.restore(existing);
-            return toResponse(existing);
+            return buildResponse(existing, quote, EMPTY_FINANCE);
         }
 
         WatchStock entity = new WatchStock();
@@ -103,11 +118,11 @@ public class WatchlistServiceImpl implements WatchlistService {
         } catch (DuplicateKeyException ex) {
             WatchStock concurrentExisting = watchStockMapper.selectAnyByUserIdAndCode(userId, code);
             if (concurrentExisting != null) {
-                return toResponse(concurrentExisting);
+                return buildLightResponse(concurrentExisting, marketDataService.quote(concurrentExisting.stockCode));
             }
             throw ex;
         }
-        return toResponse(entity);
+        return buildResponse(entity, quote, EMPTY_FINANCE);
     }
 
     @Override
@@ -154,28 +169,17 @@ public class WatchlistServiceImpl implements WatchlistService {
         return minPriority - 10;
     }
 
-    private WatchStockResponse toResponse(WatchStock entity) {
-        StockQuoteResponse quote = marketDataService.quote(entity.stockCode);
-        FinanceSnapshotResponse finance = marketDataService.finance(entity.stockCode);
-        return buildResponse(entity, quote, finance);
-    }
-
-    private WatchStockResponse toResponseSafely(WatchStock entity) {
-        try {
-            return toResponse(entity);
-        } catch (RuntimeException ex) {
-            log.warn("load watch stock market data failed, stockCode={}", entity.stockCode, ex);
-            StockQuoteResponse quote = new StockQuoteResponse(
-                    entity.stockCode,
-                    entity.stockName == null ? entity.stockCode : entity.stockName,
-                    BigDecimal.ZERO,
-                    BigDecimal.ZERO,
-                    BigDecimal.ZERO,
-                    BigDecimal.ZERO,
-                    entity.market
-            );
-            return buildResponse(entity, quote, EMPTY_FINANCE, "行情暂不可用", 0);
-        }
+    private WatchStockResponse fallbackResponse(WatchStock entity, String advice) {
+        StockQuoteResponse quote = new StockQuoteResponse(
+                entity.stockCode,
+                entity.stockName == null ? entity.stockCode : entity.stockName,
+                BigDecimal.ZERO,
+                BigDecimal.ZERO,
+                BigDecimal.ZERO,
+                BigDecimal.ZERO,
+                entity.market
+        );
+        return buildResponse(entity, quote, EMPTY_FINANCE, advice, 0);
     }
 
     private WatchStockResponse buildResponse(WatchStock entity, StockQuoteResponse quote, FinanceSnapshotResponse finance) {
@@ -217,16 +221,5 @@ public class WatchlistServiceImpl implements WatchlistService {
                 .map(String::trim)
                 .distinct()
                 .toList();
-    }
-
-    private static class WatchlistThreadFactory implements ThreadFactory {
-        private final AtomicInteger index = new AtomicInteger(1);
-
-        @Override
-        public Thread newThread(Runnable runnable) {
-            Thread thread = new Thread(runnable, "watchlist-market-" + index.getAndIncrement());
-            thread.setDaemon(true);
-            return thread;
-        }
     }
 }

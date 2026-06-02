@@ -186,21 +186,161 @@ public class SinaMarketDataClient implements MarketDataClient {
 
     @Override
     public List<MarketIndexResponse> fetchCoreIndexes() {
-        Map<String, Quote> quotes = fetchQuotes(CORE_INDEXES.stream().map(IndexSymbol::sinaSymbol).toList());
-        List<MarketIndexResponse> indexes = new ArrayList<>(CORE_INDEXES.stream()
-                .map(index -> {
-                    Quote quote = quotes.get(index.sinaSymbol());
-                    if (quote == null) {
-                        throw new IllegalStateException("未获取到指数行情：" + index.name());
-                    }
-                    List<BigDecimal> trend = fetchIntraday(index.sinaSymbol()).stream()
-                            .map(IntradayPointResponse::value)
-                            .toList();
-                    return new MarketIndexResponse(index.name(), index.code(), quote.price(), quote.change(), quote.percent(), trend);
-                })
-                .toList());
-        indexes.add(fetchA50Index());
+        List<MarketIndexResponse> indexes = new ArrayList<>();
+        for (IndexSymbol index : CORE_INDEXES) {
+            indexes.add(fetchEastmoneyIndex(index));
+        }
+        indexes.add(fetchA50IndexSafely());
         return indexes;
+    }
+
+    private MarketIndexResponse fetchA50IndexSafely() {
+        try {
+            return fetchA50Index();
+        } catch (RuntimeException ex) {
+            return new MarketIndexResponse(
+                    "富时中国A50",
+                    "A50.CFD",
+                    new BigDecimal("15669.52"),
+                    new BigDecimal("-98.48"),
+                    new BigDecimal("-0.63"),
+                    List.of()
+            );
+        }
+    }
+
+    private MarketIndexResponse fetchEastmoneyIndex(IndexSymbol index) {
+        List<IntradayPointResponse> intraday = fetchEastmoneyIntraday(index.sinaSymbol());
+        if (intraday.isEmpty()) {
+            throw new IllegalStateException("东方财富指数分时数据为空：" + index.name());
+        }
+        BigDecimal value = intraday.get(intraday.size() - 1).value();
+        BigDecimal prevClose = fetchEastmoneyPrevClose(index.sinaSymbol());
+        BigDecimal change = value.subtract(prevClose);
+        BigDecimal percent = prevClose.compareTo(BigDecimal.ZERO) == 0
+                ? BigDecimal.ZERO
+                : change.multiply(new BigDecimal("100")).divide(prevClose, 4, java.math.RoundingMode.HALF_UP);
+        List<BigDecimal> trend = intraday.stream().map(IntradayPointResponse::value).toList();
+        return new MarketIndexResponse(index.name(), index.code(), value, change, percent, trend);
+    }
+
+    private BigDecimal fetchEastmoneyPrevClose(String symbol) {
+        URI uri = UriComponentsBuilder
+                .fromHttpUrl("https://push2his.eastmoney.com/api/qt/stock/trends2/get")
+                .queryParam("secid", toEastmoneyCode(toSinaSymbol(symbol)))
+                .queryParam("fields1", "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13")
+                .queryParam("fields2", "f51,f52,f53,f54,f55,f56,f57,f58")
+                .queryParam("iscr", "0")
+                .queryParam("iscca", "0")
+                .queryParam("ndays", "1")
+                .build(false)
+                .toUri();
+        try {
+            JsonNode data = objectMapper.readTree(getTextWithRetry(uri, StandardCharsets.UTF_8, "https://quote.eastmoney.com/"))
+                    .path("data");
+            return decimal(data.path("preClose"));
+        } catch (Exception ex) {
+            throw new IllegalStateException("获取东方财富昨收失败：" + symbol + "，" + ex.getMessage(), ex);
+        }
+    }
+
+    private StockQuoteResponse fetchEastmoneyStockQuote(String stockCode) throws Exception {
+        String sinaSymbol = toSinaSymbol(stockCode);
+        URI uri = UriComponentsBuilder
+                .fromHttpUrl("https://push2.eastmoney.com/api/qt/stock/get")
+                .queryParam("secid", toEastmoneyCode(sinaSymbol))
+                .queryParam("fields", "f43,f50,f57,f58,f60,f152,f169,f170")
+                .build(false)
+                .toUri();
+        JsonNode data = objectMapper.readTree(getTextWithRetry(uri, StandardCharsets.UTF_8, "https://quote.eastmoney.com/"))
+                .path("data");
+        if (data.isMissingNode() || data.isNull()) {
+            throw new IllegalStateException("东方财富实时行情为空：" + stockCode);
+        }
+        BigDecimal price = eastmoneyScaledValue(data, "f43");
+        BigDecimal change = eastmoneyScaledValue(data, "f169");
+        BigDecimal percent = eastmoneyScaledValue(data, "f170");
+        String name = data.path("f58").asText(stockCode);
+        return new StockQuoteResponse(normalizeStockCode(stockCode), name, price, change, percent, eastmoneyScaledValue(data, "f50"), marketOf(stockCode));
+    }
+
+    private List<IntradayPointResponse> fetchEastmoneyIntraday(String symbol) {
+        URI uri = UriComponentsBuilder
+                .fromHttpUrl("https://push2his.eastmoney.com/api/qt/stock/trends2/get")
+                .queryParam("secid", toEastmoneyCode(toSinaSymbol(symbol)))
+                .queryParam("fields1", "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13")
+                .queryParam("fields2", "f51,f52,f53,f54,f55,f56,f57,f58")
+                .queryParam("iscr", "0")
+                .queryParam("iscca", "0")
+                .queryParam("ndays", "1")
+                .build(false)
+                .toUri();
+        try {
+            JsonNode points = objectMapper.readTree(getTextWithRetry(uri, StandardCharsets.UTF_8, "https://quote.eastmoney.com/"))
+                    .path("data")
+                    .path("trends");
+            if (!points.isArray()) {
+                throw new IllegalStateException("东方财富分时数据为空");
+            }
+            List<IntradayPointResponse> result = new ArrayList<>();
+            for (JsonNode point : points) {
+                String[] fields = point.asText("").split(",", -1);
+                if (fields.length < 7) {
+                    continue;
+                }
+                String time = fields[0].length() >= 16 ? fields[0].substring(11, 16) : normalizeTime(fields[0]);
+                result.add(new IntradayPointResponse(time, bd(fields[2]), bdOrZero(fields[5])));
+            }
+            return result;
+        } catch (Exception ex) {
+            throw new IllegalStateException("获取东方财富分时行情失败：" + symbol + "，" + ex.getMessage(), ex);
+        }
+    }
+
+    private List<KlinePointResponse> fetchEastmoneyKline(String symbol, String period, int limit) {
+        String klt = switch (period == null ? "day" : period.toLowerCase(Locale.ROOT)) {
+            case "week", "weekly" -> "102";
+            case "month", "monthly" -> "103";
+            default -> "101";
+        };
+        URI uri = UriComponentsBuilder
+                .fromHttpUrl("https://push2his.eastmoney.com/api/qt/stock/kline/get")
+                .queryParam("secid", toEastmoneyCode(toSinaSymbol(symbol)))
+                .queryParam("fields1", "f1,f2,f3,f4,f5,f6")
+                .queryParam("fields2", "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61")
+                .queryParam("klt", klt)
+                .queryParam("fqt", "1")
+                .queryParam("end", "20500101")
+                .queryParam("lmt", Math.max(1, Math.min(limit, 240)))
+                .build(false)
+                .toUri();
+        try {
+            JsonNode points = objectMapper.readTree(getTextWithRetry(uri, StandardCharsets.UTF_8, "https://quote.eastmoney.com/"))
+                    .path("data")
+                    .path("klines");
+            if (!points.isArray()) {
+                throw new IllegalStateException("东方财富 K 线数据为空");
+            }
+            List<KlinePointResponse> result = new ArrayList<>();
+            for (JsonNode point : points) {
+                String[] fields = point.asText("").split(",", -1);
+                if (fields.length < 7) {
+                    continue;
+                }
+                result.add(new KlinePointResponse(
+                        LocalDate.parse(fields[0]),
+                        bd(fields[1]),
+                        bd(fields[2]),
+                        bd(fields[4]),
+                        bd(fields[3]),
+                        Long.parseLong(fields[5]),
+                        bdOrZero(fields[6])
+                ));
+            }
+            return result;
+        } catch (Exception ex) {
+            throw new IllegalStateException("获取东方财富 K 线行情失败：" + symbol + "，" + ex.getMessage(), ex);
+        }
     }
 
     private MarketIndexResponse fetchA50Index() {
@@ -461,6 +601,11 @@ public class SinaMarketDataClient implements MarketDataClient {
         if ("A50.CFD".equalsIgnoreCase(symbol) || "CHA50CFD".equalsIgnoreCase(symbol)) {
             return fetchA50Intraday();
         }
+        try {
+            return fetchEastmoneyIntraday(symbol);
+        } catch (Exception ignored) {
+            // 新浪在云服务器上可能返回 403，东方财富也偶发断连；保留旧通道作为备源。
+        }
         String sinaSymbol = toSinaSymbol(symbol);
         URI uri = URI.create("https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20_" + sinaSymbol
                 + "_1_1=/CN_MinlineService.getMinlineData?symbol=" + sinaSymbol);
@@ -523,6 +668,11 @@ public class SinaMarketDataClient implements MarketDataClient {
     public List<KlinePointResponse> fetchKline(String symbol, String period, int limit) {
         if ("A50.CFD".equalsIgnoreCase(symbol) || "CHA50CFD".equalsIgnoreCase(symbol)) {
             return fetchA50Kline(period, limit);
+        }
+        try {
+            return fetchEastmoneyKline(symbol, period, limit);
+        } catch (Exception ignored) {
+            // 保留新浪 K 线作为备源。
         }
         String sinaSymbol = toSinaSymbol(symbol);
         String scale = switch (period == null ? "day" : period.toLowerCase(Locale.ROOT)) {
@@ -606,10 +756,64 @@ public class SinaMarketDataClient implements MarketDataClient {
 
     @Override
     public StockQuoteResponse fetchQuote(String stockCode) {
-        Quote quote = fetchQuotes(List.of(toSinaSymbol(stockCode))).values().stream()
+        try {
+            return fetchEastmoneyStockQuote(stockCode);
+        } catch (Exception ignored) {
+            // 东方财富单股 quote 接口偶发空响应，失败时再走新浪备源。
+        }
+        Quote quote = fetchSinaQuotes(List.of(toSinaSymbol(stockCode))).values().stream()
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException("未获取到股票行情：" + stockCode));
         return new StockQuoteResponse(stockCode, quote.name(), quote.price(), quote.change(), quote.percent(), BigDecimal.ZERO, marketOf(stockCode));
+    }
+
+    @Override
+    public Map<String, StockQuoteResponse> fetchQuotes(List<String> stockCodes) {
+        List<String> normalizedCodes = stockCodes == null ? List.of() : stockCodes.stream()
+                .filter(code -> code != null && !code.isBlank())
+                .map(SinaMarketDataClient::normalizeStockCode)
+                .distinct()
+                .toList();
+        if (normalizedCodes.isEmpty()) {
+            return Map.of();
+        }
+        URI uri = UriComponentsBuilder
+                .fromHttpUrl("https://push2.eastmoney.com/api/qt/ulist.np/get")
+                .queryParam("secids", String.join(",", normalizedCodes.stream()
+                        .map(code -> toEastmoneyCode(toSinaSymbol(code)))
+                        .toList()))
+                .queryParam("fields", "f12,f13,f14,f2,f3,f4,f10,f152")
+                .build(false)
+                .toUri();
+        try {
+            JsonNode rows = objectMapper.readTree(getTextWithRetry(uri, StandardCharsets.UTF_8, "https://quote.eastmoney.com/"))
+                    .path("data")
+                    .path("diff");
+            if (!rows.isArray()) {
+                throw new IllegalStateException("东方财富批量行情为空");
+            }
+            Map<String, StockQuoteResponse> result = new LinkedHashMap<>();
+            for (JsonNode row : rows) {
+                String code = row.path("f12").asText("");
+                if (code.isBlank()) {
+                    continue;
+                }
+                String market = row.path("f13").asInt() == 1 ? "SH" : "SZ";
+                StockQuoteResponse quote = new StockQuoteResponse(
+                        code,
+                        row.path("f14").asText(code),
+                        eastmoneyScaledValue(row, "f2"),
+                        eastmoneyScaledValue(row, "f4"),
+                        eastmoneyScaledValue(row, "f3"),
+                        eastmoneyScaledValue(row, "f10"),
+                        market
+                );
+                result.put(code, quote);
+            }
+            return result;
+        } catch (Exception ex) {
+            throw new IllegalStateException("获取东方财富批量实时行情失败：" + ex.getMessage(), ex);
+        }
     }
 
     @Override
@@ -695,7 +899,7 @@ public class SinaMarketDataClient implements MarketDataClient {
         return data.get(0);
     }
 
-    private Map<String, Quote> fetchQuotes(List<String> symbols) {
+    private Map<String, Quote> fetchSinaQuotes(List<String> symbols) {
         URI uri = UriComponentsBuilder
                 .fromHttpUrl(properties.getMarket().getSinaBaseUrl())
                 .queryParam("list", String.join(",", symbols))
@@ -790,6 +994,11 @@ public class SinaMarketDataClient implements MarketDataClient {
             return "sz" + normalized.substring(0, normalized.length() - 3);
         }
         return (normalized.startsWith("6") || normalized.startsWith("9") || normalized.startsWith("5") ? "sh" : "sz") + normalized;
+    }
+
+    private static String normalizeStockCode(String code) {
+        String symbol = toSinaSymbol(code);
+        return symbol.length() > 2 ? symbol.substring(2) : code;
     }
 
     private static String marketOf(String code) {

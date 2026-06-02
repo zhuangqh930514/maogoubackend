@@ -5,9 +5,11 @@ public record SchedulerStatusResponse(
         long newsFixedRateMs,
         long intradayAnalysisFixedRateMs,
         String closeAnalysisCron,
+        String evolutionReviewCron,
         Integer intradayInterval,
         String closeTime,
         String analysisScope,
-        String nextCloseAnalysisTime
+        String nextCloseAnalysisTime,
+        String nextEvolutionReviewTime
 ) {
 }

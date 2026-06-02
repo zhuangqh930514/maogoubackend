@@ -8,6 +8,8 @@ import java.util.List;
 public interface WatchlistService {
     List<WatchStockResponse> list(String groupName);
 
+    List<String> codes(String groupName);
+
     WatchStockResponse add(AddWatchStockRequest request);
 
     void remove(String code);

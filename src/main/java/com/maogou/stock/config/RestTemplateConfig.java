@@ -26,6 +26,8 @@ public class RestTemplateConfig {
     public RestTemplate marketRestTemplate(RestTemplateBuilder builder, AppProperties properties) {
         Duration timeout = Duration.ofMillis(properties.getMarket().getTimeoutMs());
         return builder
+                .defaultHeader(HttpHeaders.USER_AGENT, "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
+                .defaultHeader(HttpHeaders.ACCEPT, "application/json,text/plain,*/*")
                 .setConnectTimeout(Duration.ofSeconds(3))
                 .setReadTimeout(timeout)
                 .build();

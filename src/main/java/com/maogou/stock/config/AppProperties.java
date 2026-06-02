@@ -168,6 +168,7 @@ public class AppProperties {
         private long newsFixedRateMs = 300000;
         private long intradayAnalysisFixedRateMs = 1800000;
         private String closeAnalysisCron = "0 30 15 * * MON-FRI";
+        private String evolutionReviewCron = "0 10 16 * * MON-FRI";
 
         public boolean isEnabled() {
             return enabled;
@@ -199,6 +200,14 @@ public class AppProperties {
 
         public void setCloseAnalysisCron(String closeAnalysisCron) {
             this.closeAnalysisCron = closeAnalysisCron;
+        }
+
+        public String getEvolutionReviewCron() {
+            return evolutionReviewCron;
+        }
+
+        public void setEvolutionReviewCron(String evolutionReviewCron) {
+            this.evolutionReviewCron = evolutionReviewCron;
         }
     }
 

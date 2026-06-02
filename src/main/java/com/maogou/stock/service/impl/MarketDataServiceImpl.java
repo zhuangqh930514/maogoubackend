@@ -3,12 +3,17 @@ package com.maogou.stock.service.impl;
 import com.maogou.stock.config.AppProperties;
 import com.maogou.stock.dto.market.*;
 import com.maogou.stock.infrastructure.market.MarketDataClient;
+import com.maogou.stock.infrastructure.market.MockMarketDataClient;
 import com.maogou.stock.service.MarketDataService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.function.Supplier;
@@ -16,12 +21,20 @@ import java.util.function.Supplier;
 @Service
 public class MarketDataServiceImpl implements MarketDataService {
 
+    private static final Logger log = LoggerFactory.getLogger(MarketDataServiceImpl.class);
+
     private final MarketDataClient marketDataClient;
+    private final MarketDataClient fallbackMarketDataClient = new MockMarketDataClient();
     private final AppProperties properties;
     private final ConcurrentMap<String, CacheEntry<StockQuoteResponse>> quoteCache = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, CacheEntry<FinanceSnapshotResponse>> financeCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, CacheEntry<List<NewsFlashResponse>>> newsCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, CacheEntry<List<MarketIndexResponse>>> indexCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, CacheEntry<MarketBreadthResponse>> breadthCache = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, CacheEntry<SectorHeatmapResponse>> sectorHeatmapCache = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, CacheEntry<List<SectorHotStockResponse>>> hotStocksCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, CacheEntry<List<IntradayPointResponse>>> intradayCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, CacheEntry<List<KlinePointResponse>>> klineCache = new ConcurrentHashMap<>();
 
     public MarketDataServiceImpl(MarketDataClient marketDataClient, AppProperties properties) {
         this.marketDataClient = marketDataClient;
@@ -38,37 +51,58 @@ public class MarketDataServiceImpl implements MarketDataService {
 
     @Override
     public List<NewsFlashResponse> latestNews(int limit) {
-        return marketDataClient.fetchLatestNews(limit);
+        int size = Math.max(1, Math.min(limit, 50));
+        return cachedWithFallback(
+                newsCache,
+                "latest:" + size,
+                Duration.ofMinutes(5),
+                () -> marketDataClient.fetchLatestNews(size),
+                () -> fallbackMarketDataClient.fetchLatestNews(size)
+        );
     }
 
     @Override
     public List<MarketIndexResponse> coreIndexes() {
-        return marketDataClient.fetchCoreIndexes();
+        return cachedWithFallback(
+                indexCache,
+                "core-indexes",
+                Duration.ofSeconds(properties.getMarket().getQuoteCacheTtlSeconds()),
+                marketDataClient::fetchCoreIndexes,
+                fallbackMarketDataClient::fetchCoreIndexes
+        );
     }
 
     @Override
     public MarketBreadthResponse marketBreadth() {
-        return marketDataClient.fetchMarketBreadth();
+        return cachedWithFallback(
+                breadthCache,
+                "market-breadth",
+                Duration.ofSeconds(30),
+                marketDataClient::fetchMarketBreadth,
+                fallbackMarketDataClient::fetchMarketBreadth
+        );
     }
 
     @Override
     public SectorHeatmapResponse sectorHeatmap() {
-        return cachedWithStaleFallback(
+        return cachedWithFallback(
                 sectorHeatmapCache,
                 "sector-heatmap",
                 Duration.ofSeconds(properties.getMarket().getSectorHeatmapCacheTtlSeconds()),
-                marketDataClient::fetchSectorHeatmap
+                marketDataClient::fetchSectorHeatmap,
+                fallbackMarketDataClient::fetchSectorHeatmap
         );
     }
 
     @Override
     public List<SectorHotStockResponse> marketHotStocks(int limit) {
         int size = Math.max(1, Math.min(limit, 20));
-        return cachedWithStaleFallback(
+        return cachedWithFallback(
                 hotStocksCache,
                 "market:" + size,
                 Duration.ofSeconds(properties.getMarket().getSectorHotStocksCacheTtlSeconds()),
-                () -> marketDataClient.fetchMarketHotStocks(size)
+                () -> marketDataClient.fetchMarketHotStocks(size),
+                () -> fallbackMarketDataClient.fetchMarketHotStocks(size)
         );
     }
 
@@ -79,22 +113,39 @@ public class MarketDataServiceImpl implements MarketDataService {
         }
         String normalizedCode = sectorCode.trim();
         int size = Math.max(1, Math.min(limit, 20));
-        return cachedWithStaleFallback(
+        return cachedWithFallback(
                 hotStocksCache,
                 "sector:" + normalizedCode + ":" + size,
                 Duration.ofSeconds(properties.getMarket().getSectorHotStocksCacheTtlSeconds()),
-                () -> marketDataClient.fetchSectorHotStocks(normalizedCode, size)
+                () -> marketDataClient.fetchSectorHotStocks(normalizedCode, size),
+                () -> fallbackMarketDataClient.fetchSectorHotStocks(normalizedCode, size)
         );
     }
 
     @Override
     public List<IntradayPointResponse> intraday(String symbol) {
-        return marketDataClient.fetchIntraday(symbol);
+        String normalizedCode = normalizeCode(symbol);
+        return cachedWithFallback(
+                intradayCache,
+                normalizedCode,
+                Duration.ofSeconds(properties.getMarket().getQuoteCacheTtlSeconds()),
+                () -> marketDataClient.fetchIntraday(normalizedCode),
+                () -> fallbackMarketDataClient.fetchIntraday(normalizedCode)
+        );
     }
 
     @Override
     public List<KlinePointResponse> kline(String symbol, String period, int limit) {
-        return marketDataClient.fetchKline(symbol, period, limit);
+        String normalizedCode = normalizeCode(symbol);
+        String normalizedPeriod = period == null || period.isBlank() ? "day" : period.trim();
+        int size = Math.max(1, Math.min(limit, 240));
+        return cachedWithFallback(
+                klineCache,
+                normalizedCode + ":" + normalizedPeriod + ":" + size,
+                Duration.ofMinutes(5),
+                () -> marketDataClient.fetchKline(normalizedCode, normalizedPeriod, size),
+                () -> fallbackMarketDataClient.fetchKline(normalizedCode, normalizedPeriod, size)
+        );
     }
 
     @Override
@@ -116,22 +167,81 @@ public class MarketDataServiceImpl implements MarketDataService {
     @Override
     public StockQuoteResponse quote(String code) {
         String normalizedCode = normalizeCode(code);
-        return cached(
+        return cachedWithFallback(
                 quoteCache,
                 normalizedCode,
                 Duration.ofSeconds(properties.getMarket().getQuoteCacheTtlSeconds()),
-                () -> marketDataClient.fetchQuote(normalizedCode)
+                () -> marketDataClient.fetchQuote(normalizedCode),
+                () -> fallbackMarketDataClient.fetchQuote(normalizedCode)
         );
+    }
+
+    @Override
+    public Map<String, StockQuoteResponse> quotes(List<String> codes) {
+        Map<String, StockQuoteResponse> result = new LinkedHashMap<>();
+        if (codes == null || codes.isEmpty()) {
+            return result;
+        }
+
+        long now = System.currentTimeMillis();
+        long ttlMillis = Duration.ofSeconds(properties.getMarket().getQuoteCacheTtlSeconds()).toMillis();
+        List<String> missingCodes = codes.stream()
+                .map(MarketDataServiceImpl::normalizeCode)
+                .filter(code -> !code.isBlank())
+                .distinct()
+                .filter(code -> {
+                    CacheEntry<StockQuoteResponse> existing = quoteCache.get(code);
+                    if (existing != null && (ttlMillis <= 0 || existing.expiresAtMillis > now)) {
+                        result.put(code, existing.value);
+                        return false;
+                    }
+                    return true;
+                })
+                .toList();
+
+        if (!missingCodes.isEmpty()) {
+            try {
+                Map<String, StockQuoteResponse> loadedQuotes = marketDataClient.fetchQuotes(missingCodes);
+                long expiresAt = ttlMillis <= 0 ? 0 : System.currentTimeMillis() + ttlMillis;
+                for (String code : missingCodes) {
+                    StockQuoteResponse quote = loadedQuotes.get(code);
+                    if (quote == null) {
+                        quote = loadedQuotes.get(stockCodeKey(code));
+                    }
+                    if (quote != null) {
+                        quoteCache.put(code, new CacheEntry<>(quote, expiresAt));
+                        result.put(code, quote);
+                    }
+                }
+            } catch (RuntimeException ex) {
+                log.warn("batch market quote source failed, return stale or fallback data, codes={}", missingCodes, ex);
+            }
+        }
+
+        for (String rawCode : codes) {
+            String code = normalizeCode(rawCode);
+            if (code.isBlank() || result.containsKey(code)) {
+                continue;
+            }
+            CacheEntry<StockQuoteResponse> stale = quoteCache.get(code);
+            if (stale != null) {
+                result.put(code, stale.value);
+                continue;
+            }
+            result.put(code, fallbackMarketDataClient.fetchQuote(code));
+        }
+        return result;
     }
 
     @Override
     public FinanceSnapshotResponse finance(String code) {
         String normalizedCode = normalizeCode(code);
-        return cached(
+        return cachedWithFallback(
                 financeCache,
                 normalizedCode,
                 Duration.ofSeconds(properties.getMarket().getFinanceCacheTtlSeconds()),
-                () -> marketDataClient.fetchFinance(normalizedCode)
+                () -> marketDataClient.fetchFinance(normalizedCode),
+                () -> fallbackMarketDataClient.fetchFinance(normalizedCode)
         );
     }
 
@@ -159,25 +269,39 @@ public class MarketDataServiceImpl implements MarketDataService {
         }).value;
     }
 
-    private static <T> T cachedWithStaleFallback(
+    private static <T> T cachedWithFallback(
             ConcurrentMap<String, CacheEntry<T>> cache,
             String key,
             Duration ttl,
-            Supplier<T> loader
+            Supplier<T> loader,
+            Supplier<T> fallback
     ) {
         try {
             return cached(cache, key, ttl, loader);
         } catch (RuntimeException ex) {
             CacheEntry<T> existing = cache.get(key);
             if (existing != null) {
+                log.warn("market data source failed, return stale cache, key={}", key, ex);
                 return existing.value;
             }
-            throw ex;
+            log.warn("market data source failed, return fallback data, key={}", key, ex);
+            return fallback.get();
         }
     }
 
     private static String normalizeCode(String code) {
         return code == null ? "" : code.trim();
+    }
+
+    private static String stockCodeKey(String code) {
+        String normalized = normalizeCode(code).toLowerCase();
+        if ((normalized.startsWith("sh") || normalized.startsWith("sz")) && normalized.length() > 2) {
+            return normalized.substring(2);
+        }
+        if (normalized.endsWith(".sh") || normalized.endsWith(".sz")) {
+            return normalized.substring(0, normalized.length() - 3);
+        }
+        return normalized;
     }
 
     private static String adviceByPercent(BigDecimal percent) {

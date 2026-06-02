@@ -2,7 +2,9 @@ package com.maogou.stock.infrastructure.market;
 
 import com.maogou.stock.dto.market.*;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 public interface MarketDataClient {
     List<StockSearchResponse> searchStocks(String keyword, int limit);
@@ -24,6 +26,18 @@ public interface MarketDataClient {
     List<KlinePointResponse> fetchKline(String symbol, String period, int limit);
 
     StockQuoteResponse fetchQuote(String stockCode);
+
+    default Map<String, StockQuoteResponse> fetchQuotes(List<String> stockCodes) {
+        Map<String, StockQuoteResponse> quotes = new LinkedHashMap<>();
+        if (stockCodes == null) {
+            return quotes;
+        }
+        for (String stockCode : stockCodes) {
+            StockQuoteResponse quote = fetchQuote(stockCode);
+            quotes.put(stockCode, quote);
+        }
+        return quotes;
+    }
 
     FinanceSnapshotResponse fetchFinance(String stockCode);
 }

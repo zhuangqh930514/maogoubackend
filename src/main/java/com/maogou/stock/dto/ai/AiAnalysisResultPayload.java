@@ -3,12 +3,35 @@ package com.maogou.stock.dto.ai;
 import java.util.List;
 
 public record AiAnalysisResultPayload(
+        DecisionPayload decision,
         TechnicalAnalysisPayload technicalAnalysis,
         RiskWarningPayload riskWarning,
         BuySellPointsPayload buySellPoints,
         PromptSummaryPayload promptSummary,
         Integer score
 ) {
+    public record DecisionPayload(
+            String decision,
+            Double confidence,
+            String holdingPeriod,
+            String targetDirection,
+            String riskLevel,
+            String summary,
+            List<FactorPayload> factors
+    ) {
+    }
+
+    public record FactorPayload(
+            String code,
+            String name,
+            String group,
+            Boolean hit,
+            Double weight,
+            String direction,
+            String reason
+    ) {
+    }
+
     public record TechnicalAnalysisPayload(
             String trendAssessment,
             TrendPayload trend,

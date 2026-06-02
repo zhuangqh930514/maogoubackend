@@ -34,6 +34,11 @@ public class WatchlistController {
         return ApiResponse.ok(watchlistService.list(groupName));
     }
 
+    @GetMapping("/codes")
+    public ApiResponse<List<String>> codes(@RequestParam(required = false) String groupName) {
+        return ApiResponse.ok(watchlistService.codes(groupName));
+    }
+
     @PostMapping
     public ApiResponse<WatchStockResponse> add(@RequestBody @Valid AddWatchStockRequest request) {
         return ApiResponse.ok(watchlistService.add(request));
