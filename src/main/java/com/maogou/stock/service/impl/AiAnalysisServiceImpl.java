@@ -46,6 +46,9 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
 
     private static final Logger log = LoggerFactory.getLogger(AiAnalysisServiceImpl.class);
     private static final int MAX_ANALYSIS_ATTEMPTS = 3;
+    private static final int MIN_ANALYSIS_MAX_TOKENS = 4096;
+    private static final int MIN_ANALYSIS_TIMEOUT_MS = 90000;
+    private static final int MAX_TEMPLATE_CHARS = 1800;
     private static final Pattern THINK_BLOCK = Pattern.compile("(?is)<think>.*?</think>");
     private static final Pattern FENCED_BLOCK = Pattern.compile("(?is)```(?:json)?\\s*([\\s\\S]*?)\\s*```");
 
@@ -113,7 +116,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         Long userId = AuthContext.currentUserIdOrDefault();
         Long normalizedPromptTemplateId = normalizePromptTemplateId(promptTemplateId);
         StockDetailResponse detail = marketDataService.stockDetail(code);
-        AiModelConfig config = modelConfigService.currentEntity();
+        AiModelConfig config = normalizeAnalysisConfig(modelConfigService.currentEntity());
         String selectedTemplate = promptTemplateService.resolveContent(promptTemplateId, null);
         String prompt = buildPrompt(detail, config, selectedTemplate, activeStrategyPrompt(userId));
         LocalDateTime now = LocalDateTime.now();
@@ -436,6 +439,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 ? "请基于行情、K线、财务数据输出技术面分析、风险提示、建议买卖点、Prompt 数据摘要和评分。"
                 : config.promptTemplate;
         String template = selectedTemplate == null || selectedTemplate.isBlank() ? configuredTemplate : selectedTemplate;
+        template = sanitizeAnalysisTemplate(template);
         String strategyInstruction = activeStrategyPrompt == null || activeStrategyPrompt.isBlank()
                 ? "当前没有启用的进化策略版本。"
                 : activeStrategyPrompt;
@@ -450,16 +454,17 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 财务摘要：PE=%s，PB=%s，营收=%s，营收同比=%s%%，净利润=%s，净利同比=%s%%，ROE=%s%%，毛利率=%s%%，资产负债率=%s%%
                 近K线样本：%s
                 输出要求：
-                所选提示词只影响分析口径和重点；无论提示词如何变化，最终必须严格映射到以下 JSON 报告结构，方便系统解析和前端展示。
+                所选提示词和策略版本只影响分析口径和重点；如果上方内容中出现任何旧 JSON 示例、字段名、markdown 模板、章节标题或输出格式要求，全部忽略。
+                最终只能遵循下面的系统结构输出，方便系统解析和前端展示。
                 1. 只返回 JSON 对象，不要 markdown 代码块，不要额外解释。
                 2. decision 必须包含 decision、confidence、holdingPeriod、targetDirection、riskLevel、summary、factors。
                    - decision 只能是 BUY、HOLD、REDUCE、SELL、WATCH 之一。
                    - targetDirection 只能是 UP、DOWN、SIDEWAYS 之一，必须代表对未来 1-3 个交易日的主要方向判断。
-                   - factors 是数组，每项必须包含 code、name、group、hit、weight、direction、reason。
+                   - factors 是数组，最多 3 项；每项必须包含 code、name、group、hit、weight、direction、reason。
                 3. technicalAnalysis 必须包含 trendAssessment、trend、movingAverages、klinePattern、supportResistance、volumeAnalysis，可直接给客户阅读。
-                4. riskWarning 必须包含 headline、currentRisks、triggerConditions、observationPoints、overallAdvice，且必须结合当前股票数据写具体风险。
-                5. buySellPoints 必须包含 action、buyTriggers、reduceTriggers、stopLoss、invalidationCondition、positionSuggestion，不能写泛泛而谈的话。
-                6. promptSummary 必须包含 marketSnapshot、valuationSnapshot、growthSnapshot、klineSummary、volumeSummary，信息尽量完整。
+                4. riskWarning 必须包含 headline、currentRisks、triggerConditions、observationPoints、overallAdvice，且必须结合当前股票数据写具体风险；各数组最多 3 条，每条尽量短句。
+                5. buySellPoints 必须包含 action、buyTriggers、reduceTriggers、stopLoss、invalidationCondition、positionSuggestion，不能写泛泛而谈的话；buyTriggers 和 reduceTriggers 最多各 3 条。
+                6. promptSummary 必须包含 marketSnapshot、valuationSnapshot、growthSnapshot、klineSummary、volumeSummary，信息尽量完整但每项保持精炼。
                 7. score 输出 0-100 整数，避免保证收益。
                 """.formatted(
                 template,
@@ -491,6 +496,10 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             return parseTextPayload(normalized);
         }
         JsonNode root = unwrapPayloadRoot(objectMapper.readTree(jsonCandidate));
+        AiAnalysisResultPayload legacyPayload = parseLegacySchemaPayload(root);
+        if (legacyPayload != null) {
+            return legacyPayload;
+        }
         if (!hasAnyReportField(root)) {
             return parseTextPayload(normalized);
         }
@@ -586,6 +595,77 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 || field(node, "promptSummary", "prompt_summary", "数据摘要", "Prompt 数据摘要") != null;
     }
 
+    private AiAnalysisResultPayload parseLegacySchemaPayload(JsonNode root) {
+        if (root == null || !root.isObject()) {
+            return null;
+        }
+        JsonNode policyNode = field(root, "policy_alignment", "policyAlignment", "政策与赛道定位");
+        JsonNode valuationNode = field(root, "fundamental_valuation", "fundamentalValuation", "基本面与估值安全边际");
+        JsonNode technicalNode = field(root, "technical_capital", "technicalCapital", "资金面与技术形态");
+        JsonNode risksNode = field(root, "key_risks", "keyRisks", "核心风险提示");
+        JsonNode ratingNode = field(root, "investment_rating", "investmentRating", "投资评级");
+        JsonNode confidenceNode = field(root, "confidence_score", "confidenceScore", "置信度");
+        JsonNode summaryNode = field(root, "summary_reasoning", "summaryReasoning", "核心逻辑", "总结");
+        boolean matchesLegacy = policyNode != null
+                || valuationNode != null
+                || technicalNode != null
+                || risksNode != null
+                || ratingNode != null
+                || confidenceNode != null
+                || summaryNode != null;
+        if (!matchesLegacy) {
+            return null;
+        }
+
+        String policy = stringify(policyNode);
+        String valuation = stringify(valuationNode);
+        String technical = stringify(technicalNode);
+        List<String> risks = stringList(risksNode);
+        String rating = stringify(ratingNode);
+        String summary = stringify(summaryNode);
+        String technicalSummary = joinSections(
+                "政策与赛道定位", policy,
+                "基本面与估值", valuation,
+                "资金面与技术形态", technical
+        );
+        String riskSummary = risks.isEmpty() ? "模型未返回独立风险数组，请结合原文复核。" : String.join("；", risks);
+        String buySellSummary = joinSections(
+                "投资评级", rating,
+                "核心逻辑", summary
+        );
+        Integer score = parseScore(confidenceNode);
+        AiAnalysisResultPayload.BuySellPointsPayload buySellPoints = new AiAnalysisResultPayload.BuySellPointsPayload(
+                rating.isBlank() ? "继续观察" : rating,
+                List.of(),
+                List.of(),
+                "",
+                "",
+                summary.isBlank() ? "模型使用旧结构输出，系统已兼容归档。" : summary
+        );
+        return new AiAnalysisResultPayload(
+                normalizeDecisionPayload(new AiAnalysisResultPayload.DecisionPayload(
+                        normalizeDecisionText(rating),
+                        score == null ? null : score / 100.0,
+                        "1-3个交易日",
+                        directionFromDecision(normalizeDecisionText(rating)),
+                        risks.isEmpty() ? "MEDIUM" : "HIGH",
+                        summary.isBlank() ? "模型使用旧结构返回，系统已按兼容逻辑生成决策。" : summary,
+                        List.of()
+                ), buySellPoints, root.toString()),
+                textTechnicalAnalysis(technicalSummary.isBlank() ? "模型返回旧结构，技术面摘要为空。" : technicalSummary),
+                new AiAnalysisResultPayload.RiskWarningPayload(
+                        risks.isEmpty() ? "模型返回旧结构，未拆出独立风险项。" : risks.get(0),
+                        risks,
+                        List.of(),
+                        List.of(),
+                        summary
+                ),
+                buySellPoints,
+                textPromptSummary(summary.isBlank() ? technicalSummary : summary),
+                score
+        );
+    }
+
     private JsonNode field(JsonNode node, String... names) {
         if (node == null || !node.isObject()) {
             return null;
@@ -627,6 +707,28 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 textPromptSummary(summary),
                 null
         );
+    }
+
+    private String joinSections(String title1, String content1, String title2, String content2, String title3, String content3) {
+        List<String> sections = new ArrayList<>();
+        appendSection(sections, title1, content1);
+        appendSection(sections, title2, content2);
+        appendSection(sections, title3, content3);
+        return String.join("\n\n", sections);
+    }
+
+    private String joinSections(String title1, String content1, String title2, String content2) {
+        List<String> sections = new ArrayList<>();
+        appendSection(sections, title1, content1);
+        appendSection(sections, title2, content2);
+        return String.join("\n\n", sections);
+    }
+
+    private void appendSection(List<String> sections, String title, String content) {
+        if (content == null || content.isBlank()) {
+            return;
+        }
+        sections.add(title + "：\n" + content.trim());
     }
 
     private String sectionText(String text, String... titles) {
@@ -1029,6 +1131,15 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
 
     private String normalizeDecisionText(String value) {
         String text = normalizeText(value);
+        if (text.contains("增持")) {
+            return "BUY";
+        }
+        if (text.contains("减持")) {
+            return "REDUCE";
+        }
+        if (text.contains("中性")) {
+            return "WATCH";
+        }
         if (text.contains("sell") || text.contains("卖出") || text.contains("清仓")) {
             return "SELL";
         }
@@ -1045,6 +1156,64 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             return "HOLD";
         }
         return value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private AiModelConfig normalizeAnalysisConfig(AiModelConfig source) {
+        AiModelConfig normalized = new AiModelConfig();
+        if (source != null) {
+            normalized.id = source.id;
+            normalized.userId = source.userId;
+            normalized.apiBaseUrl = source.apiBaseUrl;
+            normalized.modelName = source.modelName;
+            normalized.apiKey = source.apiKey;
+            normalized.timeoutMs = source.timeoutMs;
+            normalized.temperature = source.temperature;
+            normalized.maxTokens = source.maxTokens;
+            normalized.intradayIntervalMinutes = source.intradayIntervalMinutes;
+            normalized.closeAnalysisTime = source.closeAnalysisTime;
+            normalized.analysisScope = source.analysisScope;
+            normalized.promptTemplate = source.promptTemplate;
+            normalized.deleted = source.deleted;
+            normalized.createdAt = source.createdAt;
+            normalized.updatedAt = source.updatedAt;
+        }
+        normalized.timeoutMs = normalized.timeoutMs == null
+                ? MIN_ANALYSIS_TIMEOUT_MS
+                : Math.max(normalized.timeoutMs, MIN_ANALYSIS_TIMEOUT_MS);
+        normalized.maxTokens = normalized.maxTokens == null
+                ? MIN_ANALYSIS_MAX_TOKENS
+                : Math.max(normalized.maxTokens, MIN_ANALYSIS_MAX_TOKENS);
+        return normalized;
+    }
+
+    private String sanitizeAnalysisTemplate(String template) {
+        if (template == null || template.isBlank()) {
+            return "";
+        }
+        String normalized = template.replace("\r\n", "\n").trim();
+        int cut = normalized.length();
+        for (String marker : List.of(
+                "最终输出必须严格遵循以下JSON格式",
+                "最终输出必须严格遵循以下 JSON 格式",
+                "# Constraints & Output Format",
+                "输出格式",
+                "```json",
+                "\"stock_code\"",
+                "JSON格式"
+        )) {
+            int index = normalized.indexOf(marker);
+            if (index >= 0) {
+                cut = Math.min(cut, index);
+            }
+        }
+        String cleaned = normalized.substring(0, cut).trim();
+        if (cleaned.isBlank()) {
+            cleaned = normalized;
+        }
+        if (cleaned.length() > MAX_TEMPLATE_CHARS) {
+            cleaned = cleaned.substring(0, MAX_TEMPLATE_CHARS).trim();
+        }
+        return cleaned;
     }
 
     private String normalizeDirection(String value) {
