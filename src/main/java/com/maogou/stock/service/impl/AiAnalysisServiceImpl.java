@@ -17,6 +17,7 @@ import com.maogou.stock.infrastructure.ai.LocalAiClient;
 import com.maogou.stock.mapper.AiAnalysisDecisionMapper;
 import com.maogou.stock.mapper.AiAnalysisReportMapper;
 import com.maogou.stock.mapper.AiStrategyVersionMapper;
+import com.maogou.stock.mapper.WatchStockMapper;
 import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.AiAnalysisService;
 import com.maogou.stock.service.MarketDataService;
@@ -49,12 +50,14 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
     private static final int MIN_ANALYSIS_MAX_TOKENS = 4096;
     private static final int MIN_ANALYSIS_TIMEOUT_MS = 90000;
     private static final int MAX_TEMPLATE_CHARS = 1800;
+    private static final String UNKNOWN_STOCK_NAME = "未知股票";
     private static final Pattern THINK_BLOCK = Pattern.compile("(?is)<think>.*?</think>");
     private static final Pattern FENCED_BLOCK = Pattern.compile("(?is)```(?:json)?\\s*([\\s\\S]*?)\\s*```");
 
     private final AiAnalysisReportMapper reportMapper;
     private final AiAnalysisDecisionMapper decisionMapper;
     private final AiStrategyVersionMapper strategyVersionMapper;
+    private final WatchStockMapper watchStockMapper;
     private final MarketDataService marketDataService;
     private final WatchlistService watchlistService;
     private final ModelConfigService modelConfigService;
@@ -66,6 +69,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             AiAnalysisReportMapper reportMapper,
             AiAnalysisDecisionMapper decisionMapper,
             AiStrategyVersionMapper strategyVersionMapper,
+            WatchStockMapper watchStockMapper,
             MarketDataService marketDataService,
             WatchlistService watchlistService,
             ModelConfigService modelConfigService,
@@ -76,6 +80,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         this.reportMapper = reportMapper;
         this.decisionMapper = decisionMapper;
         this.strategyVersionMapper = strategyVersionMapper;
+        this.watchStockMapper = watchStockMapper;
         this.marketDataService = marketDataService;
         this.watchlistService = watchlistService;
         this.modelConfigService = modelConfigService;
@@ -124,7 +129,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         AiAnalysisReport report = resolveTargetReport(targetReportId, detail.quote().code(), config.modelName, reportDate, now);
         report.userId = userId;
         report.stockCode = detail.quote().code();
-        report.stockName = detail.quote().name();
+        report.stockName = resolveStockName(userId, report.stockCode, detail.quote().name());
         report.rawPrompt = prompt;
         report.sourceModel = config.modelName;
         report.promptTemplateId = normalizedPromptTemplateId;
@@ -278,6 +283,57 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         } else {
             decisionMapper.updateById(entity);
         }
+    }
+
+    private String resolveStockName(Long userId, String stockCode, String suggestedName) {
+        if (hasMeaningfulStockName(suggestedName)) {
+            return suggestedName.trim();
+        }
+        String knownFromUserReports = findKnownStockName(userId, stockCode);
+        if (knownFromUserReports != null) {
+            return knownFromUserReports;
+        }
+        if (userId != null) {
+            var watchStock = watchStockMapper.selectAnyByUserIdAndCode(userId, stockCode);
+            if (watchStock != null && hasMeaningfulStockName(watchStock.stockName)) {
+                return watchStock.stockName.trim();
+            }
+        }
+        String knownFromGlobalReports = findKnownStockName(null, stockCode);
+        if (knownFromGlobalReports != null) {
+            return knownFromGlobalReports;
+        }
+        return stockCode;
+    }
+
+    private String findKnownStockName(Long userId, String stockCode) {
+        if (stockCode == null || stockCode.isBlank()) {
+            return null;
+        }
+        QueryWrapper<AiAnalysisReport> wrapper = new QueryWrapper<AiAnalysisReport>()
+                .select("stock_name")
+                .eq("stock_code", stockCode)
+                .eq("deleted", 0)
+                .isNotNull("stock_name")
+                .notIn("stock_name", UNKNOWN_STOCK_NAME, stockCode)
+                .orderByDesc("generated_at")
+                .last("LIMIT 1");
+        if (userId != null) {
+            wrapper.eq("user_id", userId);
+        }
+        AiAnalysisReport existing = reportMapper.selectOne(wrapper);
+        if (existing == null || !hasMeaningfulStockName(existing.stockName)) {
+            return null;
+        }
+        return existing.stockName.trim();
+    }
+
+    private boolean hasMeaningfulStockName(String stockName) {
+        if (stockName == null) {
+            return false;
+        }
+        String normalized = stockName.trim();
+        return !normalized.isBlank() && !UNKNOWN_STOCK_NAME.equals(normalized);
     }
 
     private AnalysisAttemptResult executeAnalysisWithRetry(String prompt, AiModelConfig config) throws Exception {

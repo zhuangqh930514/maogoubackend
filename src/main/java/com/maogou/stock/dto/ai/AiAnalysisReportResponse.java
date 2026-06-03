@@ -20,9 +20,13 @@ public record AiAnalysisReportResponse(
         String errorMessage
 ) {
     public static AiAnalysisReportResponse from(AiAnalysisReport entity) {
+        String stockName = entity.stockName;
+        if (stockName == null || stockName.isBlank() || "未知股票".equals(stockName.trim())) {
+            stockName = entity.stockCode;
+        }
         return new AiAnalysisReportResponse(
                 entity.id,
-                entity.stockName,
+                stockName,
                 entity.stockCode,
                 entity.score,
                 entity.advice,
