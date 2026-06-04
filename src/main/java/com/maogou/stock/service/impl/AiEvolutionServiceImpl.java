@@ -560,7 +560,7 @@ public class AiEvolutionServiceImpl implements AiEvolutionService {
             stat.lastEvaluatedAt = LocalDateTime.now();
             stat.createdAt = stat.lastEvaluatedAt;
             stat.updatedAt = stat.lastEvaluatedAt;
-            factorStatMapper.insert(stat);
+            factorStatMapper.upsert(stat);
         }
     }
 

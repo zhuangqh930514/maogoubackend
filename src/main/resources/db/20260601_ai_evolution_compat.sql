@@ -3,6 +3,9 @@
 -- Existing databases that already have old ai_* tables should run this script once.
 
 DROP PROCEDURE IF EXISTS maogou_add_column_if_missing;
+DROP PROCEDURE IF EXISTS maogou_modify_column_if_exists;
+DROP PROCEDURE IF EXISTS maogou_drop_index_if_exists;
+DROP PROCEDURE IF EXISTS maogou_add_index_if_missing;
 
 DELIMITER //
 CREATE PROCEDURE maogou_add_column_if_missing(
@@ -24,7 +27,77 @@ BEGIN
         DEALLOCATE PREPARE stmt;
     END IF;
 END//
+
+CREATE PROCEDURE maogou_modify_column_if_exists(
+    IN p_table_name VARCHAR(64),
+    IN p_column_name VARCHAR(64),
+    IN p_column_definition TEXT
+)
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = p_table_name
+          AND COLUMN_NAME = p_column_name
+    ) THEN
+        SET @ddl = CONCAT('ALTER TABLE `', p_table_name, '` MODIFY COLUMN `', p_column_name, '` ', p_column_definition);
+        PREPARE stmt FROM @ddl;
+        EXECUTE stmt;
+        DEALLOCATE PREPARE stmt;
+    END IF;
+END//
+
+CREATE PROCEDURE maogou_drop_index_if_exists(
+    IN p_table_name VARCHAR(64),
+    IN p_index_name VARCHAR(64)
+)
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.STATISTICS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = p_table_name
+          AND INDEX_NAME = p_index_name
+    ) THEN
+        SET @ddl = CONCAT('ALTER TABLE `', p_table_name, '` DROP INDEX `', p_index_name, '`');
+        PREPARE stmt FROM @ddl;
+        EXECUTE stmt;
+        DEALLOCATE PREPARE stmt;
+    END IF;
+END//
+
+CREATE PROCEDURE maogou_add_index_if_missing(
+    IN p_table_name VARCHAR(64),
+    IN p_index_name VARCHAR(64),
+    IN p_index_definition TEXT
+)
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.STATISTICS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = p_table_name
+          AND INDEX_NAME = p_index_name
+    ) THEN
+        SET @ddl = CONCAT('ALTER TABLE `', p_table_name, '` ADD ', p_index_definition);
+        PREPARE stmt FROM @ddl;
+        EXECUTE stmt;
+        DEALLOCATE PREPARE stmt;
+    END IF;
+END//
 DELIMITER ;
+
+-- Early prototype tables had verify_date as a required legacy column. Current code uses report_date/evaluated_at.
+CALL maogou_modify_column_if_exists('ai_analysis_outcome', 'verify_date', 'DATE NULL DEFAULT NULL');
+-- Early prototype tables had factor_category as a required legacy column. Current code uses factor_group.
+CALL maogou_modify_column_if_exists('ai_analysis_factor_hit', 'factor_category', 'VARCHAR(32) NULL DEFAULT NULL');
+-- Early prototype tables had name as a required legacy column. Current code uses title.
+CALL maogou_modify_column_if_exists('ai_strategy_version', 'name', 'VARCHAR(128) NULL DEFAULT NULL');
+-- Early prototype tables had event_type as a required legacy column. Current code uses action_type.
+CALL maogou_modify_column_if_exists('ai_strategy_evolution_log', 'event_type', 'VARCHAR(32) NULL DEFAULT NULL');
+-- Early prototype tables had title as a required legacy column. Current code uses action_summary.
+CALL maogou_modify_column_if_exists('ai_strategy_evolution_log', 'title', 'VARCHAR(512) NULL DEFAULT NULL');
 
 CALL maogou_add_column_if_missing('ai_analysis_outcome', 'stock_name', 'VARCHAR(64) NULL');
 CALL maogou_add_column_if_missing('ai_analysis_outcome', 'report_date', 'DATE NULL');
@@ -63,7 +136,16 @@ CALL maogou_add_column_if_missing('ai_strategy_version', 'active', 'TINYINT NOT 
 CALL maogou_add_column_if_missing('ai_strategy_evolution_log', 'action_type', 'VARCHAR(32) NOT NULL DEFAULT ''UNKNOWN''');
 CALL maogou_add_column_if_missing('ai_strategy_evolution_log', 'action_summary', 'VARCHAR(512) NULL');
 
+-- The prototype unique key used report_id + holding_day. Current code verifies multiple horizons through horizon_days.
+CALL maogou_drop_index_if_exists('ai_analysis_outcome', 'uk_ai_outcome_report_day');
+CALL maogou_add_index_if_missing('ai_analysis_outcome', 'uk_ai_outcome_report_horizon', 'UNIQUE KEY `uk_ai_outcome_report_horizon` (`user_id`, `report_id`, `horizon_days`, `deleted`)');
+CALL maogou_add_index_if_missing('ai_analysis_outcome', 'idx_ai_outcome_user_eval', 'KEY `idx_ai_outcome_user_eval` (`user_id`, `evaluated_at`)');
+CALL maogou_add_index_if_missing('ai_analysis_outcome', 'idx_ai_outcome_stock_date', 'KEY `idx_ai_outcome_stock_date` (`stock_code`, `report_date`)');
+
 DROP PROCEDURE IF EXISTS maogou_add_column_if_missing;
+DROP PROCEDURE IF EXISTS maogou_modify_column_if_exists;
+DROP PROCEDURE IF EXISTS maogou_drop_index_if_exists;
+DROP PROCEDURE IF EXISTS maogou_add_index_if_missing;
 
 UPDATE ai_analysis_outcome
 SET stock_name = COALESCE(stock_name, stock_code),
