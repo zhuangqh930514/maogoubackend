@@ -11,6 +11,7 @@ import com.maogou.stock.domain.entity.AiStrategyVersion;
 import com.maogou.stock.domain.enums.AnalysisStatus;
 import com.maogou.stock.dto.ai.AiAnalysisReportResponse;
 import com.maogou.stock.dto.ai.AiAnalysisResultPayload;
+import com.maogou.stock.dto.ai.AiLearningPayloads;
 import com.maogou.stock.dto.market.StockDetailResponse;
 import com.maogou.stock.dto.watchlist.WatchStockResponse;
 import com.maogou.stock.infrastructure.ai.LocalAiClient;
@@ -20,6 +21,7 @@ import com.maogou.stock.mapper.AiStrategyVersionMapper;
 import com.maogou.stock.mapper.WatchStockMapper;
 import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.AiAnalysisService;
+import com.maogou.stock.service.AiLearningService;
 import com.maogou.stock.service.MarketDataService;
 import com.maogou.stock.service.ModelConfigService;
 import com.maogou.stock.service.PromptTemplateService;
@@ -60,6 +62,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
     private final WatchStockMapper watchStockMapper;
     private final MarketDataService marketDataService;
     private final WatchlistService watchlistService;
+    private final AiLearningService aiLearningService;
     private final ModelConfigService modelConfigService;
     private final PromptTemplateService promptTemplateService;
     private final LocalAiClient localAiClient;
@@ -72,6 +75,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             WatchStockMapper watchStockMapper,
             MarketDataService marketDataService,
             WatchlistService watchlistService,
+            AiLearningService aiLearningService,
             ModelConfigService modelConfigService,
             PromptTemplateService promptTemplateService,
             LocalAiClient localAiClient,
@@ -83,6 +87,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         this.watchStockMapper = watchStockMapper;
         this.marketDataService = marketDataService;
         this.watchlistService = watchlistService;
+        this.aiLearningService = aiLearningService;
         this.modelConfigService = modelConfigService;
         this.promptTemplateService = promptTemplateService;
         this.localAiClient = localAiClient;
@@ -121,9 +126,10 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         Long userId = AuthContext.currentUserIdOrDefault();
         Long normalizedPromptTemplateId = normalizePromptTemplateId(promptTemplateId);
         StockDetailResponse detail = marketDataService.stockDetail(code);
+        AiLearningPayloads.AnalysisLearningContext learningContext = aiLearningService.prepareAnalysisContext(detail, normalizedPromptTemplateId);
         AiModelConfig config = normalizeAnalysisConfig(modelConfigService.currentEntity());
         String selectedTemplate = promptTemplateService.resolveContent(promptTemplateId, null);
-        String prompt = buildPrompt(detail, config, selectedTemplate, activeStrategyPrompt(userId));
+        String prompt = buildPrompt(detail, config, selectedTemplate, activeStrategyPrompt(userId), learningContext.promptContext());
         LocalDateTime now = LocalDateTime.now();
         LocalDate reportDate = now.toLocalDate();
         AiAnalysisReport report = resolveTargetReport(targetReportId, detail.quote().code(), config.modelName, reportDate, now);
@@ -135,6 +141,11 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         report.promptTemplateId = normalizedPromptTemplateId;
         report.reportDate = reportDate;
         report.generatedAt = now;
+        report.sampleId = learningContext.sampleId();
+        report.predictionId = learningContext.predictionId();
+        report.strategyVersionId = learningContext.strategyVersionId();
+        report.dataQualityScore = learningContext.dataQualityScore();
+        report.calibratedConfidence = learningContext.calibratedConfidence();
         report.updatedAt = now;
         report.deleted = 0;
         report.status = AnalysisStatus.PENDING;
@@ -169,6 +180,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                     report.userId, report.stockCode, config.modelName, normalizedPromptTemplateId, targetReportId, ex.getMessage(), preview(report.rawResponse), ex);
         }
         saveOrUpdateReport(report);
+        aiLearningService.linkReport(learningContext.predictionId(), report.id);
         if (report.status == AnalysisStatus.SUCCESS && parsedPayload != null) {
             saveDecision(report, parsedPayload);
         }
@@ -490,7 +502,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         }
     }
 
-    private String buildPrompt(StockDetailResponse detail, AiModelConfig config, String selectedTemplate, String activeStrategyPrompt) {
+    private String buildPrompt(StockDetailResponse detail, AiModelConfig config, String selectedTemplate, String activeStrategyPrompt, String learningContext) {
         String configuredTemplate = config.promptTemplate == null || config.promptTemplate.isBlank()
                 ? "请基于行情、K线、财务数据输出技术面分析、风险提示、建议买卖点、Prompt 数据摘要和评分。"
                 : config.promptTemplate;
@@ -503,6 +515,9 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 %s
 
                 已启用策略版本：
+                %s
+
+                标准化学习上下文：
                 %s
 
                 股票：%s %s
@@ -525,6 +540,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 """.formatted(
                 template,
                 strategyInstruction,
+                learningContext == null || learningContext.isBlank() ? "本次未获得学习系统上下文，请按基础结构保守输出。" : learningContext,
                 detail.quote().name(),
                 detail.quote().code(),
                 detail.quote().price(),

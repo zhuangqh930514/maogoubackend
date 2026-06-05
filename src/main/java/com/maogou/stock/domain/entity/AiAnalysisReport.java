@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.maogou.stock.domain.enums.AnalysisStatus;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
@@ -30,6 +31,11 @@ public class AiAnalysisReport {
     public String errorMessage;
     public LocalDate reportDate;
     public LocalDateTime generatedAt;
+    public Long sampleId;
+    public Long predictionId;
+    public Long strategyVersionId;
+    public BigDecimal dataQualityScore;
+    public BigDecimal calibratedConfidence;
     @TableLogic
     public Integer deleted;
     public LocalDateTime createdAt;

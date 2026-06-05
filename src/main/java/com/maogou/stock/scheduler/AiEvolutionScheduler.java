@@ -2,6 +2,7 @@ package com.maogou.stock.scheduler;
 
 import com.maogou.stock.config.AppProperties;
 import com.maogou.stock.service.AiEvolutionService;
+import com.maogou.stock.service.AiLearningService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -14,10 +15,12 @@ public class AiEvolutionScheduler {
 
     private final AppProperties properties;
     private final AiEvolutionService aiEvolutionService;
+    private final AiLearningService aiLearningService;
 
-    public AiEvolutionScheduler(AppProperties properties, AiEvolutionService aiEvolutionService) {
+    public AiEvolutionScheduler(AppProperties properties, AiEvolutionService aiEvolutionService, AiLearningService aiLearningService) {
         this.properties = properties;
         this.aiEvolutionService = aiEvolutionService;
+        this.aiLearningService = aiLearningService;
     }
 
     @Scheduled(cron = "${maogou.scheduler.evolution-review-cron}")
@@ -28,6 +31,7 @@ public class AiEvolutionScheduler {
         try {
             aiEvolutionService.verifyReviews();
             aiEvolutionService.refreshFactors();
+            aiLearningService.verifyLabels();
             log.info("AI evolution scheduled review finished");
         } catch (Exception ex) {
             log.warn("AI evolution scheduled review failed: {}", ex.getMessage(), ex);

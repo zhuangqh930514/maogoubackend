@@ -2,6 +2,7 @@ package com.maogou.stock.dto.ai;
 
 import com.maogou.stock.domain.entity.AiAnalysisReport;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 public record AiAnalysisReportResponse(
@@ -17,7 +18,12 @@ public record AiAnalysisReportResponse(
         String promptSummary,
         String sourceModel,
         String status,
-        String errorMessage
+        String errorMessage,
+        Long sampleId,
+        Long predictionId,
+        Long strategyVersionId,
+        BigDecimal dataQualityScore,
+        BigDecimal calibratedConfidence
 ) {
     public static AiAnalysisReportResponse from(AiAnalysisReport entity) {
         String stockName = entity.stockName;
@@ -37,7 +43,12 @@ public record AiAnalysisReportResponse(
                 entity.promptSummary,
                 entity.sourceModel,
                 entity.status == null ? null : entity.status.name(),
-                entity.errorMessage
+                entity.errorMessage,
+                entity.sampleId,
+                entity.predictionId,
+                entity.strategyVersionId,
+                entity.dataQualityScore,
+                entity.calibratedConfidence
         );
     }
 }
