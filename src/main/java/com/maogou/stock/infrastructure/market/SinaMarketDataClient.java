@@ -191,12 +191,87 @@ public class SinaMarketDataClient implements MarketDataClient {
 
     @Override
     public List<MarketIndexResponse> fetchCoreIndexes() {
+        Map<String, MarketIndexResponse> tencentIndexes = Map.of();
+        try {
+            tencentIndexes = fetchTencentIndexes(CORE_INDEXES);
+        } catch (RuntimeException ex) {
+            log.warn("tencent core indexes failed, try eastmoney fallback", ex);
+        }
+
         List<MarketIndexResponse> indexes = new ArrayList<>();
+        RuntimeException firstFailure = null;
         for (IndexSymbol index : CORE_INDEXES) {
-            indexes.add(fetchEastmoneyIndex(index));
+            MarketIndexResponse tencentIndex = tencentIndexes.get(index.code());
+            if (tencentIndex != null) {
+                indexes.add(tencentIndex);
+                continue;
+            }
+            try {
+                indexes.add(fetchEastmoneyIndex(index));
+            } catch (RuntimeException ex) {
+                if (firstFailure == null) {
+                    firstFailure = ex;
+                }
+                log.warn("core index source failed, skip index={}", index.code(), ex);
+            }
+        }
+        if (indexes.isEmpty() && firstFailure != null) {
+            throw firstFailure;
         }
         indexes.add(fetchA50IndexSafely());
         return indexes;
+    }
+
+    private Map<String, MarketIndexResponse> fetchTencentIndexes(List<IndexSymbol> symbols) {
+        if (symbols == null || symbols.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, IndexSymbol> symbolMap = new LinkedHashMap<>();
+        for (IndexSymbol symbol : symbols) {
+            symbolMap.put(symbol.sinaSymbol(), symbol);
+        }
+        URI uri = URI.create("https://qt.gtimg.cn/q=" + String.join(",", symbols.stream()
+                .map(IndexSymbol::sinaSymbol)
+                .toList()));
+        try {
+            String text = getTextWithRetry(uri, GBK, "https://gu.qq.com/");
+            Matcher matcher = TENCENT_QUOTE_PATTERN.matcher(text);
+            Map<String, MarketIndexResponse> result = new LinkedHashMap<>();
+            while (matcher.find()) {
+                String sinaSymbol = matcher.group(1);
+                IndexSymbol index = symbolMap.get(sinaSymbol);
+                if (index == null) {
+                    continue;
+                }
+                String[] fields = matcher.group(2).split("~", -1);
+                if (fields.length < 33 || fields[3].isBlank()) {
+                    continue;
+                }
+                BigDecimal value = bdOrZero(fields[3]);
+                BigDecimal prevClose = bdOrZero(fields[4]);
+                BigDecimal change = fields[31].isBlank() ? value.subtract(prevClose) : bdOrZero(fields[31]);
+                BigDecimal percent = fields[32].isBlank() || prevClose.compareTo(BigDecimal.ZERO) == 0
+                        ? BigDecimal.ZERO
+                        : bdOrZero(fields[32]);
+                List<BigDecimal> trend = prevClose.compareTo(BigDecimal.ZERO) > 0
+                        ? List.of(prevClose, value)
+                        : List.of(value);
+                result.put(index.code(), new MarketIndexResponse(
+                        index.name(),
+                        index.code(),
+                        value,
+                        change,
+                        percent,
+                        trend
+                ));
+            }
+            if (result.isEmpty()) {
+                throw new IllegalStateException("腾讯核心指数返回为空");
+            }
+            return result;
+        } catch (Exception ex) {
+            throw new IllegalStateException("获取腾讯核心指数失败：" + ex.getMessage(), ex);
+        }
     }
 
     private MarketIndexResponse fetchA50IndexSafely() {
