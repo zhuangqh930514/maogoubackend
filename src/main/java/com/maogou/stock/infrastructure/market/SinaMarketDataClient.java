@@ -42,6 +42,7 @@ public class SinaMarketDataClient implements MarketDataClient {
     private static final Charset GBK = Charset.forName("GBK");
     private static final DateTimeFormatter NEWS_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final Pattern QUOTE_PATTERN = Pattern.compile("var hq_str_([A-Za-z0-9_]+)=\\\"(.*?)\\\";");
+    private static final Pattern TENCENT_QUOTE_PATTERN = Pattern.compile("v_([A-Za-z0-9_]+)=\\\"(.*?)\\\";");
     private static final Pattern JSONP_ARRAY_PATTERN = Pattern.compile("\\((\\[.*])\\)", Pattern.DOTALL);
     private static final Pattern JSONP_OBJECT_PATTERN = Pattern.compile("\\((\\{.*})\\)", Pattern.DOTALL);
     private static final Pattern EASTMONEY_NEWS_PATTERN = Pattern.compile("var ajaxResult=(\\{.*});?", Pattern.DOTALL);
@@ -761,6 +762,13 @@ public class SinaMarketDataClient implements MarketDataClient {
     @Override
     public StockQuoteResponse fetchQuote(String stockCode) {
         try {
+            return fetchTencentQuotes(List.of(normalizeStockCode(stockCode))).values().stream()
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalStateException("腾讯行情返回为空：" + stockCode));
+        } catch (Exception ignored) {
+            // 线上服务器访问腾讯行情更稳定，失败时再走东方财富和新浪备源。
+        }
+        try {
             return fetchEastmoneyStockQuote(stockCode);
         } catch (Exception ignored) {
             // 东方财富单股 quote 接口偶发空响应，失败时再走新浪备源。
@@ -782,8 +790,19 @@ public class SinaMarketDataClient implements MarketDataClient {
             return Map.of();
         }
         Map<String, StockQuoteResponse> result = new LinkedHashMap<>();
-        for (int start = 0; start < normalizedCodes.size(); start += QUOTE_BATCH_SIZE) {
-            List<String> batch = normalizedCodes.subList(start, Math.min(start + QUOTE_BATCH_SIZE, normalizedCodes.size()));
+        try {
+            result.putAll(fetchTencentQuotes(normalizedCodes));
+        } catch (RuntimeException ex) {
+            log.warn("tencent batch quote failed, try eastmoney fallback, batchSize={}", normalizedCodes.size(), ex);
+        }
+        List<String> missingAfterTencent = normalizedCodes.stream()
+                .filter(code -> !result.containsKey(code))
+                .toList();
+        if (missingAfterTencent.isEmpty()) {
+            return result;
+        }
+        for (int start = 0; start < missingAfterTencent.size(); start += QUOTE_BATCH_SIZE) {
+            List<String> batch = missingAfterTencent.subList(start, Math.min(start + QUOTE_BATCH_SIZE, missingAfterTencent.size()));
             try {
                 result.putAll(fetchEastmoneyQuotes(batch));
             } catch (RuntimeException ex) {
@@ -804,6 +823,75 @@ public class SinaMarketDataClient implements MarketDataClient {
             throw new IllegalStateException("批量实时行情返回为空");
         }
         return result;
+    }
+
+    private Map<String, StockQuoteResponse> fetchTencentQuotes(List<String> normalizedCodes) {
+        if (normalizedCodes == null || normalizedCodes.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, StockQuoteResponse> result = new LinkedHashMap<>();
+        RuntimeException firstFailure = null;
+        for (int start = 0; start < normalizedCodes.size(); start += QUOTE_BATCH_SIZE) {
+            List<String> batch = normalizedCodes.subList(start, Math.min(start + QUOTE_BATCH_SIZE, normalizedCodes.size()));
+            try {
+                result.putAll(fetchTencentQuoteBatch(batch));
+            } catch (RuntimeException ex) {
+                if (firstFailure == null) {
+                    firstFailure = ex;
+                }
+                log.warn("tencent quote batch failed, batchSize={}", batch.size(), ex);
+            }
+        }
+        if (!result.isEmpty()) {
+            return result;
+        }
+        if (firstFailure != null) {
+            throw firstFailure;
+        }
+        throw new IllegalStateException("腾讯行情返回为空");
+    }
+
+    private Map<String, StockQuoteResponse> fetchTencentQuoteBatch(List<String> normalizedCodes) {
+        URI uri = URI.create("https://qt.gtimg.cn/q=" + String.join(",", normalizedCodes.stream()
+                .map(SinaMarketDataClient::toSinaSymbol)
+                .toList()));
+        try {
+            String text = getTextWithRetry(uri, GBK, "https://gu.qq.com/");
+            Matcher matcher = TENCENT_QUOTE_PATTERN.matcher(text);
+            Map<String, StockQuoteResponse> result = new LinkedHashMap<>();
+            while (matcher.find()) {
+                String symbol = matcher.group(1);
+                String[] fields = matcher.group(2).split("~", -1);
+                if (fields.length < 33 || fields[3].isBlank()) {
+                    continue;
+                }
+                String code = normalizeStockCode(symbol);
+                BigDecimal price = bdOrZero(fields[3]);
+                BigDecimal prevClose = bdOrZero(fields[4]);
+                BigDecimal change = fields[31].isBlank() ? price.subtract(prevClose) : bdOrZero(fields[31]);
+                BigDecimal percent = fields[32].isBlank() || prevClose.compareTo(BigDecimal.ZERO) == 0
+                        ? BigDecimal.ZERO
+                        : bdOrZero(fields[32]);
+                BigDecimal volumeRatio = fields.length > 49 ? bdOrZero(fields[49]) : BigDecimal.ZERO;
+                result.put(code, new StockQuoteResponse(
+                        code,
+                        fields[1].isBlank() ? code : fields[1],
+                        price,
+                        change,
+                        percent,
+                        volumeRatio,
+                        marketOf(symbol),
+                        "TENCENT",
+                        LocalDateTime.now()
+                ));
+            }
+            if (result.isEmpty()) {
+                throw new IllegalStateException("腾讯行情返回为空");
+            }
+            return result;
+        } catch (Exception ex) {
+            throw new IllegalStateException("获取腾讯实时行情失败：" + ex.getMessage(), ex);
+        }
     }
 
     private Map<String, StockQuoteResponse> fetchEastmoneyQuotes(List<String> normalizedCodes) {

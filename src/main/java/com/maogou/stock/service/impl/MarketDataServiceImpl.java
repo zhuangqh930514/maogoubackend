@@ -23,6 +23,7 @@ import java.util.function.Supplier;
 public class MarketDataServiceImpl implements MarketDataService {
 
     private static final Logger log = LoggerFactory.getLogger(MarketDataServiceImpl.class);
+    private static final long QUOTE_SOURCE_FAILURE_COOLDOWN_MILLIS = Duration.ofSeconds(60).toMillis();
 
     private final MarketDataClient marketDataClient;
     private final MarketDataClient fallbackMarketDataClient = new MockMarketDataClient();
@@ -36,6 +37,7 @@ public class MarketDataServiceImpl implements MarketDataService {
     private final ConcurrentMap<String, CacheEntry<List<SectorHotStockResponse>>> hotStocksCache = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, CacheEntry<List<IntradayPointResponse>>> intradayCache = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, CacheEntry<List<KlinePointResponse>>> klineCache = new ConcurrentHashMap<>();
+    private volatile long batchQuoteSourceUnavailableUntilMillis = 0;
 
     public MarketDataServiceImpl(MarketDataClient marketDataClient, AppProperties properties) {
         this.marketDataClient = marketDataClient;
@@ -229,7 +231,7 @@ public class MarketDataServiceImpl implements MarketDataService {
                 })
                 .toList();
 
-        if (!missingCodes.isEmpty()) {
+        if (!missingCodes.isEmpty() && now >= batchQuoteSourceUnavailableUntilMillis) {
             try {
                 Map<String, StockQuoteResponse> loadedQuotes = marketDataClient.fetchQuotes(missingCodes);
                 long expiresAt = ttlMillis <= 0 ? 0 : System.currentTimeMillis() + ttlMillis;
@@ -244,8 +246,11 @@ public class MarketDataServiceImpl implements MarketDataService {
                     }
                 }
             } catch (RuntimeException ex) {
+                batchQuoteSourceUnavailableUntilMillis = System.currentTimeMillis() + QUOTE_SOURCE_FAILURE_COOLDOWN_MILLIS;
                 log.warn("batch market quote source failed, return stale or fallback data, codes={}", missingCodes, ex);
             }
+        } else if (!missingCodes.isEmpty()) {
+            log.debug("batch market quote source is cooling down, return cached or fallback data, codes={}", missingCodes);
         }
 
         for (String rawCode : codes) {
@@ -258,7 +263,10 @@ public class MarketDataServiceImpl implements MarketDataService {
                 result.put(code, stale.value);
                 continue;
             }
-            result.put(code, fallbackMarketDataClient.fetchQuote(code));
+            StockQuoteResponse fallbackQuote = fallbackMarketDataClient.fetchQuote(code);
+            long fallbackExpiresAt = ttlMillis <= 0 ? 0 : System.currentTimeMillis() + Math.max(ttlMillis, QUOTE_SOURCE_FAILURE_COOLDOWN_MILLIS);
+            quoteCache.put(code, new CacheEntry<>(fallbackQuote, fallbackExpiresAt));
+            result.put(code, fallbackQuote);
         }
         return result;
     }
@@ -334,7 +342,12 @@ public class MarketDataServiceImpl implements MarketDataService {
                 return existing.value;
             }
             log.warn("market data source failed, return fallback data, key={}", key, ex);
-            return fallback.get();
+            T fallbackValue = fallback.get();
+            long ttlMillis = ttl.toMillis();
+            if (ttlMillis > 0) {
+                cache.put(key, new CacheEntry<>(fallbackValue, System.currentTimeMillis() + ttlMillis));
+            }
+            return fallbackValue;
         }
     }
 
