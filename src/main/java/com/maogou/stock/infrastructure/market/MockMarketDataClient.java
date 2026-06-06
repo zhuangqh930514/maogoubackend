@@ -207,7 +207,7 @@ public class MockMarketDataClient implements MarketDataClient {
     }
 
     private static StockQuoteResponse quote(String code, String name, String price, String change, String percent, String volumeRatio, String market) {
-        return new StockQuoteResponse(code, name, bd(price), bd(change), bd(percent), bd(volumeRatio), market);
+        return new StockQuoteResponse(code, name, bd(price), bd(change), bd(percent), bd(volumeRatio), market, "MOCK", LocalDateTime.now());
     }
 
     private static NewsFlashResponse news(String title, String source, String time) {

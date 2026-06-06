@@ -13,6 +13,8 @@ import com.maogou.stock.mapper.TradeRecordMapper;
 import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.MarketDataService;
 import com.maogou.stock.service.PortfolioService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -25,6 +27,8 @@ import java.util.Map;
 
 @Service
 public class PortfolioServiceImpl implements PortfolioService {
+
+    private static final Logger log = LoggerFactory.getLogger(PortfolioServiceImpl.class);
 
     private final TradeRecordMapper tradeRecordMapper;
     private final MarketDataService marketDataService;
@@ -87,9 +91,14 @@ public class PortfolioServiceImpl implements PortfolioService {
                     .add(trade);
         }
 
-        List<PositionResponse> positions = grouped.values().stream()
+        List<AggregatedPosition> activePositions = grouped.values().stream()
                 .filter(position -> position.quantity > 0)
-                .map(this::toPositionResponse)
+                .toList();
+        Map<String, StockQuoteResponse> quotes = marketDataService.quotes(activePositions.stream()
+                .map(position -> position.code)
+                .toList());
+        List<PositionResponse> positions = activePositions.stream()
+                .map(position -> toPositionResponse(position, quotes.get(position.code)))
                 .toList();
         BigDecimal totalCost = positions.stream().map(PositionResponse::cost).reduce(BigDecimal.ZERO, BigDecimal::add);
         BigDecimal totalMarketValue = positions.stream().map(PositionResponse::marketValue).reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -122,28 +131,43 @@ public class PortfolioServiceImpl implements PortfolioService {
         );
     }
 
-    private PositionResponse toPositionResponse(AggregatedPosition position) {
-        StockQuoteResponse quote = marketDataService.quote(position.code);
+    private PositionResponse toPositionResponse(AggregatedPosition position, StockQuoteResponse quote) {
+        StockQuoteResponse resolvedQuote = quote == null ? fallbackQuote(position) : quote;
         BigDecimal buyPrice = position.averagePrice();
         BigDecimal cost = buyPrice.multiply(BigDecimal.valueOf(position.quantity));
-        BigDecimal marketValue = quote.price().multiply(BigDecimal.valueOf(position.quantity));
+        BigDecimal marketValue = resolvedQuote.price().multiply(BigDecimal.valueOf(position.quantity));
         BigDecimal profit = marketValue.subtract(cost);
         BigDecimal profitRate = cost.signum() == 0 ? BigDecimal.ZERO : profit
                 .multiply(new BigDecimal("100"))
                 .divide(cost, 2, RoundingMode.HALF_UP);
-        BigDecimal todayProfit = quote.change().multiply(BigDecimal.valueOf(position.quantity));
+        BigDecimal todayProfit = resolvedQuote.change().multiply(BigDecimal.valueOf(position.quantity));
         return new PositionResponse(
                 position.code,
                 position.name,
                 buyPrice,
                 position.quantity,
-                quote.price(),
+                resolvedQuote.price(),
                 cost,
                 marketValue,
                 profit,
                 profitRate,
                 todayProfit,
-                quote.percent()
+                resolvedQuote.percent()
+        );
+    }
+
+    private StockQuoteResponse fallbackQuote(AggregatedPosition position) {
+        log.warn("portfolio quote missing, use zero quote fallback, stockCode={}", position.code);
+        return new StockQuoteResponse(
+                position.code,
+                position.name == null ? position.code : position.name,
+                BigDecimal.ZERO,
+                BigDecimal.ZERO,
+                BigDecimal.ZERO,
+                BigDecimal.ZERO,
+                null,
+                "LOCAL_FALLBACK",
+                LocalDateTime.now()
         );
     }
 

@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.maogou.stock.config.AppProperties;
 import com.maogou.stock.dto.market.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpEntity;
@@ -36,6 +38,7 @@ import java.util.regex.Pattern;
 @ConditionalOnProperty(prefix = "maogou.market", name = "provider", havingValue = "sina")
 public class SinaMarketDataClient implements MarketDataClient {
 
+    private static final Logger log = LoggerFactory.getLogger(SinaMarketDataClient.class);
     private static final Charset GBK = Charset.forName("GBK");
     private static final DateTimeFormatter NEWS_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final Pattern QUOTE_PATTERN = Pattern.compile("var hq_str_([A-Za-z0-9_]+)=\\\"(.*?)\\\";");
@@ -43,6 +46,7 @@ public class SinaMarketDataClient implements MarketDataClient {
     private static final Pattern JSONP_OBJECT_PATTERN = Pattern.compile("\\((\\{.*})\\)", Pattern.DOTALL);
     private static final Pattern EASTMONEY_NEWS_PATTERN = Pattern.compile("var ajaxResult=(\\{.*});?", Pattern.DOTALL);
     private static final Pattern SUGGEST_PATTERN = Pattern.compile("var suggestvalue=\\\"(.*?)\\\";", Pattern.DOTALL);
+    private static final int QUOTE_BATCH_SIZE = 80;
     private static final List<IndexSymbol> CORE_INDEXES = List.of(
             new IndexSymbol("上证指数", "000001.SH", "sh000001"),
             new IndexSymbol("深证成指", "399001.SZ", "sz399001"),
@@ -261,7 +265,7 @@ public class SinaMarketDataClient implements MarketDataClient {
         BigDecimal change = eastmoneyScaledValue(data, "f169");
         BigDecimal percent = eastmoneyScaledValue(data, "f170");
         String name = data.path("f58").asText(stockCode);
-        return new StockQuoteResponse(normalizeStockCode(stockCode), name, price, change, percent, eastmoneyScaledValue(data, "f50"), marketOf(stockCode));
+        return new StockQuoteResponse(normalizeStockCode(stockCode), name, price, change, percent, eastmoneyScaledValue(data, "f50"), marketOf(stockCode), "EASTMONEY", LocalDateTime.now());
     }
 
     private List<IntradayPointResponse> fetchEastmoneyIntraday(String symbol) {
@@ -764,7 +768,7 @@ public class SinaMarketDataClient implements MarketDataClient {
         Quote quote = fetchSinaQuotes(List.of(toSinaSymbol(stockCode))).values().stream()
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException("未获取到股票行情：" + stockCode));
-        return new StockQuoteResponse(stockCode, quote.name(), quote.price(), quote.change(), quote.percent(), BigDecimal.ZERO, marketOf(stockCode));
+        return new StockQuoteResponse(stockCode, quote.name(), quote.price(), quote.change(), quote.percent(), BigDecimal.ZERO, marketOf(stockCode), "SINA", LocalDateTime.now());
     }
 
     @Override
@@ -777,6 +781,32 @@ public class SinaMarketDataClient implements MarketDataClient {
         if (normalizedCodes.isEmpty()) {
             return Map.of();
         }
+        Map<String, StockQuoteResponse> result = new LinkedHashMap<>();
+        for (int start = 0; start < normalizedCodes.size(); start += QUOTE_BATCH_SIZE) {
+            List<String> batch = normalizedCodes.subList(start, Math.min(start + QUOTE_BATCH_SIZE, normalizedCodes.size()));
+            try {
+                result.putAll(fetchEastmoneyQuotes(batch));
+            } catch (RuntimeException ex) {
+                log.warn("eastmoney batch quote failed, try sina fallback, batchSize={}", batch.size(), ex);
+            }
+            List<String> missingCodes = batch.stream()
+                    .filter(code -> !result.containsKey(code))
+                    .toList();
+            if (!missingCodes.isEmpty()) {
+                try {
+                    result.putAll(fetchSinaQuoteResponses(missingCodes));
+                } catch (RuntimeException ex) {
+                    log.warn("sina batch quote fallback failed, batchSize={}", missingCodes.size(), ex);
+                }
+            }
+        }
+        if (result.isEmpty()) {
+            throw new IllegalStateException("批量实时行情返回为空");
+        }
+        return result;
+    }
+
+    private Map<String, StockQuoteResponse> fetchEastmoneyQuotes(List<String> normalizedCodes) {
         URI uri = UriComponentsBuilder
                 .fromHttpUrl("https://push2.eastmoney.com/api/qt/ulist.np/get")
                 .queryParam("secids", String.join(",", normalizedCodes.stream()
@@ -806,7 +836,9 @@ public class SinaMarketDataClient implements MarketDataClient {
                         eastmoneyScaledValue(row, "f4"),
                         eastmoneyScaledValue(row, "f3"),
                         eastmoneyScaledValue(row, "f10"),
-                        market
+                        market,
+                        "EASTMONEY",
+                        LocalDateTime.now()
                 );
                 result.put(code, quote);
             }
@@ -814,6 +846,31 @@ public class SinaMarketDataClient implements MarketDataClient {
         } catch (Exception ex) {
             throw new IllegalStateException("获取东方财富批量实时行情失败：" + ex.getMessage(), ex);
         }
+    }
+
+    private Map<String, StockQuoteResponse> fetchSinaQuoteResponses(List<String> normalizedCodes) {
+        Map<String, Quote> sinaQuotes = fetchSinaQuotes(normalizedCodes.stream()
+                .map(SinaMarketDataClient::toSinaSymbol)
+                .toList());
+        Map<String, StockQuoteResponse> result = new LinkedHashMap<>();
+        for (String code : normalizedCodes) {
+            Quote quote = sinaQuotes.get(toSinaSymbol(code));
+            if (quote == null) {
+                continue;
+            }
+            result.put(code, new StockQuoteResponse(
+                    code,
+                    quote.name(),
+                    quote.price(),
+                    quote.change(),
+                    quote.percent(),
+                    BigDecimal.ZERO,
+                    marketOf(code),
+                    "SINA",
+                    LocalDateTime.now()
+            ));
+        }
+        return result;
     }
 
     @Override

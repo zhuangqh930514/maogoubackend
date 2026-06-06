@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -165,6 +166,35 @@ public class MarketDataServiceImpl implements MarketDataService {
     }
 
     @Override
+    public StockDetailResponse stockDetailForAnalysis(String code) {
+        String normalizedCode = normalizeCode(code);
+        StockQuoteResponse quote = marketDataClient.fetchQuote(normalizedCode);
+        List<KlinePointResponse> kline = marketDataClient.fetchKline(normalizedCode, "day", 60);
+        List<IntradayPointResponse> intraday;
+        try {
+            intraday = marketDataClient.fetchIntraday(normalizedCode);
+        } catch (RuntimeException ex) {
+            log.warn("analysis intraday unavailable, continue with quote and kline, code={}", normalizedCode, ex);
+            intraday = List.of();
+        }
+        FinanceSnapshotResponse finance;
+        try {
+            finance = marketDataClient.fetchFinance(normalizedCode);
+        } catch (RuntimeException ex) {
+            log.warn("analysis finance unavailable, continue with empty finance, code={}", normalizedCode, ex);
+            finance = FinanceSnapshotResponse.empty();
+        }
+        return new StockDetailResponse(
+                quote,
+                finance,
+                intraday,
+                kline,
+                adviceByPercent(quote.percent()),
+                scoreByPercent(quote.percent())
+        );
+    }
+
+    @Override
     public StockQuoteResponse quote(String code) {
         String normalizedCode = normalizeCode(code);
         return cachedWithFallback(
@@ -243,6 +273,25 @@ public class MarketDataServiceImpl implements MarketDataService {
                 () -> marketDataClient.fetchFinance(normalizedCode),
                 () -> fallbackMarketDataClient.fetchFinance(normalizedCode)
         );
+    }
+
+    @Override
+    public List<NewsFlashResponse> latestNewsForAnalysis(int limit) {
+        int size = Math.max(1, Math.min(limit, 20));
+        try {
+            LocalDateTime cutoff = LocalDateTime.now().minusHours(36);
+            List<NewsFlashResponse> loaded = marketDataClient.fetchLatestNews(size);
+            if (loaded == null) {
+                return List.of();
+            }
+            return loaded.stream()
+                    .filter(item -> item.publishedAt() != null && !item.publishedAt().isBefore(cutoff))
+                    .limit(size)
+                    .toList();
+        } catch (RuntimeException ex) {
+            log.warn("analysis realtime news unavailable, forbid model from citing news, limit={}", size, ex);
+            return List.of();
+        }
     }
 
     private static <T> T cached(

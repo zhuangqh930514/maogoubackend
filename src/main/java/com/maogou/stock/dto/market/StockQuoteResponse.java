@@ -1,6 +1,7 @@
 package com.maogou.stock.dto.market;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 
 public record StockQuoteResponse(
         String code,
@@ -9,6 +10,8 @@ public record StockQuoteResponse(
         BigDecimal change,
         BigDecimal percent,
         BigDecimal volumeRatio,
-        String market
+        String market,
+        String source,
+        LocalDateTime fetchedAt
 ) {
 }

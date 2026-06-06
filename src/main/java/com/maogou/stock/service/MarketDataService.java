@@ -26,9 +26,13 @@ public interface MarketDataService {
 
     StockDetailResponse stockDetail(String code);
 
+    StockDetailResponse stockDetailForAnalysis(String code);
+
     StockQuoteResponse quote(String code);
 
     Map<String, StockQuoteResponse> quotes(List<String> codes);
 
     FinanceSnapshotResponse finance(String code);
+
+    List<NewsFlashResponse> latestNewsForAnalysis(int limit);
 }

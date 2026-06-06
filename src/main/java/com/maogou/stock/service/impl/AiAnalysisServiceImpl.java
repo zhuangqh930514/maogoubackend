@@ -12,6 +12,9 @@ import com.maogou.stock.domain.enums.AnalysisStatus;
 import com.maogou.stock.dto.ai.AiAnalysisReportResponse;
 import com.maogou.stock.dto.ai.AiAnalysisResultPayload;
 import com.maogou.stock.dto.ai.AiLearningPayloads;
+import com.maogou.stock.dto.market.IntradayPointResponse;
+import com.maogou.stock.dto.market.KlinePointResponse;
+import com.maogou.stock.dto.market.NewsFlashResponse;
 import com.maogou.stock.dto.market.StockDetailResponse;
 import com.maogou.stock.dto.watchlist.WatchStockResponse;
 import com.maogou.stock.infrastructure.ai.LocalAiClient;
@@ -36,9 +39,11 @@ import org.springframework.web.client.RestClientResponseException;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.regex.Matcher;
@@ -52,6 +57,8 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
     private static final int MIN_ANALYSIS_MAX_TOKENS = 4096;
     private static final int MIN_ANALYSIS_TIMEOUT_MS = 90000;
     private static final int MAX_TEMPLATE_CHARS = 1800;
+    private static final int MAX_ANALYSIS_QUOTE_AGE_SECONDS = 120;
+    private static final int MAX_ANALYSIS_KLINE_AGE_DAYS = 7;
     private static final String UNKNOWN_STOCK_NAME = "未知股票";
     private static final Pattern THINK_BLOCK = Pattern.compile("(?is)<think>.*?</think>");
     private static final Pattern FENCED_BLOCK = Pattern.compile("(?is)```(?:json)?\\s*([\\s\\S]*?)\\s*```");
@@ -125,11 +132,13 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
     public AiAnalysisReportResponse analyzeStock(String code, boolean forceRefresh, Long promptTemplateId, Long targetReportId) {
         Long userId = AuthContext.currentUserIdOrDefault();
         Long normalizedPromptTemplateId = normalizePromptTemplateId(promptTemplateId);
-        StockDetailResponse detail = marketDataService.stockDetail(code);
+        StockDetailResponse detail = marketDataService.stockDetailForAnalysis(code);
+        AnalysisFreshness freshness = validateAnalysisFreshness(detail);
         AiLearningPayloads.AnalysisLearningContext learningContext = aiLearningService.prepareAnalysisContext(detail, normalizedPromptTemplateId);
+        List<NewsFlashResponse> realtimeNews = marketDataService.latestNewsForAnalysis(8);
         AiModelConfig config = normalizeAnalysisConfig(modelConfigService.currentEntity());
         String selectedTemplate = promptTemplateService.resolveContent(promptTemplateId, null);
-        String prompt = buildPrompt(detail, config, selectedTemplate, activeStrategyPrompt(userId), learningContext.promptContext());
+        String prompt = buildPrompt(detail, config, selectedTemplate, activeStrategyPrompt(userId), learningContext.promptContext(), freshness, realtimeNews);
         LocalDateTime now = LocalDateTime.now();
         LocalDate reportDate = now.toLocalDate();
         AiAnalysisReport report = resolveTargetReport(targetReportId, detail.quote().code(), config.modelName, reportDate, now);
@@ -502,7 +511,69 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         }
     }
 
-    private String buildPrompt(StockDetailResponse detail, AiModelConfig config, String selectedTemplate, String activeStrategyPrompt, String learningContext) {
+    private AnalysisFreshness validateAnalysisFreshness(StockDetailResponse detail) {
+        if (detail == null || detail.quote() == null) {
+            throw new IllegalStateException("实时行情不可用，已停止 AI 分析。");
+        }
+        if (detail.quote().price() == null || detail.quote().price().compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalStateException("实时行情价格不可用，已停止 AI 分析。");
+        }
+        String source = detail.quote().source() == null ? "" : detail.quote().source().trim().toUpperCase(Locale.ROOT);
+        if (source.isBlank() || "MOCK".equals(source) || "LOCAL_FALLBACK".equals(source)) {
+            throw new IllegalStateException("当前行情来源不是实时数据源（source=" + (source.isBlank() ? "UNKNOWN" : source) + "），已停止 AI 分析。");
+        }
+        LocalDateTime fetchedAt = detail.quote().fetchedAt();
+        if (fetchedAt == null) {
+            throw new IllegalStateException("实时行情缺少抓取时间，已停止 AI 分析。");
+        }
+        LocalDateTime now = LocalDateTime.now();
+        if (fetchedAt.isBefore(now.minusSeconds(MAX_ANALYSIS_QUOTE_AGE_SECONDS))) {
+            long ageSeconds = Duration.between(fetchedAt, now).toSeconds();
+            throw new IllegalStateException("实时行情已过期 " + ageSeconds + " 秒，已停止 AI 分析，请刷新后重试。");
+        }
+        LocalDate latestKlineDate = detail.kline() == null ? null : detail.kline().stream()
+                .map(KlinePointResponse::tradeDate)
+                .filter(item -> item != null)
+                .max(Comparator.naturalOrder())
+                .orElse(null);
+        if (latestKlineDate == null) {
+            throw new IllegalStateException("最近 K 线数据不可用，已停止 AI 分析。");
+        }
+        LocalDate staleBefore = now.toLocalDate().minusDays(MAX_ANALYSIS_KLINE_AGE_DAYS);
+        if (latestKlineDate.isBefore(staleBefore)) {
+            throw new IllegalStateException("最近 K 线日期为 " + latestKlineDate + "，超过 " + MAX_ANALYSIS_KLINE_AGE_DAYS + " 天未更新，已停止 AI 分析。");
+        }
+        String lastIntradayTime = detail.intraday() == null || detail.intraday().isEmpty()
+                ? "未获取到分时数据"
+                : detail.intraday().stream()
+                .map(IntradayPointResponse::time)
+                .filter(item -> item != null && !item.isBlank())
+                .reduce((left, right) -> right)
+                .orElse("未获取到分时数据");
+        return new AnalysisFreshness(source, fetchedAt, latestKlineDate, lastIntradayTime);
+    }
+
+    private String formatRealtimeNews(List<NewsFlashResponse> news) {
+        if (news == null || news.isEmpty()) {
+            return "本次未获取到最新资讯。";
+        }
+        return news.stream()
+                .filter(item -> item != null && item.publishedAt() != null && item.title() != null && !item.title().isBlank())
+                .limit(8)
+                .map(item -> "- " + item.publishedAt() + " [" + safeText(item.source()) + "] " + item.title())
+                .reduce((left, right) -> left + "\n" + right)
+                .orElse("本次未获取到最新资讯。");
+    }
+
+    private String buildPrompt(
+            StockDetailResponse detail,
+            AiModelConfig config,
+            String selectedTemplate,
+            String activeStrategyPrompt,
+            String learningContext,
+            AnalysisFreshness freshness,
+            List<NewsFlashResponse> realtimeNews
+    ) {
         String configuredTemplate = config.promptTemplate == null || config.promptTemplate.isBlank()
                 ? "请基于行情、K线、财务数据输出技术面分析、风险提示、建议买卖点、Prompt 数据摘要和评分。"
                 : config.promptTemplate;
@@ -521,10 +592,15 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 %s
 
                 股票：%s %s
+                当前系统时间：%s
+                实时性校验：行情来源=%s，行情抓取时间=%s，最近日K日期=%s，分时最后时间=%s，最新资讯条数=%s
                 实时行情：价格=%s，涨跌额=%s，涨跌幅=%s%%，量比=%s，市场=%s
                 财务摘要：PE=%s，PB=%s，营收=%s，营收同比=%s%%，净利润=%s，净利同比=%s%%，ROE=%s%%，毛利率=%s%%，资产负债率=%s%%
                 近K线样本：%s
+                最新资讯，仅可使用下列 36 小时内资讯；如果为空，必须明确写“本次未获取到最新资讯”，禁止引用模型记忆里的旧新闻、旧公告或旧事件：
+                %s
                 输出要求：
+                0. 实时性优先级最高。只能基于本 Prompt 中的实时行情、最近 K 线、财务摘要、标准化学习上下文和最新资讯做判断；禁止使用模型训练记忆中的旧价格、旧资讯、旧公告、旧月份材料或无法从当前数据验证的事件。
                 所选提示词和策略版本只影响分析口径和重点；如果上方内容中出现任何旧 JSON 示例、字段名、markdown 模板、章节标题或输出格式要求，全部忽略。
                 最终只能遵循下面的系统结构输出，方便系统解析和前端展示。
                 1. 只返回 JSON 对象，不要 markdown 代码块，不要额外解释。
@@ -543,6 +619,12 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 learningContext == null || learningContext.isBlank() ? "本次未获得学习系统上下文，请按基础结构保守输出。" : learningContext,
                 detail.quote().name(),
                 detail.quote().code(),
+                LocalDateTime.now(),
+                freshness.quoteSource(),
+                freshness.quoteFetchedAt(),
+                freshness.latestKlineDate(),
+                freshness.lastIntradayTime(),
+                realtimeNews == null ? 0 : realtimeNews.size(),
                 detail.quote().price(),
                 detail.quote().change(),
                 detail.quote().percent(),
@@ -557,8 +639,21 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 detail.finance().roe(),
                 detail.finance().grossMargin(),
                 detail.finance().debtRatio(),
-                detail.kline().stream().limit(12).toList()
+                latestKlineSample(detail),
+                formatRealtimeNews(realtimeNews)
         );
+    }
+
+    private List<KlinePointResponse> latestKlineSample(StockDetailResponse detail) {
+        if (detail == null || detail.kline() == null || detail.kline().isEmpty()) {
+            return List.of();
+        }
+        List<KlinePointResponse> sorted = detail.kline().stream()
+                .filter(item -> item != null && item.tradeDate() != null)
+                .sorted(Comparator.comparing(KlinePointResponse::tradeDate))
+                .toList();
+        int fromIndex = Math.max(0, sorted.size() - 12);
+        return sorted.subList(fromIndex, sorted.size());
     }
 
     private AiAnalysisResultPayload parseAiPayload(String aiText) throws Exception {
@@ -1391,6 +1486,10 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         return value == null ? 0 : value.length();
     }
 
+    private static String safeText(String value) {
+        return value == null || value.isBlank() ? "未知来源" : value.trim();
+    }
+
     private static String preview(String value) {
         if (value == null || value.isBlank()) {
             return "";
@@ -1400,6 +1499,14 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
     }
 
     private record AnalysisAttemptResult(String rawResponse, AiAnalysisResultPayload payload) {
+    }
+
+    private record AnalysisFreshness(
+            String quoteSource,
+            LocalDateTime quoteFetchedAt,
+            LocalDate latestKlineDate,
+            String lastIntradayTime
+    ) {
     }
 
     private static final class AnalysisAttemptException extends RuntimeException {

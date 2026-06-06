@@ -177,7 +177,9 @@ public class WatchlistServiceImpl implements WatchlistService {
                 BigDecimal.ZERO,
                 BigDecimal.ZERO,
                 BigDecimal.ZERO,
-                entity.market
+                entity.market,
+                "LOCAL_FALLBACK",
+                LocalDateTime.now()
         );
         return buildResponse(entity, quote, EMPTY_FINANCE, advice, 0);
     }
