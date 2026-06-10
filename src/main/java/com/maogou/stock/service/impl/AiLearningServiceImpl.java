@@ -257,7 +257,7 @@ public class AiLearningServiceImpl implements AiLearningService {
         String normalizedUniverse = normalizeUniverse(universeCode);
         int normalizedHorizon = normalizeHorizon(horizonDays);
         int normalizedTopK = Math.max(1, Math.min(topK == null ? 10 : topK, 50));
-        buildWatchlistSamples(normalizedUniverse, DEFAULT_PHASE);
+        ensureFreshSamples(userId, normalizedUniverse, DEFAULT_PHASE);
         List<AiPredictionSample> samples = latestSamplesForUniverse(userId, normalizedUniverse, 120);
         AiStrategyVersion active = activeStrategy(userId);
         List<AiPredictionResult> predictions = new ArrayList<>();
@@ -348,8 +348,8 @@ public class AiLearningServiceImpl implements AiLearningService {
     @Transactional
     public AiLearningPayloads.ExperimentCenterResponse runExperiment(String title, String universeCode) {
         ensureTablesReady();
-        verifyLabels();
         Long userId = AuthContext.currentUserIdOrDefault();
+        ensureLabelsFresh(userId);
         List<AiPredictionLabel> labels = labelMapper.selectList(new QueryWrapper<AiPredictionLabel>()
                 .eq("user_id", userId)
                 .orderByAsc("evaluated_at")
@@ -417,8 +417,8 @@ public class AiLearningServiceImpl implements AiLearningService {
     @Transactional
     public AiLearningPayloads.BacktestDetailResponse runBacktest(String title, String universeCode, Integer horizonDays, Integer topK) {
         ensureTablesReady();
-        verifyLabels();
         Long userId = AuthContext.currentUserIdOrDefault();
+        ensureLabelsFresh(userId);
         int normalizedHorizon = normalizeHorizon(horizonDays);
         int normalizedTopK = Math.max(1, Math.min(topK == null ? 5 : topK, 20));
         List<AiPredictionLabel> candidateLabels = labelMapper.selectList(new QueryWrapper<AiPredictionLabel>()
@@ -505,6 +505,18 @@ public class AiLearningServiceImpl implements AiLearningService {
                 .last("LIMIT " + limit));
         long success = reports.stream().filter(item -> item.status == AnalysisStatus.SUCCESS).count();
         BigDecimal successRate = reports.isEmpty() ? BigDecimal.ZERO : divide(new BigDecimal(success * 100), new BigDecimal(reports.size()));
+        List<AiPredictionLabel> labels = labelsForReports(userId, reports);
+        BigDecimal directionHitRate = hitDirectionRate(labels);
+        BigDecimal targetHitRate = hitRate(labels);
+        BigDecimal avgNetReturn = avg(labels.stream().map(item -> item.netReturn).toList());
+        BigDecimal avgDrawdown = avg(labels.stream().map(item -> item.maxAdverseReturn).toList());
+        BigDecimal returnScore = clamp(new BigDecimal("50").add(avgNetReturn.multiply(new BigDecimal("8"))), BigDecimal.ZERO, ONE_HUNDRED);
+        BigDecimal drawdownScore = clamp(new BigDecimal("100").add(avgDrawdown.multiply(new BigDecimal("12"))), BigDecimal.ZERO, ONE_HUNDRED);
+        BigDecimal evalScore = successRate.multiply(new BigDecimal("0.20"))
+                .add(directionHitRate.multiply(new BigDecimal("0.25")))
+                .add(targetHitRate.multiply(new BigDecimal("0.25")))
+                .add(returnScore.multiply(new BigDecimal("0.20")))
+                .add(drawdownScore.multiply(new BigDecimal("0.10")));
         AiModelEvalRun run = new AiModelEvalRun();
         run.userId = userId;
         run.modelName = config.modelName;
@@ -514,9 +526,22 @@ public class AiLearningServiceImpl implements AiLearningService {
         run.jsonSuccessRate = successRate;
         run.avgLatencyMs = BigDecimal.ZERO;
         run.sampleCount = reports.size();
-        run.score = successRate;
-        run.metricsJson = writeJson(Map.of("jsonSuccessRate", percent(successRate), "reportCount", reports.size(), "successCount", success));
-        run.status = "READY";
+        run.score = scale(evalScore);
+        Map<String, Object> metrics = new LinkedHashMap<>();
+        metrics.put("jsonSuccessRate", percent(successRate));
+        metrics.put("directionHitRate", percent(directionHitRate));
+        metrics.put("targetHitRate", percent(targetHitRate));
+        metrics.put("avgNetReturn", signedPercent(avgNetReturn));
+        metrics.put("avgMaxDrawdown", signedPercent(avgDrawdown));
+        metrics.put("returnScore", returnScore);
+        metrics.put("drawdownScore", drawdownScore);
+        metrics.put("reportCount", reports.size());
+        metrics.put("labelCount", labels.size());
+        metrics.put("successCount", success);
+        metrics.put("latencyAvailable", false);
+        metrics.put("explain", "综合分=JSON成功率20% + 方向命中25% + 目标命中25% + 收益20% + 回撤10%");
+        run.metricsJson = writeJson(metrics);
+        run.status = labels.size() >= 10 ? "READY" : "LOW_SAMPLE";
         run.createdAt = LocalDateTime.now();
         modelEvalRunMapper.insert(run);
         return modelEvals();
@@ -559,6 +584,34 @@ public class AiLearningServiceImpl implements AiLearningService {
         prediction.reportId = reportId;
         prediction.updatedAt = LocalDateTime.now();
         predictionMapper.updateById(prediction);
+    }
+
+    private void ensureFreshSamples(Long userId, String universeCode, String samplePhase) {
+        Long count = sampleMapper.selectCount(new QueryWrapper<AiPredictionSample>()
+                .eq("user_id", userId)
+                .eq("trade_date", LocalDate.now())
+                .eq("universe_code", normalizeUniverse(universeCode))
+                .eq("sample_phase", normalizePhase(samplePhase)));
+        if (count == null || count == 0) {
+            buildWatchlistSamples(universeCode, samplePhase);
+        }
+    }
+
+    private void ensureLabelsFresh(Long userId) {
+        AiPredictionResult latestPrediction = predictionMapper.selectOne(new QueryWrapper<AiPredictionResult>()
+                .eq("user_id", userId)
+                .orderByDesc("updated_at")
+                .last("LIMIT 1"));
+        if (latestPrediction == null) {
+            return;
+        }
+        AiPredictionLabel latestLabel = labelMapper.selectOne(new QueryWrapper<AiPredictionLabel>()
+                .eq("user_id", userId)
+                .orderByDesc("evaluated_at")
+                .last("LIMIT 1"));
+        if (latestLabel == null || latestLabel.evaluatedAt == null || latestLabel.evaluatedAt.isBefore(latestPrediction.updatedAt)) {
+            verifyLabels();
+        }
     }
 
     private void ensureTablesReady() {
@@ -650,7 +703,7 @@ public class AiLearningServiceImpl implements AiLearningService {
             Integer horizonDays,
             Integer rankNo
     ) {
-        PredictionScore score = predictionScore(sample, factors);
+        PredictionScore score = predictionScore(userId, sample, factors);
         Long normalizedStrategyId = strategyVersionId == null ? 0L : strategyVersionId;
         int normalizedHorizon = normalizeHorizon(horizonDays);
         AiPredictionResult prediction = predictionMapper.selectOne(new QueryWrapper<AiPredictionResult>()
@@ -977,9 +1030,10 @@ public class AiLearningServiceImpl implements AiLearningService {
         );
     }
 
-    private PredictionScore predictionScore(AiPredictionSample sample, List<AiFactorValue> factors) {
+    private PredictionScore predictionScore(Long userId, AiPredictionSample sample, List<AiFactorValue> factors) {
         Map<String, FactorDefinitionSeed> definitions = defaultFactorSeeds().stream()
                 .collect(Collectors.toMap(FactorDefinitionSeed::code, Function.identity(), (left, right) -> left));
+        Map<String, AiFactorStat> learnedStats = learnedFactorStats(userId, sample.marketRegime);
         BigDecimal positive = BigDecimal.ZERO;
         BigDecimal negative = BigDecimal.ZERO;
         List<Map<String, Object>> reasons = new ArrayList<>();
@@ -988,19 +1042,36 @@ public class AiLearningServiceImpl implements AiLearningService {
             if (definition == null || factor.hit == null || factor.hit == 0) {
                 continue;
             }
-            BigDecimal contribution = definition.weight().abs().multiply(safe(factor.normalizedValue).max(new BigDecimal("0.20")));
+            AiFactorStat learned = learnedStats.get(factor.factorCode);
+            BigDecimal contribution = learnedContributionWeight(definition, learned)
+                    .multiply(safe(factor.normalizedValue).max(new BigDecimal("0.20")));
+            String learnedEffect = "DEFAULT";
             if ("NEGATIVE".equals(definition.direction())) {
+                if (isLearnedFalseRisk(learned)) {
+                    contribution = contribution.multiply(new BigDecimal("0.35"));
+                    learnedEffect = "RISK_DOWNGRADED";
+                }
                 negative = negative.add(contribution);
             } else if ("POSITIVE".equals(definition.direction())) {
-                positive = positive.add(contribution);
+                if (isLearnedBadPositive(learned)) {
+                    negative = negative.add(contribution.multiply(new BigDecimal("0.70")));
+                    learnedEffect = "POSITIVE_REVERSED_TO_RISK";
+                } else {
+                    positive = positive.add(contribution);
+                    learnedEffect = learned == null ? "DEFAULT" : "LEARNED_UPSERT";
+                }
             }
-            reasons.add(Map.of(
-                    "factorCode", factor.factorCode,
-                    "factorName", definition.name(),
-                    "direction", definition.direction(),
-                    "contribution", contribution.setScale(2, RoundingMode.HALF_UP),
-                    "evidence", factor.evidence == null ? "" : factor.evidence
-            ));
+            Map<String, Object> reason = new LinkedHashMap<>();
+            reason.put("factorCode", factor.factorCode);
+            reason.put("factorName", definition.name());
+            reason.put("direction", definition.direction());
+            reason.put("learnedEffect", learnedEffect);
+            reason.put("contribution", contribution.setScale(2, RoundingMode.HALF_UP));
+            reason.put("learnedSampleCount", learned == null || learned.sampleCount == null ? 0 : learned.sampleCount);
+            reason.put("learnedSuccessRate", learned == null ? BigDecimal.ZERO : safe(learned.successRate));
+            reason.put("learnedAvgReturn", learned == null ? BigDecimal.ZERO : safe(learned.avgReturn));
+            reason.put("evidence", factor.evidence == null ? "" : factor.evidence);
+            reasons.add(reason);
         }
         BigDecimal qualityBonus = safe(sample.dataQualityScore).multiply(new BigDecimal("0.08"));
         BigDecimal score = clamp(new BigDecimal("50").add(positive.multiply(new BigDecimal("1.25"))).subtract(negative.multiply(new BigDecimal("1.35"))).add(qualityBonus), BigDecimal.ZERO, ONE_HUNDRED);
@@ -1024,6 +1095,58 @@ public class AiLearningServiceImpl implements AiLearningService {
         };
         BigDecimal confidence = clamp(new BigDecimal("42").add(score.subtract(new BigDecimal("50")).abs().multiply(new BigDecimal("0.55"))).add(safe(sample.dataQualityScore).multiply(new BigDecimal("0.18"))), BigDecimal.ZERO, new BigDecimal("95"));
         return new PredictionScore(action, direction, score, confidence, risk, reasons.stream().limit(8).toList());
+    }
+
+    private Map<String, AiFactorStat> learnedFactorStats(Long userId, String marketRegime) {
+        if (userId == null) {
+            return Map.of();
+        }
+        List<AiFactorStat> rows = factorStatMapper.selectList(new QueryWrapper<AiFactorStat>()
+                .eq("user_id", userId)
+                .orderByDesc("sample_count")
+                .orderByDesc("weight_score"));
+        if (rows == null || rows.isEmpty()) {
+            return Map.of();
+        }
+        String regime = marketRegime == null ? "" : marketRegime;
+        Map<String, AiFactorStat> result = new LinkedHashMap<>();
+        for (AiFactorStat row : rows) {
+            if (regime.equals(row.marketRegime)) {
+                result.putIfAbsent(row.factorCode, row);
+            }
+        }
+        for (AiFactorStat row : rows) {
+            result.putIfAbsent(row.factorCode, row);
+        }
+        return result;
+    }
+
+    private BigDecimal learnedContributionWeight(FactorDefinitionSeed definition, AiFactorStat learned) {
+        BigDecimal base = definition.weight().abs();
+        if (learned == null || learned.sampleCount == null || learned.sampleCount < 5) {
+            return base;
+        }
+        BigDecimal learnedWeight = safe(learned.weightScore)
+                .divide(new BigDecimal("100"), 6, RoundingMode.HALF_UP)
+                .multiply(new BigDecimal("14"));
+        BigDecimal blended = base.multiply(new BigDecimal("0.45")).add(learnedWeight.multiply(new BigDecimal("0.55")));
+        return clamp(blended, new BigDecimal("1"), new BigDecimal("18"));
+    }
+
+    private static boolean isLearnedBadPositive(AiFactorStat learned) {
+        return learned != null
+                && learned.sampleCount != null
+                && learned.sampleCount >= 5
+                && (safe(learned.successRate).compareTo(new BigDecimal("45")) < 0
+                || safe(learned.avgReturn).compareTo(BigDecimal.ZERO) < 0);
+    }
+
+    private static boolean isLearnedFalseRisk(AiFactorStat learned) {
+        return learned != null
+                && learned.sampleCount != null
+                && learned.sampleCount >= 5
+                && safe(learned.successRate).compareTo(new BigDecimal("60")) >= 0
+                && safe(learned.avgReturn).compareTo(BigDecimal.ZERO) > 0;
     }
 
     private LabelResult labelResult(AiPredictionResult prediction, BigDecimal netReturn, BigDecimal mfe, BigDecimal mae) {
@@ -1212,6 +1335,21 @@ public class AiLearningServiceImpl implements AiLearningService {
 
     private AiLearningPayloads.BacktestTradeItem backtestTradeItem(AiBacktestTrade item) {
         return new AiLearningPayloads.BacktestTradeItem(item.id, item.predictionId, item.stockCode, item.stockName, item.entryDate, item.exitDate, item.entryPrice, item.exitPrice, item.netReturn, item.maxDrawdown, item.rankNo);
+    }
+
+    private List<AiPredictionLabel> labelsForReports(Long userId, List<AiAnalysisReport> reports) {
+        List<Long> predictionIds = reports == null ? List.of() : reports.stream()
+                .map(item -> item.predictionId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (predictionIds.isEmpty()) {
+            return List.of();
+        }
+        return labelMapper.selectList(new QueryWrapper<AiPredictionLabel>()
+                .eq("user_id", userId)
+                .in("prediction_id", predictionIds)
+                .orderByDesc("evaluated_at"));
     }
 
     private AiLearningPayloads.ModelEvalItem modelEvalItem(AiModelEvalRun item) {
@@ -1659,6 +1797,14 @@ public class AiLearningServiceImpl implements AiLearningService {
             return BigDecimal.ZERO;
         }
         long hit = labels.stream().filter(item -> item.hitTarget != null && item.hitTarget == 1).count();
+        return divide(new BigDecimal(hit * 100), new BigDecimal(labels.size()));
+    }
+
+    private static BigDecimal hitDirectionRate(List<AiPredictionLabel> labels) {
+        if (labels == null || labels.isEmpty()) {
+            return BigDecimal.ZERO;
+        }
+        long hit = labels.stream().filter(item -> item.hitDirection != null && item.hitDirection == 1).count();
         return divide(new BigDecimal(hit * 100), new BigDecimal(labels.size()));
     }
 

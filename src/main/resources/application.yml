@@ -55,6 +55,8 @@ maogou:
     close-analysis-cron: "0 30 15 * * MON-FRI"
     evolution-review-cron: "${MAOGOU_EVOLUTION_REVIEW_CRON:0 10 16 * * MON-FRI}"
     auto-close-pipeline-cron: "${MAOGOU_AUTO_CLOSE_PIPELINE_CRON:0 0 16 * * MON-FRI}"
+    trading-holidays: "${MAOGOU_TRADING_HOLIDAYS:2026-01-01,2026-02-16,2026-02-17,2026-02-18,2026-02-19,2026-02-20,2026-04-06,2026-05-01,2026-05-04,2026-05-05,2026-06-19,2026-09-25,2026-10-01,2026-10-02,2026-10-05,2026-10-06,2026-10-07}"
+    trading-workdays: "${MAOGOU_TRADING_WORKDAYS:}"
   auth:
     jwt-secret: ${MAOGOU_JWT_SECRET:maogou-local-dev-secret-change-me}
     access-token-ttl-minutes: ${MAOGOU_ACCESS_TOKEN_TTL_MINUTES:1440}

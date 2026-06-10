@@ -60,7 +60,7 @@ public class MarketDataServiceImpl implements MarketDataService {
                 "latest:" + size,
                 Duration.ofMinutes(5),
                 () -> marketDataClient.fetchLatestNews(size),
-                () -> fallbackMarketDataClient.fetchLatestNews(size)
+                null
         );
     }
 
@@ -71,7 +71,7 @@ public class MarketDataServiceImpl implements MarketDataService {
                 "core-indexes",
                 Duration.ofSeconds(properties.getMarket().getQuoteCacheTtlSeconds()),
                 marketDataClient::fetchCoreIndexes,
-                fallbackMarketDataClient::fetchCoreIndexes
+                null
         );
     }
 
@@ -340,6 +340,10 @@ public class MarketDataServiceImpl implements MarketDataService {
             if (existing != null) {
                 log.warn("market data source failed, return stale cache, key={}", key, ex);
                 return existing.value;
+            }
+            if (fallback == null) {
+                log.warn("market data source failed and no fallback is allowed, key={}", key, ex);
+                throw ex;
             }
             log.warn("market data source failed, return fallback data, key={}", key, ex);
             T fallbackValue = fallback.get();

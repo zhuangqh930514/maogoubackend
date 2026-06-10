@@ -9,6 +9,7 @@ import com.maogou.stock.dto.settings.ModelConfigResponse;
 import com.maogou.stock.dto.settings.SchedulerStatusResponse;
 import com.maogou.stock.dto.settings.SchedulerToggleRequest;
 import com.maogou.stock.service.ModelConfigService;
+import com.maogou.stock.service.TradingCalendarService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -17,7 +18,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -29,10 +29,16 @@ public class SettingsController {
 
     private final ModelConfigService modelConfigService;
     private final AppProperties properties;
+    private final TradingCalendarService tradingCalendarService;
 
-    public SettingsController(ModelConfigService modelConfigService, AppProperties properties) {
+    public SettingsController(
+            ModelConfigService modelConfigService,
+            AppProperties properties,
+            TradingCalendarService tradingCalendarService
+    ) {
         this.modelConfigService = modelConfigService;
         this.properties = properties;
+        this.tradingCalendarService = tradingCalendarService;
     }
 
     @GetMapping("/model")
@@ -93,20 +99,9 @@ public class SettingsController {
         return next.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
     }
 
-    private static String nextAutoClosePipelineTime() {
-        LocalDateTime now = LocalDateTime.now();
-        LocalDate date = now.toLocalDate();
-        LocalTime time = LocalTime.of(16, 0);
-        LocalDateTime next = LocalDateTime.of(date, time);
-        while (!isTradingWeekday(next.toLocalDate()) || !next.isAfter(now)) {
-            next = LocalDateTime.of(next.toLocalDate().plusDays(1), time);
-        }
+    private String nextAutoClosePipelineTime() {
+        LocalDateTime next = tradingCalendarService.nextTradingDateTime(LocalDateTime.now(), 16, 0);
         return next.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-    }
-
-    private static boolean isTradingWeekday(LocalDate date) {
-        DayOfWeek day = date.getDayOfWeek();
-        return day != DayOfWeek.SATURDAY && day != DayOfWeek.SUNDAY;
     }
 
     private static String formatDateTime(LocalDateTime value) {

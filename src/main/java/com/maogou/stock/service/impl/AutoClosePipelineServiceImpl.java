@@ -10,11 +10,11 @@ import com.maogou.stock.service.AiAnalysisService;
 import com.maogou.stock.service.AiEvolutionService;
 import com.maogou.stock.service.AiLearningService;
 import com.maogou.stock.service.AutoClosePipelineService;
+import com.maogou.stock.service.TradingCalendarService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -43,6 +43,7 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
     private final AiLearningService aiLearningService;
     private final AiAnalysisService aiAnalysisService;
     private final AiEvolutionService aiEvolutionService;
+    private final TradingCalendarService tradingCalendarService;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     public AutoClosePipelineServiceImpl(
@@ -50,19 +51,21 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
             AiLearningJobLogMapper jobLogMapper,
             AiLearningService aiLearningService,
             AiAnalysisService aiAnalysisService,
-            AiEvolutionService aiEvolutionService
+            AiEvolutionService aiEvolutionService,
+            TradingCalendarService tradingCalendarService
     ) {
         this.configMapper = configMapper;
         this.jobLogMapper = jobLogMapper;
         this.aiLearningService = aiLearningService;
         this.aiAnalysisService = aiAnalysisService;
         this.aiEvolutionService = aiEvolutionService;
+        this.tradingCalendarService = tradingCalendarService;
     }
 
     @Override
     public void runEnabledPipelines() {
-        if (!isTradingDay(LocalDate.now())) {
-            log.info("auto close pipeline skipped, today is not a trading weekday");
+        if (!tradingCalendarService.isTradingDay(LocalDate.now())) {
+            log.info("auto close pipeline skipped, today is not an A-share trading day");
             return;
         }
         if (!running.compareAndSet(false, true)) {
@@ -172,11 +175,6 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
         }
         config.updatedAt = now;
         configMapper.updateById(config);
-    }
-
-    private static boolean isTradingDay(LocalDate date) {
-        DayOfWeek day = date.getDayOfWeek();
-        return day != DayOfWeek.SATURDAY && day != DayOfWeek.SUNDAY;
     }
 
     private static String nowText() {

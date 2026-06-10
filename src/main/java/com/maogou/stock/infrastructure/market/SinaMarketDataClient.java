@@ -218,7 +218,10 @@ public class SinaMarketDataClient implements MarketDataClient {
         if (indexes.isEmpty() && firstFailure != null) {
             throw firstFailure;
         }
-        indexes.add(fetchA50IndexSafely());
+        MarketIndexResponse a50 = fetchA50IndexSafely();
+        if (a50 != null) {
+            indexes.add(a50);
+        }
         return indexes;
     }
 
@@ -278,14 +281,8 @@ public class SinaMarketDataClient implements MarketDataClient {
         try {
             return fetchA50Index();
         } catch (RuntimeException ex) {
-            return new MarketIndexResponse(
-                    "富时中国A50",
-                    "A50.CFD",
-                    new BigDecimal("15669.52"),
-                    new BigDecimal("-98.48"),
-                    new BigDecimal("-0.63"),
-                    List.of()
-            );
+            log.warn("A50 realtime source failed, skip stale static fallback", ex);
+            return null;
         }
     }
 

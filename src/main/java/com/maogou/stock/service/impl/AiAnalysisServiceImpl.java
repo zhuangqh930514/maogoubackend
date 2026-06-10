@@ -28,6 +28,7 @@ import com.maogou.stock.service.AiLearningService;
 import com.maogou.stock.service.MarketDataService;
 import com.maogou.stock.service.ModelConfigService;
 import com.maogou.stock.service.PromptTemplateService;
+import com.maogou.stock.service.TradingCalendarService;
 import com.maogou.stock.service.WatchlistService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -72,6 +73,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
     private final AiLearningService aiLearningService;
     private final ModelConfigService modelConfigService;
     private final PromptTemplateService promptTemplateService;
+    private final TradingCalendarService tradingCalendarService;
     private final LocalAiClient localAiClient;
     private final ObjectMapper objectMapper;
 
@@ -85,6 +87,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             AiLearningService aiLearningService,
             ModelConfigService modelConfigService,
             PromptTemplateService promptTemplateService,
+            TradingCalendarService tradingCalendarService,
             LocalAiClient localAiClient,
             ObjectMapper objectMapper
     ) {
@@ -97,6 +100,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         this.aiLearningService = aiLearningService;
         this.modelConfigService = modelConfigService;
         this.promptTemplateService = promptTemplateService;
+        this.tradingCalendarService = tradingCalendarService;
         this.localAiClient = localAiClient;
         this.objectMapper = objectMapper;
     }
@@ -538,6 +542,10 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 .orElse(null);
         if (latestKlineDate == null) {
             throw new IllegalStateException("最近 K 线数据不可用，已停止 AI 分析。");
+        }
+        LocalDate expectedKlineDate = tradingCalendarService.latestExpectedKlineDate(now);
+        if (latestKlineDate.isBefore(expectedKlineDate)) {
+            throw new IllegalStateException("最近 K 线日期为 " + latestKlineDate + "，低于当前应有交易日 " + expectedKlineDate + "，已停止 AI 分析。");
         }
         LocalDate staleBefore = now.toLocalDate().minusDays(MAX_ANALYSIS_KLINE_AGE_DAYS);
         if (latestKlineDate.isBefore(staleBefore)) {

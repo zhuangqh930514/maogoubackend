@@ -170,6 +170,8 @@ public class AppProperties {
         private String closeAnalysisCron = "0 30 15 * * MON-FRI";
         private String evolutionReviewCron = "0 10 16 * * MON-FRI";
         private String autoClosePipelineCron = "0 0 16 * * MON-FRI";
+        private String tradingHolidays = "2026-01-01,2026-02-16,2026-02-17,2026-02-18,2026-02-19,2026-02-20,2026-04-06,2026-05-01,2026-05-04,2026-05-05,2026-06-19,2026-09-25,2026-10-01,2026-10-02,2026-10-05,2026-10-06,2026-10-07";
+        private String tradingWorkdays = "";
 
         public boolean isEnabled() {
             return enabled;
@@ -217,6 +219,22 @@ public class AppProperties {
 
         public void setAutoClosePipelineCron(String autoClosePipelineCron) {
             this.autoClosePipelineCron = autoClosePipelineCron;
+        }
+
+        public String getTradingHolidays() {
+            return tradingHolidays;
+        }
+
+        public void setTradingHolidays(String tradingHolidays) {
+            this.tradingHolidays = tradingHolidays;
+        }
+
+        public String getTradingWorkdays() {
+            return tradingWorkdays;
+        }
+
+        public void setTradingWorkdays(String tradingWorkdays) {
+            this.tradingWorkdays = tradingWorkdays;
         }
     }
 
