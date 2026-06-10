@@ -60,6 +60,12 @@ public class ModelConfigServiceImpl implements ModelConfigService {
         entity.closeAnalysisTime = request.closeTime() == null || request.closeTime().isBlank() ? "15:30" : request.closeTime();
         entity.analysisScope = request.analysisScope() == null || request.analysisScope().isBlank() ? "全部自选股" : request.analysisScope();
         entity.promptTemplate = resolvePromptTemplate(request.promptTemplate(), entity.promptTemplate);
+        if (entity.autoClosePipelineEnabled == null) {
+            entity.autoClosePipelineEnabled = 0;
+        }
+        if (entity.autoClosePipelineLastStatus == null || entity.autoClosePipelineLastStatus.isBlank()) {
+            entity.autoClosePipelineLastStatus = "IDLE";
+        }
         entity.deleted = 0;
         entity.updatedAt = LocalDateTime.now();
         if (insert) {
@@ -84,6 +90,28 @@ public class ModelConfigServiceImpl implements ModelConfigService {
         }
     }
 
+    @Override
+    @Transactional
+    public AiModelConfig setAutoClosePipelineEnabled(boolean enabled) {
+        AiModelConfig entity = currentEntity();
+        boolean insert = entity.id == null;
+        entity.userId = AuthContext.currentUserIdOrDefault();
+        entity.autoClosePipelineEnabled = enabled ? 1 : 0;
+        entity.autoClosePipelineLastStatus = enabled ? "IDLE" : "DISABLED";
+        entity.autoClosePipelineLastMessage = enabled
+                ? "已开启每日 16:00 自动收盘学习流水线"
+                : "已关闭每日自动收盘学习流水线";
+        entity.deleted = 0;
+        entity.updatedAt = LocalDateTime.now();
+        if (insert) {
+            entity.createdAt = entity.updatedAt;
+            configMapper.insert(entity);
+        } else {
+            configMapper.updateById(entity);
+        }
+        return entity;
+    }
+
     private AiModelConfig defaultEntity() {
         AppProperties.Ai ai = properties.getAi();
         AiModelConfig config = new AiModelConfig();
@@ -98,6 +126,8 @@ public class ModelConfigServiceImpl implements ModelConfigService {
         config.closeAnalysisTime = "15:30";
         config.analysisScope = "全部自选股";
         config.promptTemplate = DEFAULT_PROMPT_TEMPLATE;
+        config.autoClosePipelineEnabled = 0;
+        config.autoClosePipelineLastStatus = "IDLE";
         config.deleted = 0;
         return config;
     }

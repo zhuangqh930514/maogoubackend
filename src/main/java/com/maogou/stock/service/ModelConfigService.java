@@ -13,4 +13,6 @@ public interface ModelConfigService {
     ModelConfigResponse save(ModelConfigRequest request);
 
     ConnectionTestResponse testConnection(ModelConfigRequest request);
+
+    AiModelConfig setAutoClosePipelineEnabled(boolean enabled);
 }

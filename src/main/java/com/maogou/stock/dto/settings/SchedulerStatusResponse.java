@@ -10,6 +10,14 @@ public record SchedulerStatusResponse(
         String closeTime,
         String analysisScope,
         String nextCloseAnalysisTime,
-        String nextEvolutionReviewTime
+        String nextEvolutionReviewTime,
+        boolean autoClosePipelineEnabled,
+        boolean autoClosePipelineRunning,
+        String autoClosePipelineCron,
+        String nextAutoClosePipelineTime,
+        String autoClosePipelineLastRunAt,
+        String autoClosePipelineLastFinishedAt,
+        String autoClosePipelineLastStatus,
+        String autoClosePipelineLastMessage
 ) {
 }

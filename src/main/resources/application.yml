@@ -54,6 +54,7 @@ maogou:
     intraday-analysis-fixed-rate-ms: 1800000
     close-analysis-cron: "0 30 15 * * MON-FRI"
     evolution-review-cron: "${MAOGOU_EVOLUTION_REVIEW_CRON:0 10 16 * * MON-FRI}"
+    auto-close-pipeline-cron: "${MAOGOU_AUTO_CLOSE_PIPELINE_CRON:0 0 16 * * MON-FRI}"
   auth:
     jwt-secret: ${MAOGOU_JWT_SECRET:maogou-local-dev-secret-change-me}
     access-token-ttl-minutes: ${MAOGOU_ACCESS_TOKEN_TTL_MINUTES:1440}

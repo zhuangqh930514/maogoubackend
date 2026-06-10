@@ -1,0 +1,25 @@
+package com.maogou.stock.scheduler;
+
+import com.maogou.stock.service.AutoClosePipelineService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+
+@Component
+public class AutoClosePipelineScheduler {
+
+    private static final Logger log = LoggerFactory.getLogger(AutoClosePipelineScheduler.class);
+
+    private final AutoClosePipelineService autoClosePipelineService;
+
+    public AutoClosePipelineScheduler(AutoClosePipelineService autoClosePipelineService) {
+        this.autoClosePipelineService = autoClosePipelineService;
+    }
+
+    @Scheduled(cron = "${maogou.scheduler.auto-close-pipeline-cron}", zone = "Asia/Shanghai")
+    public void runAutoClosePipeline() {
+        log.info("auto close pipeline scheduler triggered");
+        autoClosePipelineService.runEnabledPipelines();
+    }
+}

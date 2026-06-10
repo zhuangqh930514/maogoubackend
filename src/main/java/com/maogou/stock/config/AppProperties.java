@@ -169,6 +169,7 @@ public class AppProperties {
         private long intradayAnalysisFixedRateMs = 1800000;
         private String closeAnalysisCron = "0 30 15 * * MON-FRI";
         private String evolutionReviewCron = "0 10 16 * * MON-FRI";
+        private String autoClosePipelineCron = "0 0 16 * * MON-FRI";
 
         public boolean isEnabled() {
             return enabled;
@@ -208,6 +209,14 @@ public class AppProperties {
 
         public void setEvolutionReviewCron(String evolutionReviewCron) {
             this.evolutionReviewCron = evolutionReviewCron;
+        }
+
+        public String getAutoClosePipelineCron() {
+            return autoClosePipelineCron;
+        }
+
+        public void setAutoClosePipelineCron(String autoClosePipelineCron) {
+            this.autoClosePipelineCron = autoClosePipelineCron;
         }
     }
 

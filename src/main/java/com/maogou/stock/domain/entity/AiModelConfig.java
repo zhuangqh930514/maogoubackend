@@ -23,6 +23,11 @@ public class AiModelConfig {
     public String closeAnalysisTime;
     public String analysisScope;
     public String promptTemplate;
+    public Integer autoClosePipelineEnabled;
+    public LocalDateTime autoClosePipelineLastRunAt;
+    public LocalDateTime autoClosePipelineLastFinishedAt;
+    public String autoClosePipelineLastStatus;
+    public String autoClosePipelineLastMessage;
     @TableLogic
     public Integer deleted;
     public LocalDateTime createdAt;
