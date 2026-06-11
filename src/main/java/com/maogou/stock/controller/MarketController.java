@@ -5,8 +5,8 @@ import com.maogou.stock.dto.market.IntradayPointResponse;
 import com.maogou.stock.dto.market.KlinePointResponse;
 import com.maogou.stock.dto.market.MarketBreadthResponse;
 import com.maogou.stock.dto.market.MarketIndexResponse;
-import com.maogou.stock.dto.market.SectorHotStockResponse;
 import com.maogou.stock.dto.market.SectorHeatmapResponse;
+import com.maogou.stock.dto.market.SectorHotStocksResponse;
 import com.maogou.stock.service.MarketDataService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -42,14 +42,14 @@ public class MarketController {
     }
 
     @GetMapping("/hot-stocks")
-    public ApiResponse<List<SectorHotStockResponse>> marketHotStocks(
+    public ApiResponse<SectorHotStocksResponse> marketHotStocks(
             @RequestParam(defaultValue = "10") int limit
     ) {
         return ApiResponse.ok(marketDataService.marketHotStocks(limit));
     }
 
     @GetMapping("/sectors/{code}/hot-stocks")
-    public ApiResponse<List<SectorHotStockResponse>> sectorHotStocks(
+    public ApiResponse<SectorHotStocksResponse> sectorHotStocks(
             @PathVariable String code,
             @RequestParam(defaultValue = "10") int limit
     ) {
