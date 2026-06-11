@@ -2,12 +2,17 @@ package com.maogou.stock.controller;
 
 import com.maogou.stock.config.AppProperties;
 import com.maogou.stock.common.ApiResponse;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.maogou.stock.domain.entity.AiLearningJobLog;
 import com.maogou.stock.domain.entity.AiModelConfig;
 import com.maogou.stock.dto.settings.ConnectionTestResponse;
 import com.maogou.stock.dto.settings.ModelConfigRequest;
 import com.maogou.stock.dto.settings.ModelConfigResponse;
+import com.maogou.stock.dto.settings.SchedulerJobLogResponse;
 import com.maogou.stock.dto.settings.SchedulerStatusResponse;
 import com.maogou.stock.dto.settings.SchedulerToggleRequest;
+import com.maogou.stock.mapper.AiLearningJobLogMapper;
+import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.ModelConfigService;
 import com.maogou.stock.service.TradingCalendarService;
 import jakarta.validation.Valid;
@@ -22,21 +27,25 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/settings")
 public class SettingsController {
 
     private final ModelConfigService modelConfigService;
+    private final AiLearningJobLogMapper jobLogMapper;
     private final AppProperties properties;
     private final TradingCalendarService tradingCalendarService;
 
     public SettingsController(
             ModelConfigService modelConfigService,
+            AiLearningJobLogMapper jobLogMapper,
             AppProperties properties,
             TradingCalendarService tradingCalendarService
     ) {
         this.modelConfigService = modelConfigService;
+        this.jobLogMapper = jobLogMapper;
         this.properties = properties;
         this.tradingCalendarService = tradingCalendarService;
     }
@@ -81,6 +90,29 @@ public class SettingsController {
                 nullToEmpty(entity.autoClosePipelineLastStatus),
                 nullToEmpty(entity.autoClosePipelineLastMessage)
         ));
+    }
+
+    @GetMapping("/scheduler/job-logs")
+    public ApiResponse<List<SchedulerJobLogResponse>> schedulerJobLogs(Integer limit) {
+        int size = Math.max(1, Math.min(limit == null ? 20 : limit, 50));
+        List<AiLearningJobLog> rows = jobLogMapper.selectList(new QueryWrapper<AiLearningJobLog>()
+                .eq("user_id", AuthContext.currentUserIdOrDefault())
+                .orderByDesc("started_at")
+                .last("LIMIT " + size));
+        return ApiResponse.ok(rows.stream()
+                .map(item -> new SchedulerJobLogResponse(
+                        item.id,
+                        item.jobName,
+                        item.jobType,
+                        item.status,
+                        item.startedAt,
+                        item.finishedAt,
+                        item.processedCount,
+                        item.successCount,
+                        item.failedCount,
+                        item.errorMessage
+                ))
+                .toList());
     }
 
     @PutMapping("/scheduler/auto-close-pipeline")

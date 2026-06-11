@@ -7,6 +7,7 @@ import com.maogou.stock.mapper.AiLearningJobLogMapper;
 import com.maogou.stock.mapper.AiModelConfigMapper;
 import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.AiAnalysisService;
+import com.maogou.stock.service.AiDailyInsightService;
 import com.maogou.stock.service.AiEvolutionService;
 import com.maogou.stock.service.AiLearningService;
 import com.maogou.stock.service.AutoClosePipelineService;
@@ -35,13 +36,15 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
             new PipelineStep("RANK_UNIVERSE", "生成 Top K 候选"),
             new PipelineStep("RUN_EXPERIMENT", "运行策略实验"),
             new PipelineStep("RUN_BACKTEST", "Top K 回测验证"),
-            new PipelineStep("RUN_MODEL_EVAL", "模型输出评测")
+            new PipelineStep("RUN_MODEL_EVAL", "模型输出评测"),
+            new PipelineStep("BUILD_DAILY_INSIGHT", "生成每日投研结果")
     );
 
     private final AiModelConfigMapper configMapper;
     private final AiLearningJobLogMapper jobLogMapper;
     private final AiLearningService aiLearningService;
     private final AiAnalysisService aiAnalysisService;
+    private final AiDailyInsightService dailyInsightService;
     private final AiEvolutionService aiEvolutionService;
     private final TradingCalendarService tradingCalendarService;
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -51,6 +54,7 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
             AiLearningJobLogMapper jobLogMapper,
             AiLearningService aiLearningService,
             AiAnalysisService aiAnalysisService,
+            AiDailyInsightService dailyInsightService,
             AiEvolutionService aiEvolutionService,
             TradingCalendarService tradingCalendarService
     ) {
@@ -58,6 +62,7 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
         this.jobLogMapper = jobLogMapper;
         this.aiLearningService = aiLearningService;
         this.aiAnalysisService = aiAnalysisService;
+        this.dailyInsightService = dailyInsightService;
         this.aiEvolutionService = aiEvolutionService;
         this.tradingCalendarService = tradingCalendarService;
     }
@@ -123,6 +128,7 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
             case "RUN_EXPERIMENT" -> aiLearningService.runExperiment("自动收盘策略实验 " + nowText(), "WATCHLIST");
             case "RUN_BACKTEST" -> aiLearningService.runBacktest("自动收盘 Top K 回测 " + nowText(), "WATCHLIST", 3, 5);
             case "RUN_MODEL_EVAL" -> aiLearningService.runModelEval("REPORT_JSON", 30);
+            case "BUILD_DAILY_INSIGHT" -> dailyInsightService.rebuildForCurrentUser("AUTO_CLOSE", "自动收盘流水线已生成每日 AI 投研结果");
             default -> throw new IllegalArgumentException("未知自动流水线步骤：" + step.key());
         }
     }

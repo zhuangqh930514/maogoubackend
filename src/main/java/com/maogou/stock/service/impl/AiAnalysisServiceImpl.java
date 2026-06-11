@@ -1226,14 +1226,14 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
     }
 
     private AiAnalysisResultPayload.DecisionPayload fallbackDecisionFromText(String rawText, AiAnalysisResultPayload.BuySellPointsPayload buySellPoints) {
-        String decision = inferDecision(rawText, buySellPoints);
+        String decision = "WATCH";
         return new AiAnalysisResultPayload.DecisionPayload(
                 decision,
-                0.50,
+                0.35,
                 "1-3d",
                 directionFromDecision(decision),
                 "MEDIUM",
-                "模型未完整输出 decision 字段，系统根据买卖点和报告文本生成保守决策。",
+                "模型未完整输出 decision 字段，系统已降级为观察，不允许进入每日推荐关注。",
                 fallbackFactors(rawText)
         );
     }
