@@ -878,12 +878,12 @@ public class AiLearningServiceImpl implements AiLearningService {
     }
 
     private void ensureDefaultFactorDefinitions() {
+        LocalDateTime now = LocalDateTime.now();
         for (FactorDefinitionSeed seed : defaultFactorSeeds()) {
             AiFactorDefinition existing = factorDefinitionMapper.selectOne(new QueryWrapper<AiFactorDefinition>()
                     .eq("factor_code", seed.code())
                     .eq("version_no", "v1")
                     .last("LIMIT 1"));
-            LocalDateTime now = LocalDateTime.now();
             if (existing == null) {
                 AiFactorDefinition definition = new AiFactorDefinition();
                 definition.factorCode = seed.code();
@@ -898,17 +898,57 @@ public class AiLearningServiceImpl implements AiLearningService {
                 definition.createdAt = now;
                 definition.updatedAt = now;
                 factorDefinitionMapper.insert(definition);
-            } else {
-                existing.factorName = seed.name();
-                existing.factorGroup = seed.group();
-                existing.direction = seed.direction();
-                existing.formulaDesc = seed.formulaDesc();
-                existing.defaultWeight = seed.weight();
-                existing.enabled = existing.enabled == null ? 1 : existing.enabled;
-                existing.updatedAt = now;
+            } else if (applyDefaultFactorDefinition(existing, seed.name(), seed.group(), seed.direction(), seed.formulaDesc(), seed.weight(), now)) {
                 factorDefinitionMapper.updateById(existing);
             }
         }
+    }
+
+    static boolean applyDefaultFactorDefinition(
+            AiFactorDefinition definition,
+            String factorName,
+            String factorGroup,
+            String direction,
+            String formulaDesc,
+            BigDecimal defaultWeight,
+            LocalDateTime now
+    ) {
+        boolean changed = false;
+        if (!Objects.equals(definition.factorName, factorName)) {
+            definition.factorName = factorName;
+            changed = true;
+        }
+        if (!Objects.equals(definition.factorGroup, factorGroup)) {
+            definition.factorGroup = factorGroup;
+            changed = true;
+        }
+        if (!Objects.equals(definition.direction, direction)) {
+            definition.direction = direction;
+            changed = true;
+        }
+        if (!Objects.equals(definition.formulaDesc, formulaDesc)) {
+            definition.formulaDesc = formulaDesc;
+            changed = true;
+        }
+        if (!sameDecimal(definition.defaultWeight, defaultWeight)) {
+            definition.defaultWeight = defaultWeight;
+            changed = true;
+        }
+        if (definition.enabled == null) {
+            definition.enabled = 1;
+            changed = true;
+        }
+        if (changed) {
+            definition.updatedAt = now;
+        }
+        return changed;
+    }
+
+    private static boolean sameDecimal(BigDecimal left, BigDecimal right) {
+        if (left == null || right == null) {
+            return left == right;
+        }
+        return left.compareTo(right) == 0;
     }
 
     private List<FactorDefinitionSeed> defaultFactorSeeds() {
