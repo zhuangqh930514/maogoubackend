@@ -279,12 +279,25 @@ def _export_onnx(
 ) -> Path | None:
     if algorithm == "LIGHTGBM_RANKER":
         try:
+            from lightgbm import Booster
             from onnxmltools import convert_lightgbm
             from onnxmltools.convert.common.data_types import FloatTensorType
         except ImportError:
             return None
+        booster = model.booster_
+        objective = str(booster.dump_model(num_iteration=1).get("objective", ""))
+        if objective.startswith("lambdarank"):
+            model_text = booster.model_to_string()
+            objective_header = f"objective={objective}"
+            objective_metadata = f"[objective: {objective}]"
+            if objective_header not in model_text or objective_metadata not in model_text:
+                raise ValueError("LightGBM ranker model is missing objective metadata")
+            model_text = model_text.replace(
+                objective_header, "objective=regression", 1
+            ).replace(objective_metadata, "[objective: regression]", 1)
+            booster = Booster(model_str=model_text)
         converted = convert_lightgbm(
-            model.booster_,
+            booster,
             initial_types=[("features", FloatTensorType([None, feature_count]))],
             target_opset=15,
         )

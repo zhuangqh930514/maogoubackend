@@ -129,6 +129,8 @@ def test_exports_lightgbm_ranker_to_onnx_when_optional_dependencies_exist(
 ) -> None:
     lightgbm = pytest.importorskip("lightgbm")
     pytest.importorskip("onnxmltools")
+    onnx = pytest.importorskip("onnx")
+    reference = pytest.importorskip("onnx.reference")
     features = np.asarray(
         [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]] * 2,
         dtype=np.float64,
@@ -144,3 +146,12 @@ def test_exports_lightgbm_ranker_to_onnx_when_optional_dependencies_exist(
     assert output is not None
     assert output.exists()
     assert output.stat().st_size > 0
+    evaluator = reference.ReferenceEvaluator(onnx.load(output))
+    actual = np.asarray(
+        evaluator.run(None, {"features": features.astype(np.float32)})[0]
+    ).reshape(-1)
+    expected = ranker.predict(features)
+    np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+    assert ranker.booster_.dump_model(num_iteration=1)["objective"].startswith(
+        "lambdarank"
+    )
