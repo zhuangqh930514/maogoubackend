@@ -47,6 +47,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -132,19 +133,48 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
     }
 
     @Override
-    @Transactional
     public AiAnalysisReportResponse analyzeStock(String code, boolean forceRefresh, Long promptTemplateId, Long targetReportId) {
+        return analyzeStockInternal(code, forceRefresh, promptTemplateId, targetReportId, LocalDate.now(), false);
+    }
+
+    @Override
+    public AiAnalysisReportResponse analyzeStockForTradeDate(
+            String code,
+            boolean forceRefresh,
+            Long promptTemplateId,
+            Long targetReportId,
+            LocalDate tradeDate
+    ) {
+        return analyzeStockInternal(code, forceRefresh, promptTemplateId, targetReportId,
+                Objects.requireNonNull(tradeDate, "tradeDate"), true);
+    }
+
+    private AiAnalysisReportResponse analyzeStockInternal(
+            String code,
+            boolean forceRefresh,
+            Long promptTemplateId,
+            Long targetReportId,
+            LocalDate tradeDate,
+            boolean pointInTime
+    ) {
         Long userId = AuthContext.currentUserIdOrDefault();
         Long normalizedPromptTemplateId = normalizePromptTemplateId(promptTemplateId);
-        StockDetailResponse detail = marketDataService.stockDetailForAnalysis(code);
+        LocalDateTime marketDataAsOf = tradeDate.atTime(16, 0);
+        StockDetailResponse detail = pointInTime
+                ? marketDataService.stockDetailAt(code, marketDataAsOf)
+                : marketDataService.stockDetailForAnalysis(code);
         AnalysisFreshness freshness = validateAnalysisFreshness(detail);
-        AiLearningPayloads.AnalysisLearningContext learningContext = aiLearningService.prepareAnalysisContext(detail, normalizedPromptTemplateId);
-        List<NewsFlashResponse> realtimeNews = marketDataService.latestNewsForAnalysis(8);
+        AiLearningPayloads.AnalysisLearningContext learningContext = pointInTime && !tradeDate.equals(LocalDate.now())
+                ? AiLearningPayloads.AnalysisLearningContext.empty()
+                : aiLearningService.prepareAnalysisContext(detail, normalizedPromptTemplateId);
+        List<NewsFlashResponse> realtimeNews = pointInTime
+                ? marketDataService.latestNewsForAnalysisAt(8, marketDataAsOf)
+                : marketDataService.latestNewsForAnalysis(8);
         AiModelConfig config = normalizeAnalysisConfig(modelConfigService.currentEntity());
         String selectedTemplate = promptTemplateService.resolveContent(promptTemplateId, null);
         String prompt = buildPrompt(detail, config, selectedTemplate, activeStrategyPrompt(userId), learningContext.promptContext(), freshness, realtimeNews);
         LocalDateTime now = LocalDateTime.now();
-        LocalDate reportDate = now.toLocalDate();
+        LocalDate reportDate = tradeDate;
         AiAnalysisReport report = resolveTargetReport(targetReportId, detail.quote().code(), config.modelName, reportDate, now);
         report.userId = userId;
         report.stockCode = detail.quote().code();
@@ -523,7 +553,8 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             throw new IllegalStateException("实时行情价格不可用，已停止 AI 分析。");
         }
         String source = detail.quote().source() == null ? "" : detail.quote().source().trim().toUpperCase(Locale.ROOT);
-        if (source.isBlank() || "MOCK".equals(source) || "LOCAL_FALLBACK".equals(source)) {
+        if (source.isBlank() || source.contains("MOCK") || "LOCAL_TEST_FIXTURE".equals(source)
+                || "LOCAL_FALLBACK".equals(source)) {
             throw new IllegalStateException("当前行情来源不是实时数据源（source=" + (source.isBlank() ? "UNKNOWN" : source) + "），已停止 AI 分析。");
         }
         LocalDateTime fetchedAt = detail.quote().fetchedAt();

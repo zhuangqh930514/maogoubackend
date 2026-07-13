@@ -33,19 +33,22 @@ public final class AiDailyInsightScoring {
                 .add(dataQualityScore.add(freshnessScore).divide(new BigDecimal("2"), 6, RoundingMode.HALF_UP).multiply(new BigDecimal("0.10")));
 
         if (dataQualityScore.compareTo(new BigDecimal("60")) < 0) {
-            return decision("REDUCE", "AVOID", composite, "DATA_WEAK", history);
+            return decision("UNAVAILABLE", "WATCH", composite, "DATA_UNAVAILABLE", history);
         }
         if (!hasStructuredDecision) {
             return decision("WATCH", "WATCH", composite, "AI_DECISION_MISSING", history);
+        }
+        if (NEGATIVE_ACTIONS.contains(normalizedDecision) || riskScore.compareTo(new BigDecimal("72")) >= 0) {
+            String confidenceLevel = history.sampleCount() < MIN_RELIABLE_SAMPLE_COUNT
+                    ? "LOW_SAMPLE"
+                    : history.hitRate().compareTo(new BigDecimal("45")) < 0 ? "HISTORY_WEAK" : "READY";
+            return decision(normalizedDecision.equals("SELL") ? "SELL" : "REDUCE", "AVOID", composite, confidenceLevel, history);
         }
         if (history.sampleCount() < MIN_RELIABLE_SAMPLE_COUNT) {
             return decision("WATCH", "WATCH", composite, "LOW_SAMPLE", history);
         }
         if (history.hitRate().compareTo(new BigDecimal("45")) < 0) {
-            return decision("REDUCE", "AVOID", composite, "HISTORY_WEAK", history);
-        }
-        if (NEGATIVE_ACTIONS.contains(normalizedDecision) || riskScore.compareTo(new BigDecimal("72")) >= 0) {
-            return decision(normalizedDecision.equals("SELL") ? "SELL" : "REDUCE", "AVOID", composite, "READY", history);
+            return decision("WATCH", "WATCH", composite, "HISTORY_WEAK", history);
         }
         if (POSITIVE_ACTIONS.contains(normalizedDecision)
                 && composite.compareTo(new BigDecimal("65")) >= 0

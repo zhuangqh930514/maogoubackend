@@ -164,7 +164,6 @@ public class AiLearningServiceImpl implements AiLearningService {
     }
 
     @Override
-    @Transactional
     public AiLearningPayloads.SampleCenterResponse buildWatchlistSamples(String universeCode, String samplePhase) {
         AiLearningJobLog job = startJob("构建自选股学习样本", "BUILD_SAMPLES");
         try {
@@ -195,7 +194,6 @@ public class AiLearningServiceImpl implements AiLearningService {
     }
 
     @Override
-    @Transactional
     public AiLearningPayloads.SampleDetailResponse recomputeSampleFactors(Long sampleId) {
         ensureTablesReady();
         Long userId = AuthContext.currentUserIdOrDefault();
@@ -249,7 +247,6 @@ public class AiLearningServiceImpl implements AiLearningService {
     }
 
     @Override
-    @Transactional
     public AiLearningPayloads.PredictionRankResponse rankUniverse(String universeCode, Integer horizonDays, Integer topK) {
         ensureTablesReady();
         ensureDefaultFactorDefinitions();
@@ -299,7 +296,6 @@ public class AiLearningServiceImpl implements AiLearningService {
     }
 
     @Override
-    @Transactional
     public AiLearningPayloads.LabelCenterResponse verifyLabels() {
         AiLearningJobLog job = startJob("验证预测标签", "VERIFY_LABELS");
         try {
@@ -309,9 +305,24 @@ public class AiLearningServiceImpl implements AiLearningService {
                     .eq("user_id", userId)
                     .orderByDesc("created_at")
                     .last("LIMIT 800"));
+            Set<Long> completedPredictionIds = new HashSet<>();
+            List<Long> predictionIds = predictions.stream().map(item -> item.id).filter(Objects::nonNull).toList();
+            if (!predictionIds.isEmpty()) {
+                completedPredictionIds.addAll(labelMapper.selectList(new QueryWrapper<AiPredictionLabel>()
+                                .eq("user_id", userId)
+                                .in("prediction_id", predictionIds))
+                        .stream()
+                        .filter(item -> "READY".equals(item.labelStatus) || "UNTRADABLE".equals(item.labelStatus))
+                        .map(item -> item.predictionId)
+                        .filter(Objects::nonNull)
+                        .collect(Collectors.toSet()));
+            }
+            List<AiPredictionResult> pendingPredictions = predictions.stream()
+                    .filter(item -> !completedPredictionIds.contains(item.id))
+                    .toList();
             int success = 0;
             int failed = 0;
-            for (AiPredictionResult prediction : predictions) {
+            for (AiPredictionResult prediction : pendingPredictions) {
                 try {
                     if (buildOrUpdateLabel(userId, prediction) != null) {
                         success++;
@@ -321,7 +332,7 @@ public class AiLearningServiceImpl implements AiLearningService {
                 }
             }
             refreshLearningFactorStats(userId);
-            finishJob(job, "SUCCESS", predictions.size(), success, failed, null);
+            finishJob(job, "SUCCESS", pendingPredictions.size(), success, failed, null);
             return labels(300);
         } catch (RuntimeException ex) {
             finishJob(job, "FAILED", 0, 0, 1, ex.getMessage());
@@ -349,7 +360,6 @@ public class AiLearningServiceImpl implements AiLearningService {
     public AiLearningPayloads.ExperimentCenterResponse runExperiment(String title, String universeCode) {
         ensureTablesReady();
         Long userId = AuthContext.currentUserIdOrDefault();
-        ensureLabelsFresh(userId);
         List<AiPredictionLabel> labels = labelMapper.selectList(new QueryWrapper<AiPredictionLabel>()
                 .eq("user_id", userId)
                 .orderByAsc("evaluated_at")
@@ -418,7 +428,6 @@ public class AiLearningServiceImpl implements AiLearningService {
     public AiLearningPayloads.BacktestDetailResponse runBacktest(String title, String universeCode, Integer horizonDays, Integer topK) {
         ensureTablesReady();
         Long userId = AuthContext.currentUserIdOrDefault();
-        ensureLabelsFresh(userId);
         int normalizedHorizon = normalizeHorizon(horizonDays);
         int normalizedTopK = Math.max(1, Math.min(topK == null ? 5 : topK, 20));
         List<AiPredictionLabel> candidateLabels = labelMapper.selectList(new QueryWrapper<AiPredictionLabel>()
@@ -548,7 +557,6 @@ public class AiLearningServiceImpl implements AiLearningService {
     }
 
     @Override
-    @Transactional
     public AiLearningPayloads.AnalysisLearningContext prepareAnalysisContext(StockDetailResponse detail, Long promptTemplateId) {
         try {
             ensureTablesReady();
@@ -594,23 +602,6 @@ public class AiLearningServiceImpl implements AiLearningService {
                 .eq("sample_phase", normalizePhase(samplePhase)));
         if (count == null || count == 0) {
             buildWatchlistSamples(universeCode, samplePhase);
-        }
-    }
-
-    private void ensureLabelsFresh(Long userId) {
-        AiPredictionResult latestPrediction = predictionMapper.selectOne(new QueryWrapper<AiPredictionResult>()
-                .eq("user_id", userId)
-                .orderByDesc("updated_at")
-                .last("LIMIT 1"));
-        if (latestPrediction == null) {
-            return;
-        }
-        AiPredictionLabel latestLabel = labelMapper.selectOne(new QueryWrapper<AiPredictionLabel>()
-                .eq("user_id", userId)
-                .orderByDesc("evaluated_at")
-                .last("LIMIT 1"));
-        if (latestLabel == null || latestLabel.evaluatedAt == null || latestLabel.evaluatedAt.isBefore(latestPrediction.updatedAt)) {
-            verifyLabels();
         }
     }
 
@@ -740,6 +731,15 @@ public class AiLearningServiceImpl implements AiLearningService {
     }
 
     private AiPredictionLabel buildOrUpdateLabel(Long userId, AiPredictionResult prediction) {
+        int horizon = normalizeHorizon(prediction.horizonDays);
+        AiPredictionLabel existing = labelMapper.selectOne(new QueryWrapper<AiPredictionLabel>()
+                .eq("user_id", userId)
+                .eq("prediction_id", prediction.id)
+                .eq("horizon_days", horizon)
+                .last("LIMIT 1"));
+        if (existing != null) {
+            return existing;
+        }
         AiPredictionSample sample = sampleMapper.selectById(prediction.sampleId);
         if (sample == null) {
             return null;
@@ -754,7 +754,6 @@ public class AiLearningServiceImpl implements AiLearningService {
         int entryIndex = "AFTER_CLOSE".equals(sample.samplePhase) || "CLOSE".equals(sample.samplePhase)
                 ? Math.min(baseIndex + 1, klines.size() - 1)
                 : baseIndex;
-        int horizon = normalizeHorizon(prediction.horizonDays);
         int exitIndex = entryIndex + horizon;
         if (exitIndex >= klines.size()) {
             return null;
@@ -776,21 +775,14 @@ public class AiLearningServiceImpl implements AiLearningService {
         BigDecimal mae = pct(low.subtract(entryPrice), entryPrice);
         BigDecimal netReturn = closeReturn.subtract(new BigDecimal("0.15"));
         LabelResult result = labelResult(prediction, netReturn, mfe, mae);
-        AiPredictionLabel label = labelMapper.selectOne(new QueryWrapper<AiPredictionLabel>()
-                .eq("user_id", userId)
-                .eq("prediction_id", prediction.id)
-                .eq("horizon_days", horizon)
-                .last("LIMIT 1"));
         LocalDateTime now = LocalDateTime.now();
-        if (label == null) {
-            label = new AiPredictionLabel();
-            label.userId = userId;
-            label.predictionId = prediction.id;
-            label.sampleId = prediction.sampleId;
-            label.stockCode = sample.stockCode;
-            label.horizonDays = horizon;
-            label.createdAt = now;
-        }
+        AiPredictionLabel label = new AiPredictionLabel();
+        label.userId = userId;
+        label.predictionId = prediction.id;
+        label.sampleId = prediction.sampleId;
+        label.stockCode = sample.stockCode;
+        label.horizonDays = horizon;
+        label.createdAt = now;
         label.entryPrice = entryPrice;
         label.exitPrice = exitPrice;
         label.closeReturn = closeReturn;
@@ -808,11 +800,7 @@ public class AiLearningServiceImpl implements AiLearningService {
         label.labelStatus = sample.tradable != null && sample.tradable == 1 ? "READY" : "UNTRADABLE";
         label.evaluatedAt = now;
         label.updatedAt = now;
-        if (label.id == null) {
-            labelMapper.insert(label);
-        } else {
-            labelMapper.updateById(label);
-        }
+        labelMapper.insert(label);
         return label;
     }
 

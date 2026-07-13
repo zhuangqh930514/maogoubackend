@@ -2,6 +2,7 @@ package com.maogou.stock.infrastructure.market;
 
 import com.maogou.stock.dto.market.*;
 
+import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,6 +26,16 @@ public interface MarketDataClient {
 
     List<KlinePointResponse> fetchKline(String symbol, String period, int limit);
 
+    default KlineSeriesSnapshot fetchKlineAt(
+            String symbol,
+            String period,
+            int limit,
+            LocalDateTime asOfTime
+    ) {
+        return new KlineSeriesSnapshot(
+                symbol, period, "UNAVAILABLE", "UNAVAILABLE", asOfTime, LocalDateTime.now(), "", List.of());
+    }
+
     StockQuoteResponse fetchQuote(String stockCode);
 
     default Map<String, StockQuoteResponse> fetchQuotes(List<String> stockCodes) {
@@ -40,4 +51,8 @@ public interface MarketDataClient {
     }
 
     FinanceSnapshotResponse fetchFinance(String stockCode);
+
+    default FinanceSnapshotResponse fetchFinanceAt(String stockCode, LocalDateTime asOfTime) {
+        return FinanceSnapshotResponse.empty();
+    }
 }

@@ -149,6 +149,26 @@ public class MockMarketDataClient implements MarketDataClient {
     }
 
     @Override
+    public KlineSeriesSnapshot fetchKlineAt(
+            String symbol,
+            String period,
+            int limit,
+            LocalDateTime asOfTime
+    ) {
+        List<KlinePointResponse> points = fetchKline(symbol, period, limit).stream()
+                .filter(point -> point.tradeDate() != null && !point.tradeDate().isAfter(asOfTime.toLocalDate()))
+                .toList();
+        return KlineSeriesSnapshot.create(
+                symbol,
+                period == null || period.isBlank() ? "day" : period,
+                "NONE",
+                "LOCAL_TEST_FIXTURE",
+                asOfTime,
+                LocalDateTime.now(),
+                points);
+    }
+
+    @Override
     public StockQuoteResponse fetchQuote(String stockCode) {
         return QUOTES.getOrDefault(stockCode, quote(stockCode, "未知股票", "0", "0", "0", "0", guessMarket(stockCode)));
     }

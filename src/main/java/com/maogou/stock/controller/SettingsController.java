@@ -13,6 +13,8 @@ import com.maogou.stock.dto.settings.SchedulerStatusResponse;
 import com.maogou.stock.dto.settings.SchedulerToggleRequest;
 import com.maogou.stock.mapper.AiLearningJobLogMapper;
 import com.maogou.stock.security.AuthContext;
+import com.maogou.stock.service.AiResearchDailyReportService;
+import com.maogou.stock.service.AutoClosePipelineService;
 import com.maogou.stock.service.ModelConfigService;
 import com.maogou.stock.service.TradingCalendarService;
 import jakarta.validation.Valid;
@@ -22,6 +24,7 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.scheduling.support.CronExpression;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -37,17 +40,23 @@ public class SettingsController {
     private final AiLearningJobLogMapper jobLogMapper;
     private final AppProperties properties;
     private final TradingCalendarService tradingCalendarService;
+    private final AiResearchDailyReportService aiResearchDailyReportService;
+    private final AutoClosePipelineService autoClosePipelineService;
 
     public SettingsController(
             ModelConfigService modelConfigService,
             AiLearningJobLogMapper jobLogMapper,
             AppProperties properties,
-            TradingCalendarService tradingCalendarService
+            TradingCalendarService tradingCalendarService,
+            AiResearchDailyReportService aiResearchDailyReportService,
+            AutoClosePipelineService autoClosePipelineService
     ) {
         this.modelConfigService = modelConfigService;
         this.jobLogMapper = jobLogMapper;
         this.properties = properties;
         this.tradingCalendarService = tradingCalendarService;
+        this.aiResearchDailyReportService = aiResearchDailyReportService;
+        this.autoClosePipelineService = autoClosePipelineService;
     }
 
     @GetMapping("/model")
@@ -70,6 +79,7 @@ public class SettingsController {
         AiModelConfig entity = modelConfigService.currentEntity();
         ModelConfigResponse config = modelConfigService.current();
         AppProperties.Scheduler scheduler = properties.getScheduler();
+        AiResearchDailyReportService.ReportView latestDailyReport = aiResearchDailyReportService.latestOrNull(AuthContext.currentUserIdOrDefault());
         return ApiResponse.ok(new SchedulerStatusResponse(
                 scheduler.isEnabled(),
                 scheduler.getNewsFixedRateMs(),
@@ -88,7 +98,23 @@ public class SettingsController {
                 formatDateTime(entity.autoClosePipelineLastRunAt),
                 formatDateTime(entity.autoClosePipelineLastFinishedAt),
                 nullToEmpty(entity.autoClosePipelineLastStatus),
-                nullToEmpty(entity.autoClosePipelineLastMessage)
+                nullToEmpty(entity.autoClosePipelineLastMessage),
+                scheduler.getWeeklyEvolutionCron(),
+                nextCronTime(scheduler.getWeeklyEvolutionCron()),
+                scheduler.getMonthlyTrainingCron(),
+                nextCronTime(scheduler.getMonthlyTrainingCron()),
+                latestDailyReport == null ? null : new SchedulerStatusResponse.ResearchDailyReportSummary(
+                        latestDailyReport.id(),
+                        latestDailyReport.tradeDate() == null ? "" : latestDailyReport.tradeDate().toString(),
+                        latestDailyReport.reportVersion(),
+                        latestDailyReport.reportStatus(),
+                        latestDailyReport.title(),
+                        formatDateTime(latestDailyReport.generatedAt()),
+                        latestDailyReport.recommendationCount(),
+                        latestDailyReport.watchCount(),
+                        latestDailyReport.avoidCount(),
+                        latestDailyReport.freshnessStatus()
+                )
         ));
     }
 
@@ -121,6 +147,12 @@ public class SettingsController {
         return schedulerStatus();
     }
 
+    @PostMapping("/scheduler/auto-close-pipeline/run")
+    public ApiResponse<String> runAutoClosePipelineNow() {
+        autoClosePipelineService.runCurrentUserNow();
+        return ApiResponse.ok("每日收盘投研流水线已执行");
+    }
+
     private static String nextCloseAnalysisTime(String closeTime) {
         LocalTime time = LocalTime.parse(closeTime == null || closeTime.isBlank() ? "15:30" : closeTime, DateTimeFormatter.ofPattern("HH:mm"));
         LocalDate today = LocalDate.now();
@@ -138,6 +170,14 @@ public class SettingsController {
 
     private static String formatDateTime(LocalDateTime value) {
         return value == null ? "" : value.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+    }
+
+    private static String nextCronTime(String expression) {
+        if (expression == null || expression.isBlank() || !CronExpression.isValidExpression(expression)) {
+            return "";
+        }
+        LocalDateTime next = CronExpression.parse(expression).next(LocalDateTime.now());
+        return formatDateTime(next);
     }
 
     private static String nullToEmpty(String value) {

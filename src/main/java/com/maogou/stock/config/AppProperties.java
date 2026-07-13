@@ -170,6 +170,15 @@ public class AppProperties {
         private String closeAnalysisCron = "0 30 15 * * MON-FRI";
         private String evolutionReviewCron = "0 10 16 * * MON-FRI";
         private String autoClosePipelineCron = "0 0 16 * * MON-FRI";
+        private String weeklyEvolutionCron = "0 0 18 * * FRI";
+        private String monthlyTrainingCron = "0 0 19 1 * *";
+        private int weeklyLookbackDays = 180;
+        private int monthlyMinimumSamples = 1000;
+        private String trainingArtifactRoot = "./data/ai-training";
+        private String trainerPythonExecutable = "python3";
+        private String trainerScript = "ml/train_ranker.py";
+        private long trainerTimeoutSeconds = 1800;
+        private double modelMinimumTestRocAuc = 0.52d;
         private String tradingHolidays = "2026-01-01,2026-02-16,2026-02-17,2026-02-18,2026-02-19,2026-02-20,2026-04-06,2026-05-01,2026-05-04,2026-05-05,2026-06-19,2026-09-25,2026-10-01,2026-10-02,2026-10-05,2026-10-06,2026-10-07";
         private String tradingWorkdays = "";
 
@@ -219,6 +228,78 @@ public class AppProperties {
 
         public void setAutoClosePipelineCron(String autoClosePipelineCron) {
             this.autoClosePipelineCron = autoClosePipelineCron;
+        }
+
+        public String getWeeklyEvolutionCron() {
+            return weeklyEvolutionCron;
+        }
+
+        public void setWeeklyEvolutionCron(String weeklyEvolutionCron) {
+            this.weeklyEvolutionCron = weeklyEvolutionCron;
+        }
+
+        public String getMonthlyTrainingCron() {
+            return monthlyTrainingCron;
+        }
+
+        public void setMonthlyTrainingCron(String monthlyTrainingCron) {
+            this.monthlyTrainingCron = monthlyTrainingCron;
+        }
+
+        public int getWeeklyLookbackDays() {
+            return weeklyLookbackDays;
+        }
+
+        public void setWeeklyLookbackDays(int weeklyLookbackDays) {
+            this.weeklyLookbackDays = weeklyLookbackDays;
+        }
+
+        public int getMonthlyMinimumSamples() {
+            return monthlyMinimumSamples;
+        }
+
+        public void setMonthlyMinimumSamples(int monthlyMinimumSamples) {
+            this.monthlyMinimumSamples = monthlyMinimumSamples;
+        }
+
+        public String getTrainingArtifactRoot() {
+            return trainingArtifactRoot;
+        }
+
+        public void setTrainingArtifactRoot(String trainingArtifactRoot) {
+            this.trainingArtifactRoot = trainingArtifactRoot;
+        }
+
+        public String getTrainerPythonExecutable() {
+            return trainerPythonExecutable;
+        }
+
+        public void setTrainerPythonExecutable(String trainerPythonExecutable) {
+            this.trainerPythonExecutable = trainerPythonExecutable;
+        }
+
+        public String getTrainerScript() {
+            return trainerScript;
+        }
+
+        public void setTrainerScript(String trainerScript) {
+            this.trainerScript = trainerScript;
+        }
+
+        public long getTrainerTimeoutSeconds() {
+            return trainerTimeoutSeconds;
+        }
+
+        public void setTrainerTimeoutSeconds(long trainerTimeoutSeconds) {
+            this.trainerTimeoutSeconds = trainerTimeoutSeconds;
+        }
+
+        public double getModelMinimumTestRocAuc() {
+            return modelMinimumTestRocAuc;
+        }
+
+        public void setModelMinimumTestRocAuc(double modelMinimumTestRocAuc) {
+            this.modelMinimumTestRocAuc = modelMinimumTestRocAuc;
         }
 
         public String getTradingHolidays() {

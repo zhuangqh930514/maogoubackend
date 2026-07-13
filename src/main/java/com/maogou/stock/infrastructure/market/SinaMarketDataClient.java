@@ -374,7 +374,13 @@ public class SinaMarketDataClient implements MarketDataClient {
         }
     }
 
-    private List<KlinePointResponse> fetchEastmoneyKline(String symbol, String period, int limit) {
+    private List<KlinePointResponse> fetchEastmoneyKline(
+            String symbol,
+            String period,
+            int limit,
+            String adjustmentMode,
+            String endDate
+    ) {
         String klt = switch (period == null ? "day" : period.toLowerCase(Locale.ROOT)) {
             case "week", "weekly" -> "102";
             case "month", "monthly" -> "103";
@@ -386,8 +392,8 @@ public class SinaMarketDataClient implements MarketDataClient {
                 .queryParam("fields1", "f1,f2,f3,f4,f5,f6")
                 .queryParam("fields2", "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61")
                 .queryParam("klt", klt)
-                .queryParam("fqt", "1")
-                .queryParam("end", "20500101")
+                .queryParam("fqt", adjustmentMode)
+                .queryParam("end", endDate)
                 .queryParam("lmt", Math.max(1, Math.min(limit, 240)))
                 .build(false)
                 .toUri();
@@ -747,7 +753,7 @@ public class SinaMarketDataClient implements MarketDataClient {
             return fetchA50Kline(period, limit);
         }
         try {
-            return fetchEastmoneyKline(symbol, period, limit);
+            return fetchEastmoneyKline(symbol, period, limit, "1", "20500101");
         } catch (Exception ignored) {
             // 保留新浪 K 线作为备源。
         }
@@ -784,6 +790,43 @@ public class SinaMarketDataClient implements MarketDataClient {
         } catch (Exception ex) {
             throw new IllegalStateException("获取新浪 K 线行情失败：" + symbol + "，" + ex.getMessage(), ex);
         }
+    }
+
+    @Override
+    public KlineSeriesSnapshot fetchKlineAt(
+            String symbol,
+            String period,
+            int limit,
+            LocalDateTime asOfTime
+    ) {
+        if (asOfTime == null) {
+            throw new IllegalArgumentException("K 线 asOfTime 不能为空");
+        }
+        boolean a50 = "A50.CFD".equalsIgnoreCase(symbol) || "CHA50CFD".equalsIgnoreCase(symbol);
+        List<KlinePointResponse> loaded = a50
+                ? fetchA50Kline(period, limit)
+                : fetchEastmoneyKline(
+                        symbol,
+                        period,
+                        limit,
+                        "0",
+                        asOfTime.toLocalDate().format(DateTimeFormatter.BASIC_ISO_DATE));
+        boolean closingBarAvailable = !asOfTime.toLocalTime().isBefore(LocalTime.of(15, 5));
+        List<KlinePointResponse> pointInTime = loaded.stream()
+                .filter(point -> point.tradeDate().isBefore(asOfTime.toLocalDate())
+                        || (closingBarAvailable && point.tradeDate().isEqual(asOfTime.toLocalDate())))
+                .toList();
+        LocalDateTime fetchedAt = LocalDateTime.now();
+        String normalizedPeriod = period == null || period.isBlank() ? "day" : period;
+        return KlineSeriesSnapshot.create(
+                symbol,
+                normalizedPeriod,
+                "NONE",
+                a50 ? "SINA" : "EASTMONEY",
+                asOfTime,
+                fetchedAt,
+                pointInTime
+        );
     }
 
     private List<KlinePointResponse> fetchA50Kline(String period, int limit) {
@@ -1035,18 +1078,36 @@ public class SinaMarketDataClient implements MarketDataClient {
 
     @Override
     public FinanceSnapshotResponse fetchFinance(String stockCode) {
+        return fetchFinanceInternal(stockCode, LocalDateTime.now(), true);
+    }
+
+    @Override
+    public FinanceSnapshotResponse fetchFinanceAt(String stockCode, LocalDateTime asOfTime) {
+        return fetchFinanceInternal(stockCode, asOfTime, false);
+    }
+
+    private FinanceSnapshotResponse fetchFinanceInternal(
+            String stockCode,
+            LocalDateTime asOfTime,
+            boolean includeLiveValuation
+    ) {
+        if (asOfTime == null) {
+            throw new IllegalArgumentException("财务快照 asOfTime 不能为空");
+        }
         String sinaSymbol = toSinaSymbol(stockCode);
         String eastmoneyCode = toEastmoneyCode(sinaSymbol);
         JsonNode quote = null;
         JsonNode finance = null;
 
-        try {
-            quote = fetchEastmoneyQuote(eastmoneyCode);
-        } catch (Exception ignored) {
-            // 估值接口偶发断连，不应影响财报类指标展示。
+        if (includeLiveValuation) {
+            try {
+                quote = fetchEastmoneyQuote(eastmoneyCode);
+            } catch (Exception ignored) {
+                // 估值接口偶发断连，不应影响财报类指标展示。
+            }
         }
         try {
-            finance = fetchEastmoneyFinance(sinaSymbol);
+            finance = selectFinanceAt(fetchEastmoneyFinanceHistory(sinaSymbol), asOfTime);
         } catch (Exception ignored) {
             // 财报接口失败时仍尽量返回估值类指标。
         }
@@ -1056,31 +1117,31 @@ public class SinaMarketDataClient implements MarketDataClient {
         }
 
         try {
-            BigDecimal eps = decimal(path(finance, "EPSJB"));
-            BigDecimal bps = decimal(path(finance, "BPS"));
-            BigDecimal pe = eastmoneyScaledValue(quote, "f162");
-            BigDecimal pb = eastmoneyScaledValue(quote, "f167");
-            if ((pe.signum() == 0 || pb.signum() == 0) && finance != null) {
-                StockQuoteResponse stockQuote = fetchQuote(stockCode);
-                pe = pe.signum() == 0 ? estimatePe(stockQuote.price(), eps) : pe;
-                pb = pb.signum() == 0 ? divide(stockQuote.price(), bps) : pb;
-            }
+            BigDecimal eps = nullableDecimal(path(finance, "EPSJB"));
+            BigDecimal bps = nullableDecimal(path(finance, "BPS"));
+            BigDecimal pe = eastmoneyScaledNullableValue(quote, "f162");
+            BigDecimal pb = eastmoneyScaledNullableValue(quote, "f167");
+            LocalDateTime fetchedAt = LocalDateTime.now();
             return new FinanceSnapshotResponse(
                     pe,
                     pb,
-                    decimal(path(quote, "f116")),
-                    decimal(path(quote, "f117")),
+                    nullableDecimal(path(quote, "f116")),
+                    nullableDecimal(path(quote, "f117")),
                     eps,
                     bps,
-                    decimal(path(finance, "TOTALOPERATEREVE")),
-                    decimal(path(finance, "TOTALOPERATEREVETZ")),
-                    decimal(path(finance, "PARENTNETPROFIT")),
-                    decimal(path(finance, "PARENTNETPROFITTZ")),
-                    decimal(path(finance, "ROEJQ")),
-                    decimal(path(finance, "XSMLL")),
-                    decimal(path(finance, "XSJLL")),
-                    decimal(path(finance, "ZCFZL")),
-                    decimal(path(finance, "MGJYXJJE"))
+                    nullableDecimal(path(finance, "TOTALOPERATEREVE")),
+                    nullableDecimal(path(finance, "TOTALOPERATEREVETZ")),
+                    nullableDecimal(path(finance, "PARENTNETPROFIT")),
+                    nullableDecimal(path(finance, "PARENTNETPROFITTZ")),
+                    nullableDecimal(path(finance, "ROEJQ")),
+                    nullableDecimal(path(finance, "XSMLL")),
+                    nullableDecimal(path(finance, "XSJLL")),
+                    nullableDecimal(path(finance, "ZCFZL")),
+                    nullableDecimal(path(finance, "MGJYXJJE")),
+                    parseOptionalDate(firstText(finance, "REPORT_DATE", "REPORTDATE")),
+                    financeVisibilityTime(finance),
+                    fetchedAt,
+                    includeLiveValuation ? "EASTMONEY" : "EASTMONEY_PIT"
             );
         } catch (RuntimeException ex) {
             return FinanceSnapshotResponse.empty();
@@ -1102,18 +1163,53 @@ public class SinaMarketDataClient implements MarketDataClient {
         return data;
     }
 
-    private JsonNode fetchEastmoneyFinance(String sinaSymbol) throws Exception {
+    private JsonNode fetchEastmoneyFinanceHistory(String sinaSymbol) throws Exception {
         URI uri = UriComponentsBuilder
                 .fromHttpUrl("https://emweb.securities.eastmoney.com/PC_HSF10/NewFinanceAnalysis/ZYZBAjaxNew")
                 .queryParam("type", "0")
                 .queryParam("code", toEastmoneyFinanceCode(sinaSymbol))
                 .build(true)
                 .toUri();
-        JsonNode data = objectMapper.readTree(getText(uri, StandardCharsets.UTF_8, "https://emweb.securities.eastmoney.com/")).path("data");
+        JsonNode data = objectMapper.readTree(
+                getText(uri, StandardCharsets.UTF_8, "https://emweb.securities.eastmoney.com/"))
+                .path("data");
         if (!data.isArray() || data.isEmpty()) {
             throw new IllegalStateException("东方财富财报数据为空");
         }
-        return data.get(0);
+        return data;
+    }
+
+    private static JsonNode selectFinanceAt(JsonNode history, LocalDateTime asOfTime) {
+        JsonNode selected = null;
+        LocalDateTime selectedVisibilityTime = null;
+        LocalDate selectedReportDate = null;
+        for (JsonNode candidate : history) {
+            LocalDateTime visibilityTime = financeVisibilityTime(candidate);
+            LocalDate reportDate = parseOptionalDate(firstText(candidate, "REPORT_DATE", "REPORTDATE"));
+            if (visibilityTime == null || reportDate == null || visibilityTime.isAfter(asOfTime)) {
+                continue;
+            }
+            if (selected == null
+                    || reportDate.isAfter(selectedReportDate)
+                    || (reportDate.equals(selectedReportDate) && visibilityTime.isAfter(selectedVisibilityTime))) {
+                selected = candidate;
+                selectedVisibilityTime = visibilityTime;
+                selectedReportDate = reportDate;
+            }
+        }
+        return selected;
+    }
+
+    private static LocalDateTime financeVisibilityTime(JsonNode finance) {
+        LocalDateTime noticeAt = parseOptionalDateTime(firstText(finance, "NOTICE_DATE", "PUBLISH_DATE"));
+        LocalDateTime updatedAt = parseOptionalDateTime(firstText(finance, "UPDATE_DATE"));
+        if (noticeAt == null) {
+            return updatedAt;
+        }
+        if (updatedAt == null) {
+            return noticeAt;
+        }
+        return noticeAt.isAfter(updatedAt) ? noticeAt : updatedAt;
     }
 
     private Map<String, Quote> fetchSinaQuotes(List<String> symbols) {
@@ -1239,6 +1335,15 @@ public class SinaMarketDataClient implements MarketDataClient {
         return value.divide(BigDecimal.TEN.pow(scale), 4, java.math.RoundingMode.HALF_UP);
     }
 
+    private static BigDecimal eastmoneyScaledNullableValue(JsonNode node, String field) {
+        BigDecimal value = nullableDecimal(node == null ? null : node.path(field));
+        if (value == null) {
+            return null;
+        }
+        int scale = node.path("f152").asInt(2);
+        return value.divide(BigDecimal.TEN.pow(scale), 4, java.math.RoundingMode.HALF_UP);
+    }
+
     private static BigDecimal decimal(JsonNode node) {
         if (node == null) {
             return BigDecimal.ZERO;
@@ -1249,22 +1354,62 @@ public class SinaMarketDataClient implements MarketDataClient {
         return new BigDecimal(node.asText());
     }
 
+    private static BigDecimal nullableDecimal(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return null;
+        }
+        String text = node.asText("").trim();
+        if (text.isBlank() || "-".equals(text) || "--".equals(text)) {
+            return null;
+        }
+        return new BigDecimal(text);
+    }
+
+    private static String firstText(JsonNode node, String... fields) {
+        if (node == null) {
+            return null;
+        }
+        for (String field : fields) {
+            String value = node.path(field).asText("").trim();
+            if (!value.isBlank() && !"-".equals(value)) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private static LocalDate parseOptionalDate(String value) {
+        if (value == null || value.isBlank() || value.length() < 10) {
+            return null;
+        }
+        try {
+            return LocalDate.parse(value.substring(0, 10));
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+    }
+
+    private static LocalDateTime parseOptionalDateTime(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String normalized = value.trim().replace('T', ' ');
+        if (normalized.length() == 10) {
+            LocalDate date = parseOptionalDate(normalized);
+            return date == null ? null : date.atStartOfDay();
+        }
+        if (normalized.length() >= 19) {
+            normalized = normalized.substring(0, 19);
+        }
+        try {
+            return LocalDateTime.parse(normalized, NEWS_TIME);
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+    }
+
     private static JsonNode path(JsonNode node, String field) {
         return node == null ? null : node.path(field);
-    }
-
-    private static BigDecimal estimatePe(BigDecimal price, BigDecimal quarterlyEps) {
-        if (price == null || quarterlyEps == null || price.signum() <= 0 || quarterlyEps.signum() <= 0) {
-            return BigDecimal.ZERO;
-        }
-        return divide(price, quarterlyEps.multiply(new BigDecimal("4")));
-    }
-
-    private static BigDecimal divide(BigDecimal numerator, BigDecimal denominator) {
-        if (numerator == null || denominator == null || numerator.signum() <= 0 || denominator.signum() <= 0) {
-            return BigDecimal.ZERO;
-        }
-        return numerator.divide(denominator, 4, java.math.RoundingMode.HALF_UP);
     }
 
     private static BigDecimal bd(String value) {

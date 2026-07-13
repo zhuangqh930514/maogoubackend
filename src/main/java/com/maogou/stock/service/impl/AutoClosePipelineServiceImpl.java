@@ -6,19 +6,16 @@ import com.maogou.stock.domain.entity.AiModelConfig;
 import com.maogou.stock.mapper.AiLearningJobLogMapper;
 import com.maogou.stock.mapper.AiModelConfigMapper;
 import com.maogou.stock.security.AuthContext;
-import com.maogou.stock.service.AiAnalysisService;
-import com.maogou.stock.service.AiDailyInsightService;
-import com.maogou.stock.service.AiEvolutionService;
-import com.maogou.stock.service.AiLearningService;
 import com.maogou.stock.service.AutoClosePipelineService;
 import com.maogou.stock.service.TradingCalendarService;
+import com.maogou.stock.service.v2.AiDailyPipelineServiceV2;
+import com.maogou.stock.service.v2.AiDailyPipelinePreparationService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -27,44 +24,27 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
 
     private static final Logger log = LoggerFactory.getLogger(AutoClosePipelineServiceImpl.class);
     private static final String JOB_TYPE = "AUTO_CLOSE_PIPELINE";
-    private static final List<PipelineStep> CLOSE_STEPS = List.of(
-            new PipelineStep("BUILD_SAMPLES", "固化学习样本"),
-            new PipelineStep("ANALYZE_WATCHLIST", "自选股 AI 分析"),
-            new PipelineStep("VERIFY_LABELS", "T+N 复盘打标"),
-            new PipelineStep("VERIFY_REVIEWS", "复盘验证"),
-            new PipelineStep("REFRESH_FACTORS", "刷新因子权重"),
-            new PipelineStep("RANK_UNIVERSE", "生成 Top K 候选"),
-            new PipelineStep("RUN_EXPERIMENT", "运行策略实验"),
-            new PipelineStep("RUN_BACKTEST", "Top K 回测验证"),
-            new PipelineStep("RUN_MODEL_EVAL", "模型输出评测"),
-            new PipelineStep("BUILD_DAILY_INSIGHT", "生成每日投研结果")
-    );
+    private static final int DAILY_STEP_COUNT = 9;
 
     private final AiModelConfigMapper configMapper;
     private final AiLearningJobLogMapper jobLogMapper;
-    private final AiLearningService aiLearningService;
-    private final AiAnalysisService aiAnalysisService;
-    private final AiDailyInsightService dailyInsightService;
-    private final AiEvolutionService aiEvolutionService;
     private final TradingCalendarService tradingCalendarService;
+    private final AiDailyPipelineServiceV2 dailyPipelineServiceV2;
+    private final AiDailyPipelinePreparationService preparationService;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     public AutoClosePipelineServiceImpl(
             AiModelConfigMapper configMapper,
             AiLearningJobLogMapper jobLogMapper,
-            AiLearningService aiLearningService,
-            AiAnalysisService aiAnalysisService,
-            AiDailyInsightService dailyInsightService,
-            AiEvolutionService aiEvolutionService,
-            TradingCalendarService tradingCalendarService
+            TradingCalendarService tradingCalendarService,
+            AiDailyPipelineServiceV2 dailyPipelineServiceV2,
+            AiDailyPipelinePreparationService preparationService
     ) {
         this.configMapper = configMapper;
         this.jobLogMapper = jobLogMapper;
-        this.aiLearningService = aiLearningService;
-        this.aiAnalysisService = aiAnalysisService;
-        this.dailyInsightService = dailyInsightService;
-        this.aiEvolutionService = aiEvolutionService;
         this.tradingCalendarService = tradingCalendarService;
+        this.dailyPipelineServiceV2 = dailyPipelineServiceV2;
+        this.preparationService = preparationService;
     }
 
     @Override
@@ -93,44 +73,78 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
         }
     }
 
-    private void runForConfig(AiModelConfig config) {
-        Long userId = config.userId;
-        AuthContext.runAs(userId, () -> {
-            AiLearningJobLog job = startJob(userId);
-            int successCount = 0;
-            updateConfigStatus(config, "RUNNING", "自动收盘学习流水线开始执行", false);
-            try {
-                for (PipelineStep step : CLOSE_STEPS) {
-                    log.info("auto close pipeline step started, userId={}, step={}", userId, step.key());
-                    runStep(step);
-                    successCount++;
-                }
-                finishJob(job, "SUCCESS", CLOSE_STEPS.size(), successCount, 0, null);
-                updateConfigStatus(config, "SUCCESS", "自动收盘学习流水线执行完成", true);
-                log.info("auto close pipeline finished, userId={}", userId);
-            } catch (Exception ex) {
-                String message = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
-                finishJob(job, "FAILED", CLOSE_STEPS.size(), successCount, CLOSE_STEPS.size() - successCount, message);
-                updateConfigStatus(config, "FAILED", message, true);
-                log.warn("auto close pipeline failed, userId={}, successCount={}", userId, successCount, ex);
+    @Override
+    public void runCurrentUserNow() {
+        if (!running.compareAndSet(false, true)) {
+            throw new IllegalStateException("每日收盘投研流水线正在执行，请稍后查看结果");
+        }
+        try {
+            Long userId = AuthContext.currentUserIdOrDefault();
+            AiModelConfig config = configMapper.selectOne(new QueryWrapper<AiModelConfig>()
+                    .eq("user_id", userId)
+                    .eq("deleted", 0)
+                    .last("LIMIT 1"));
+            if (config == null) {
+                throw new IllegalStateException("请先完成模型配置，再执行每日收盘投研流水线");
             }
-        });
+            RunOutcome outcome = runForConfig(config);
+            if (!outcome.successful()) {
+                throw new IllegalStateException(outcome.message());
+            }
+        } finally {
+            running.set(false);
+        }
     }
 
-    private void runStep(PipelineStep step) {
-        switch (step.key()) {
-            case "BUILD_SAMPLES" -> aiLearningService.buildWatchlistSamples("WATCHLIST", "AFTER_CLOSE");
-            case "ANALYZE_WATCHLIST" -> aiAnalysisService.analyzeWatchlist(null);
-            case "VERIFY_LABELS" -> aiLearningService.verifyLabels();
-            case "VERIFY_REVIEWS" -> aiEvolutionService.verifyReviews();
-            case "REFRESH_FACTORS" -> aiEvolutionService.refreshFactors();
-            case "RANK_UNIVERSE" -> aiLearningService.rankUniverse("WATCHLIST", 3, 10);
-            case "RUN_EXPERIMENT" -> aiLearningService.runExperiment("自动收盘策略实验 " + nowText(), "WATCHLIST");
-            case "RUN_BACKTEST" -> aiLearningService.runBacktest("自动收盘 Top K 回测 " + nowText(), "WATCHLIST", 3, 5);
-            case "RUN_MODEL_EVAL" -> aiLearningService.runModelEval("REPORT_JSON", 30);
-            case "BUILD_DAILY_INSIGHT" -> dailyInsightService.rebuildForCurrentUser("AUTO_CLOSE", "自动收盘流水线已生成每日 AI 投研结果");
-            default -> throw new IllegalArgumentException("未知自动流水线步骤：" + step.key());
-        }
+    private RunOutcome runForConfig(AiModelConfig config) {
+        Long userId = config.userId;
+        return AuthContext.callAs(userId, () -> {
+            AiLearningJobLog job = startJob(userId);
+            try {
+                LocalDateTime startedAt = LocalDateTime.now();
+                LocalDate tradeDate = tradingCalendarService.latestExpectedKlineDate(startedAt);
+                String idempotencyKey = "AUTO_CLOSE:" + tradeDate + ":USER:" + userId;
+                AiDailyPipelinePreparationService.PreparedPipeline prepared = preparationService.prepare(
+                        userId, tradeDate, startedAt, idempotencyKey);
+                AiDailyPipelineServiceV2.PipelineResult result = dailyPipelineServiceV2.run(
+                        new AiDailyPipelineServiceV2.PipelineRequest(
+                                userId,
+                                tradeDate,
+                                prepared.dataBatchId(),
+                                prepared.strategyReleaseId(),
+                                prepared.modelVersionId(),
+                                idempotencyKey,
+                                prepared.inputFingerprint(),
+                                startedAt));
+                int failedCount = result.run().failedCount == null ? 0 : result.run().failedCount;
+                int successCount = result.run().successCount == null ? 0 : result.run().successCount;
+                int processedCount = result.run().processedCount == null ? DAILY_STEP_COUNT : result.run().processedCount;
+                finishJob(job, result.run().status, processedCount, successCount, failedCount, result.run().errorMessage);
+                updateConfigStatus(config, result.run().status, trimMessage(result.run().errorMessage == null
+                        ? "自动收盘学习流水线执行完成"
+                        : result.run().errorMessage), true);
+                boolean successful = "SUCCESS".equals(result.run().status)
+                        || "PARTIAL_SUCCESS".equals(result.run().status);
+                if (successful) {
+                    log.info("auto close pipeline finished, userId={}, status={}", userId, result.run().status);
+                } else {
+                    log.warn("auto close pipeline finished without success, userId={}, status={}, error={}",
+                            userId, result.run().status, result.run().errorMessage);
+                }
+                return new RunOutcome(successful, result.run().status,
+                        result.run().errorMessage == null ? "自动收盘学习流水线执行完成" : result.run().errorMessage);
+            } catch (Exception ex) {
+                String message = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
+                boolean concurrentRun = message.contains("其他实例执行") || message.contains("其他实例");
+                String status = concurrentRun ? "SKIPPED" : "FAILED";
+                finishJob(job, status, DAILY_STEP_COUNT, 0, concurrentRun ? 0 : DAILY_STEP_COUNT, message);
+                if (!concurrentRun) {
+                    updateConfigStatus(config, "FAILED", message, true);
+                }
+                log.warn("auto close pipeline failed, userId={}", userId, ex);
+                return new RunOutcome(false, status, message);
+            }
+        });
     }
 
     private AiLearningJobLog startJob(Long userId) {
@@ -182,11 +196,6 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
         config.updatedAt = now;
         configMapper.updateById(config);
     }
-
-    private static String nowText() {
-        return LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-    }
-
     private static String trimMessage(String message) {
         if (message == null) {
             return "";
@@ -194,6 +203,6 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
         return message.length() <= 500 ? message : message.substring(0, 500);
     }
 
-    private record PipelineStep(String key, String title) {
+    private record RunOutcome(boolean successful, String status, String message) {
     }
 }

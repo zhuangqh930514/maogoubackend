@@ -163,6 +163,17 @@ public class MarketDataServiceImpl implements MarketDataService {
     }
 
     @Override
+    public KlineSeriesSnapshot klineAt(String symbol, String period, int limit, LocalDateTime asOfTime) {
+        if (asOfTime == null) {
+            throw new IllegalArgumentException("K 线 asOfTime 不能为空");
+        }
+        String normalizedCode = normalizeCode(symbol);
+        String normalizedPeriod = period == null || period.isBlank() ? "day" : period.trim();
+        int size = Math.max(1, Math.min(limit, 240));
+        return marketDataClient.fetchKlineAt(normalizedCode, normalizedPeriod, size, asOfTime);
+    }
+
+    @Override
     public StockDetailResponse stockDetail(String code) {
         StockQuoteResponse quote = quote(code);
         FinanceSnapshotResponse finance = finance(code);
@@ -208,6 +219,65 @@ public class MarketDataServiceImpl implements MarketDataService {
     }
 
     @Override
+    public StockDetailResponse stockDetailAt(String code, LocalDateTime asOfTime) {
+        if (asOfTime == null) {
+            throw new IllegalArgumentException("个股详情 asOfTime 不能为空");
+        }
+        String normalizedCode = normalizeCode(code);
+        KlineSeriesSnapshot series = klineAt(normalizedCode, "day", 60, asOfTime);
+        if (series == null || series.points() == null || series.points().isEmpty()
+                || !series.fingerprintMatches()
+                || !"NONE".equalsIgnoreCase(series.adjustmentMode())) {
+            throw new IllegalStateException("时点化未复权 K 线不可用：" + normalizedCode);
+        }
+        List<KlinePointResponse> points = series.points().stream()
+                .filter(item -> item != null && item.tradeDate() != null
+                        && !item.tradeDate().isAfter(asOfTime.toLocalDate()))
+                .toList();
+        if (points.isEmpty()) {
+            throw new IllegalStateException("指定时点前没有可用 K 线：" + normalizedCode);
+        }
+        KlinePointResponse latest = points.get(points.size() - 1);
+        KlinePointResponse previous = points.size() > 1 ? points.get(points.size() - 2) : null;
+        BigDecimal close = latest.close();
+        if (close == null || close.signum() <= 0) {
+            throw new IllegalStateException("指定时点收盘价无效：" + normalizedCode);
+        }
+        BigDecimal previousClose = previous == null || previous.close() == null
+                ? close : previous.close();
+        BigDecimal change = close.subtract(previousClose);
+        BigDecimal percent = previousClose.signum() == 0
+                ? BigDecimal.ZERO
+                : change.multiply(BigDecimal.valueOf(100))
+                .divide(previousClose, 4, java.math.RoundingMode.HALF_UP);
+        StockQuoteResponse quote = new StockQuoteResponse(
+                normalizedCode,
+                normalizedCode,
+                close,
+                change,
+                percent,
+                volumeRatio(points),
+                normalizedCode.startsWith("6") ? "SH" : "SZ",
+                series.source(),
+                asOfTime);
+        FinanceSnapshotResponse finance;
+        try {
+            finance = financeAt(normalizedCode, asOfTime);
+        } catch (RuntimeException exception) {
+            log.warn("point-in-time finance unavailable, continue with empty finance, code={}, asOf={}",
+                    normalizedCode, asOfTime, exception);
+            finance = FinanceSnapshotResponse.empty();
+        }
+        return new StockDetailResponse(
+                quote,
+                finance,
+                List.of(),
+                points,
+                adviceByPercent(percent),
+                scoreByPercent(percent));
+    }
+
+    @Override
     public StockQuoteResponse quote(String code) {
         String normalizedCode = normalizeCode(code);
         return cachedWithFallback(
@@ -217,6 +287,28 @@ public class MarketDataServiceImpl implements MarketDataService {
                 () -> marketDataClient.fetchQuote(normalizedCode),
                 () -> fallbackMarketDataClient.fetchQuote(normalizedCode)
         );
+    }
+
+    private static BigDecimal volumeRatio(List<KlinePointResponse> points) {
+        if (points == null || points.size() < 2) {
+            return null;
+        }
+        KlinePointResponse latest = points.get(points.size() - 1);
+        if (latest.volume() == null || latest.volume() <= 0) {
+            return null;
+        }
+        int start = Math.max(0, points.size() - 6);
+        List<Long> history = points.subList(start, points.size() - 1).stream()
+                .map(KlinePointResponse::volume)
+                .filter(value -> value != null && value > 0)
+                .toList();
+        if (history.isEmpty()) {
+            return null;
+        }
+        BigDecimal average = history.stream().map(BigDecimal::valueOf)
+                .reduce(BigDecimal.ZERO, BigDecimal::add)
+                .divide(BigDecimal.valueOf(history.size()), 8, java.math.RoundingMode.HALF_UP);
+        return BigDecimal.valueOf(latest.volume()).divide(average, 4, java.math.RoundingMode.HALF_UP);
     }
 
     @Override
@@ -295,6 +387,15 @@ public class MarketDataServiceImpl implements MarketDataService {
     }
 
     @Override
+    public FinanceSnapshotResponse financeAt(String code, LocalDateTime asOfTime) {
+        String normalizedCode = normalizeCode(code);
+        if (asOfTime == null) {
+            throw new IllegalArgumentException("财务快照 asOfTime 不能为空");
+        }
+        return marketDataClient.fetchFinanceAt(normalizedCode, asOfTime);
+    }
+
+    @Override
     public List<NewsFlashResponse> latestNewsForAnalysis(int limit) {
         int size = Math.max(1, Math.min(limit, 20));
         try {
@@ -309,6 +410,30 @@ public class MarketDataServiceImpl implements MarketDataService {
                     .toList();
         } catch (RuntimeException ex) {
             log.warn("analysis realtime news unavailable, forbid model from citing news, limit={}", size, ex);
+            return List.of();
+        }
+    }
+
+    @Override
+    public List<NewsFlashResponse> latestNewsForAnalysisAt(int limit, LocalDateTime asOfTime) {
+        if (asOfTime == null) {
+            throw new IllegalArgumentException("资讯 asOfTime 不能为空");
+        }
+        int size = Math.max(1, Math.min(limit, 20));
+        try {
+            LocalDateTime cutoff = asOfTime.minusHours(36);
+            List<NewsFlashResponse> loaded = marketDataClient.fetchLatestNews(Math.max(size, 20));
+            if (loaded == null) {
+                return List.of();
+            }
+            return loaded.stream()
+                    .filter(item -> item.publishedAt() != null
+                            && !item.publishedAt().isAfter(asOfTime)
+                            && !item.publishedAt().isBefore(cutoff))
+                    .limit(size)
+                    .toList();
+        } catch (RuntimeException exception) {
+            log.warn("point-in-time news unavailable, forbid model from citing news, asOf={}", asOfTime, exception);
             return List.of();
         }
     }

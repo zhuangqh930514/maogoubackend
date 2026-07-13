@@ -4,6 +4,10 @@ import com.maogou.stock.config.AppProperties;
 import com.maogou.stock.dto.market.SectorHeatmapItemResponse;
 import com.maogou.stock.dto.market.SectorHeatmapResponse;
 import com.maogou.stock.dto.market.SectorHotStocksResponse;
+import com.maogou.stock.dto.market.FinanceSnapshotResponse;
+import com.maogou.stock.dto.market.KlinePointResponse;
+import com.maogou.stock.dto.market.KlineSeriesSnapshot;
+import com.maogou.stock.dto.market.StockDetailResponse;
 import com.maogou.stock.infrastructure.market.MockMarketDataClient;
 import org.junit.jupiter.api.Test;
 
@@ -54,6 +58,23 @@ class MarketDataServiceImplTest {
         assertThat(stale.items()).extracting(SectorHeatmapItemResponse::name).doesNotContain("钼");
     }
 
+    @Test
+    void pointInTimeDetailUsesTheRequestedClosingBarWithoutFetchingCurrentQuoteOrIntraday() {
+        LocalDateTime asOf = LocalDateTime.of(2026, 7, 10, 16, 0);
+        MarketDataServiceImpl service = new MarketDataServiceImpl(new PointInTimeClient(asOf), new AppProperties());
+
+        StockDetailResponse detail = service.stockDetailAt("600519", asOf);
+
+        assertThat(detail.quote().price()).isEqualByComparingTo("12.00");
+        assertThat(detail.quote().change()).isEqualByComparingTo("2.00");
+        assertThat(detail.quote().percent()).isEqualByComparingTo("20.0000");
+        assertThat(detail.quote().fetchedAt()).isEqualTo(asOf);
+        assertThat(detail.quote().source()).isEqualTo("EASTMONEY");
+        assertThat(detail.kline()).extracting(KlinePointResponse::tradeDate)
+                .containsExactly(java.time.LocalDate.of(2026, 7, 9), java.time.LocalDate.of(2026, 7, 10));
+        assertThat(detail.intraday()).isEmpty();
+    }
+
     private static class FailingSectorMarketClient extends MockMarketDataClient {
         @Override
         public SectorHeatmapResponse fetchSectorHeatmap() {
@@ -91,6 +112,41 @@ class MarketDataServiceImplTest {
                     )),
                     LocalDateTime.parse("2026-06-11T10:00:00")
             );
+        }
+    }
+
+    private static class PointInTimeClient extends MockMarketDataClient {
+        private final LocalDateTime asOf;
+
+        private PointInTimeClient(LocalDateTime asOf) {
+            this.asOf = asOf;
+        }
+
+        @Override
+        public com.maogou.stock.dto.market.StockQuoteResponse fetchQuote(String stockCode) {
+            throw new AssertionError("时点化详情不得读取当前 quote");
+        }
+
+        @Override
+        public List<com.maogou.stock.dto.market.IntradayPointResponse> fetchIntraday(String symbol) {
+            throw new AssertionError("历史时点详情不得读取当前分时");
+        }
+
+        @Override
+        public KlineSeriesSnapshot fetchKlineAt(String symbol, String period, int limit, LocalDateTime requestedAsOf) {
+            return KlineSeriesSnapshot.create(
+                    symbol, "day", "NONE", "EASTMONEY", requestedAsOf, LocalDateTime.now(),
+                    List.of(
+                            new KlinePointResponse(java.time.LocalDate.of(2026, 7, 9),
+                                    BigDecimal.TEN, BigDecimal.TEN, BigDecimal.TEN, BigDecimal.TEN, 100L, BigDecimal.TEN),
+                            new KlinePointResponse(java.time.LocalDate.of(2026, 7, 10),
+                                    BigDecimal.TEN, new BigDecimal("12"), BigDecimal.TEN,
+                                    new BigDecimal("12"), 120L, new BigDecimal("12"))));
+        }
+
+        @Override
+        public FinanceSnapshotResponse fetchFinanceAt(String stockCode, LocalDateTime requestedAsOf) {
+            return FinanceSnapshotResponse.empty();
         }
     }
 }

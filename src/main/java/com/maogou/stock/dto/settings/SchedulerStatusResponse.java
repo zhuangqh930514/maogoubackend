@@ -18,6 +18,25 @@ public record SchedulerStatusResponse(
         String autoClosePipelineLastRunAt,
         String autoClosePipelineLastFinishedAt,
         String autoClosePipelineLastStatus,
-        String autoClosePipelineLastMessage
+        String autoClosePipelineLastMessage,
+        String weeklyEvolutionCron,
+        String nextWeeklyEvolutionTime,
+        String monthlyTrainingCron,
+        String nextMonthlyTrainingTime,
+        ResearchDailyReportSummary latestResearchDailyReport
 ) {
+
+    public record ResearchDailyReportSummary(
+            Long id,
+            String tradeDate,
+            Integer reportVersion,
+            String reportStatus,
+            String title,
+            String generatedAt,
+            Integer recommendationCount,
+            Integer watchCount,
+            Integer avoidCount,
+            String freshnessStatus
+    ) {
+    }
 }

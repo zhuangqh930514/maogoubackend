@@ -1,0 +1,3 @@
+DROP ALL OBJECTS;
+CREATE SCHEMA IF NOT EXISTS PUBLIC;
+RUNSCRIPT FROM 'classpath:db/schema-h2-body.sql';

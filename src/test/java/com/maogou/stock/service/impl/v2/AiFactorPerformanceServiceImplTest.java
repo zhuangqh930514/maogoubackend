@@ -1,0 +1,344 @@
+package com.maogou.stock.service.impl.v2;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.maogou.stock.domain.entity.v2.AiDriftEvent;
+import com.maogou.stock.domain.entity.v2.AiFactorPerformanceV2;
+import com.maogou.stock.domain.entity.v2.AiFactorValueV2;
+import com.maogou.stock.domain.entity.v2.AiLabelV2;
+import com.maogou.stock.domain.entity.v2.AiSampleV2;
+import com.maogou.stock.mapper.v2.AiDriftEventMapper;
+import com.maogou.stock.mapper.v2.AiFactorPerformanceV2Mapper;
+import com.maogou.stock.service.v2.AiFactorPerformanceService;
+import org.junit.jupiter.api.Test;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+class AiFactorPerformanceServiceImplTest {
+
+    @Test
+    void computesDailyRankIcAndWindowMetricsWithoutCrossingVersionHorizonOrRegime() {
+        Fixture fixture = fixture();
+        AiFactorPerformanceService service = service(fixture);
+        List<AiFactorPerformanceService.Observation> observations = new ArrayList<>();
+        observations.add(observation(101L, "600001", "2026-07-01", "-1.0", "-0.02", "-0.03"));
+        observations.add(observation(102L, "600002", "2026-07-01", "-0.5", "-0.01", "-0.02"));
+        observations.add(observation(103L, "600003", "2026-07-01", "1.0", "0.03", "-0.01"));
+        observations.add(observation(104L, "600004", "2026-07-02", "-1.0", "-0.03", "-0.04"));
+        observations.add(observation(105L, "600005", "2026-07-02", "-0.5", "-0.01", "-0.02"));
+        observations.add(observation(106L, "600006", "2026-07-02", "1.0", "0.02", "-0.01"));
+
+        AiFactorPerformanceService.EvaluationResult result = service.evaluateAndStore(batch(observations));
+
+        assertThat(result.performances()).hasSize(1);
+        AiFactorPerformanceV2 performance = result.performances().get(0);
+        assertThat(performance.factorCode).isEqualTo("MOMENTUM_3D");
+        assertThat(performance.factorVersion).isEqualTo("FACTOR_V2_1");
+        assertThat(performance.horizonDays).isEqualTo(3);
+        assertThat(performance.marketRegime).isEqualTo("BULL");
+        assertThat(performance.windowStartDate).isEqualTo(LocalDate.of(2026, 7, 1));
+        assertThat(performance.windowEndDate).isEqualTo(LocalDate.of(2026, 7, 2));
+        assertThat(performance.sampleCount).isEqualTo(6);
+        assertThat(performance.successCount).isEqualTo(6);
+        assertThat(performance.rankIc).isEqualByComparingTo("1.000000");
+        assertThat(performance.avgExcessReturn).isEqualByComparingTo("0.020000");
+        assertThat(performance.avgAdverseReturn).isEqualByComparingTo("-0.021667");
+        assertThat(performance.wilsonLowerBound).isGreaterThan(new BigDecimal("60"));
+        assertThat(performance.confidenceLevel).isEqualTo("LOW_SAMPLE");
+        assertThat(result.reweightEligibleFactorCodes()).isEmpty();
+        assertThat(result.driftEvents()).isEmpty();
+    }
+
+    @Test
+    void evaluatesInverseValuationFactorsWithTheSameOrientationUsedByPrediction() {
+        Fixture fixture = fixture();
+        AiFactorPerformanceService service = service(fixture);
+        AiFactorPerformanceService.Observation lowPe = observation(
+                111L, "600011", "2026-07-01", "-1.0", "0.02", "-0.01");
+        AiFactorPerformanceService.Observation highPe = observation(
+                112L, "600012", "2026-07-01", "1.0", "-0.02", "-0.03");
+        lowPe.factor().factorCode = "FUNDAMENTAL_PE";
+        lowPe.factor().factorGroup = "FUNDAMENTAL";
+        lowPe.factor().rawValue = new BigDecimal("10");
+        highPe.factor().factorCode = "FUNDAMENTAL_PE";
+        highPe.factor().factorGroup = "FUNDAMENTAL";
+        highPe.factor().rawValue = new BigDecimal("80");
+
+        AiFactorPerformanceV2 performance = service.evaluateAndStore(
+                batch(List.of(lowPe, highPe))).performances().get(0);
+
+        assertThat(performance.successCount).isEqualTo(2);
+        assertThat(performance.rankIc).isEqualByComparingTo("1.000000");
+        assertThat(performance.avgExcessReturn).isEqualByComparingTo("0.020000");
+    }
+
+    @Test
+    void emitsIdempotentCriticalEventsForPsiAndHitRateDriftAfterMinimumSampleSize() {
+        Fixture fixture = fixture();
+        AiFactorPerformanceService service = service(fixture);
+        List<AiFactorPerformanceService.Observation> baseline = new ArrayList<>();
+        List<AiFactorPerformanceService.Observation> current = new ArrayList<>();
+        for (int index = 0; index < 20; index++) {
+            BigDecimal baselineSignal = BigDecimal.valueOf(index - 10).divide(new BigDecimal("10"));
+            if (baselineSignal.signum() == 0) {
+                baselineSignal = new BigDecimal("0.05");
+            }
+            String alignedReturn = baselineSignal.signum() > 0 ? "0.02" : "-0.02";
+            baseline.add(observation(
+                    200L + index, String.format("60%04d", 100 + index),
+                    index < 10 ? "2026-06-01" : "2026-06-02",
+                    baselineSignal.toPlainString(), alignedReturn, "-0.02"));
+
+            BigDecimal shiftedSignal = new BigDecimal("3.0").add(BigDecimal.valueOf(index, 2));
+            current.add(observation(
+                    300L + index, String.format("60%04d", 200 + index),
+                    index < 10 ? "2026-07-01" : "2026-07-02",
+                    shiftedSignal.toPlainString(), "-0.02", "-0.04"));
+        }
+        AiFactorPerformanceService.PerformanceBatch original = batch(current);
+        AiFactorPerformanceService.PerformanceBatch withBaseline = new AiFactorPerformanceService.PerformanceBatch(
+                original.userId(), original.factorVersion(), original.horizonDays(),
+                original.marketRegime(), original.windowType(), original.windowStartDate(),
+                original.windowEndDate(), original.observations(), baseline,
+                original.detectorVersion(), original.thresholds(), original.evaluatedAt());
+
+        AiFactorPerformanceService.EvaluationResult result = service.evaluateAndStore(withBaseline);
+
+        AiFactorPerformanceV2 performance = result.performances().get(0);
+        assertThat(performance.sampleCount).isEqualTo(20);
+        assertThat(performance.confidenceLevel).isEqualTo("MEDIUM");
+        assertThat(performance.psiScore).isGreaterThan(new BigDecimal("0.25"));
+        assertThat(performance.driftStatus).isEqualTo("CRITICAL");
+        assertThat(result.driftEvents()).extracting(event -> event.metricName)
+                .containsExactlyInAnyOrder("PSI", "SUCCESS_RATE");
+        assertThat(result.driftEvents()).allMatch(event -> "CRITICAL".equals(event.severity));
+        assertThat(result.driftEvents()).allMatch(event -> event.eventFingerprint != null
+                && event.evidenceJson != null && event.factorPerformanceId != null);
+    }
+
+    @Test
+    void rejectsCrossVersionOrCrossHorizonObservationsInsteadOfSilentlyDroppingThem() {
+        Fixture fixture = fixture();
+        AiFactorPerformanceService service = service(fixture);
+        AiFactorPerformanceService.Observation contaminated = observation(
+                401L, "600401", "2026-07-01", "1.0", "0.02", "-0.01");
+        contaminated.factor().factorVersion = "FACTOR_V1";
+        contaminated.label().horizonDays = 5;
+
+        assertThatThrownBy(() -> service.evaluateAndStore(batch(List.of(contaminated))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("版本、周期或血缘");
+    }
+
+    @Test
+    void includesFlatOutcomesAsMissesInsteadOfDroppingThemFromTheDenominator() {
+        Fixture fixture = fixture();
+        AiFactorPerformanceService service = service(fixture);
+        AiFactorPerformanceService.Observation hit = observation(
+                501L, "600501", "2026-07-01", "1.0", "0.02", "-0.01");
+        AiFactorPerformanceService.Observation flat = observation(
+                502L, "600502", "2026-07-01", "1.0", "0.00", "-0.01");
+
+        AiFactorPerformanceV2 performance = service.evaluateAndStore(
+                batch(List.of(hit, flat))).performances().get(0);
+
+        assertThat(performance.sampleCount).isEqualTo(2);
+        assertThat(performance.successCount).isEqualTo(1);
+        assertThat(performance.successRate).isEqualByComparingTo("50.0000");
+    }
+
+    @Test
+    void rejectsDuplicateSampleFactorLabelObservations() {
+        Fixture fixture = fixture();
+        AiFactorPerformanceService service = service(fixture);
+        AiFactorPerformanceService.Observation duplicated = observation(
+                601L, "600601", "2026-07-01", "1.0", "0.02", "-0.01");
+
+        assertThatThrownBy(() -> service.evaluateAndStore(batch(List.of(duplicated, duplicated))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("重复观察");
+    }
+
+    @Test
+    void repeatedEvaluationOfTheSameImmutableWindowReturnsTheOriginalRecord() {
+        Fixture fixture = fixture();
+        AiFactorPerformanceService service = service(fixture);
+        AiFactorPerformanceService.PerformanceBatch batch = batch(List.of(
+                observation(701L, "600701", "2026-07-01", "1.0", "0.02", "-0.01"),
+                observation(702L, "600702", "2026-07-01", "-1.0", "-0.02", "-0.02")));
+
+        AiFactorPerformanceV2 first = service.evaluateAndStore(batch).performances().get(0);
+        AiFactorPerformanceV2 repeated = service.evaluateAndStore(batch).performances().get(0);
+
+        assertThat(repeated.id).isEqualTo(first.id);
+        assertThat(repeated.inputFingerprint).isEqualTo(first.inputFingerprint);
+    }
+
+    @Test
+    void detectsDifferentLineageReusingTheSamePerformanceWindowKey() {
+        Fixture fixture = fixture();
+        AiFactorPerformanceService service = service(fixture);
+        AiFactorPerformanceService.Observation observation = observation(
+                801L, "600801", "2026-07-01", "1.0", "0.02", "-0.01");
+        AiFactorPerformanceService.PerformanceBatch batch = batch(List.of(observation));
+        service.evaluateAndStore(batch);
+        observation.label().inputFingerprint = "tampered-label";
+
+        assertThatThrownBy(() -> service.evaluateAndStore(batch))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("不可变因子表现冲突");
+    }
+
+    @Test
+    void rejectsInvertedOrNegativeDriftThresholds() {
+        Fixture fixture = fixture();
+        AiFactorPerformanceService service = service(fixture);
+        AiFactorPerformanceService.PerformanceBatch original = batch(List.of(
+                observation(901L, "600901", "2026-07-01", "1.0", "0.02", "-0.01")));
+        AiFactorPerformanceService.PerformanceBatch invalid = new AiFactorPerformanceService.PerformanceBatch(
+                original.userId(), original.factorVersion(), original.horizonDays(),
+                original.marketRegime(), original.windowType(), original.windowStartDate(),
+                original.windowEndDate(), original.observations(), original.baselineObservations(),
+                original.detectorVersion(), new AiFactorPerformanceService.DriftThresholds(
+                new BigDecimal("0.25"), new BigDecimal("0.10"),
+                new BigDecimal("-1"), new BigDecimal("25")), original.evaluatedAt());
+
+        assertThatThrownBy(() -> service.evaluateAndStore(invalid))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("漂移阈值");
+    }
+
+    private static AiFactorPerformanceService service(Fixture fixture) {
+        return new AiFactorPerformanceServiceImpl(
+                fixture.performanceMapper, fixture.driftMapper,
+                new ObjectMapper().findAndRegisterModules());
+    }
+
+    private static AiFactorPerformanceService.PerformanceBatch batch(
+            List<AiFactorPerformanceService.Observation> observations
+    ) {
+        return new AiFactorPerformanceService.PerformanceBatch(
+                5L, "FACTOR_V2_1", 3, "BULL", "ROLLING_20D",
+                LocalDate.of(2026, 7, 1), LocalDate.of(2026, 7, 2),
+                observations, List.of(), "DRIFT_V2_1",
+                new AiFactorPerformanceService.DriftThresholds(
+                        new BigDecimal("0.10"), new BigDecimal("0.25"),
+                        new BigDecimal("15"), new BigDecimal("25")),
+                LocalDateTime.of(2026, 7, 20, 16, 0));
+    }
+
+    private static AiFactorPerformanceService.Observation observation(
+            Long sampleId,
+            String stockCode,
+            String tradeDate,
+            String factorValue,
+            String excessReturn,
+            String adverseReturn
+    ) {
+        AiSampleV2 sample = new AiSampleV2();
+        sample.id = sampleId;
+        sample.userId = 5L;
+        sample.stockCode = stockCode;
+        sample.tradeDate = LocalDate.parse(tradeDate);
+        sample.samplePhase = "AFTER_CLOSE";
+        sample.marketRegime = "BULL";
+        sample.sourceFingerprint = "sample-" + sampleId;
+
+        AiFactorValueV2 factor = new AiFactorValueV2();
+        factor.id = sampleId + 1000;
+        factor.userId = 5L;
+        factor.sampleId = sampleId;
+        factor.stockCode = stockCode;
+        factor.factorCode = "MOMENTUM_3D";
+        factor.factorVersion = "FACTOR_V2_1";
+        factor.factorGroup = "MOMENTUM";
+        factor.normalizedValue = new BigDecimal(factorValue);
+        factor.rawValue = factor.normalizedValue;
+        factor.missing = 0;
+        factor.inputFingerprint = "factor-" + sampleId;
+
+        AiLabelV2 label = new AiLabelV2();
+        label.id = sampleId + 2000;
+        label.userId = 5L;
+        label.sampleId = sampleId;
+        label.predictionId = sampleId + 3000;
+        label.stockCode = stockCode;
+        label.horizonDays = 3;
+        label.labelVersion = "LABEL_V2_1";
+        label.inputFingerprint = "label-" + sampleId;
+        label.excessReturn = new BigDecimal(excessReturn);
+        label.maxAdverseReturn = new BigDecimal(adverseReturn);
+        label.executionStatus = "EXECUTED";
+        label.actionEvaluation = "HIT";
+        label.labelStatus = "VERIFIED";
+        label.verifiedAt = LocalDate.parse(tradeDate).plusDays(5).atTime(16, 0);
+        return new AiFactorPerformanceService.Observation(sample, factor, label);
+    }
+
+    private static Fixture fixture() {
+        AiFactorPerformanceV2Mapper performanceMapper = mock(AiFactorPerformanceV2Mapper.class);
+        AiDriftEventMapper driftMapper = mock(AiDriftEventMapper.class);
+        List<AiFactorPerformanceV2> database = new ArrayList<>();
+        List<AiDriftEvent> driftDatabase = new ArrayList<>();
+        AtomicLong ids = new AtomicLong(700);
+        when(performanceMapper.insertBatchImmutable(anyList())).thenAnswer(invocation -> {
+            List<AiFactorPerformanceV2> items = invocation.getArgument(0);
+            for (AiFactorPerformanceV2 item : items) {
+                boolean exists = database.stream().anyMatch(existing ->
+                        existing.userId.equals(item.userId)
+                                && existing.factorCode.equals(item.factorCode)
+                                && existing.factorVersion.equals(item.factorVersion)
+                                && existing.horizonDays.equals(item.horizonDays)
+                                && existing.marketRegime.equals(item.marketRegime)
+                                && existing.windowType.equals(item.windowType)
+                                && existing.windowStartDate.equals(item.windowStartDate)
+                                && existing.windowEndDate.equals(item.windowEndDate));
+                if (!exists) {
+                    item.id = ids.incrementAndGet();
+                    database.add(item);
+                }
+            }
+            return items.size();
+        });
+        when(performanceMapper.selectWindowForShare(
+                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any())).thenAnswer(invocation -> List.copyOf(database));
+        when(driftMapper.insertBatchImmutable(anyList())).thenAnswer(invocation -> {
+            List<AiDriftEvent> items = invocation.getArgument(0);
+            for (AiDriftEvent item : items) {
+                boolean exists = driftDatabase.stream().anyMatch(existing ->
+                        existing.eventFingerprint.equals(item.eventFingerprint));
+                if (!exists) {
+                    item.id = ids.incrementAndGet();
+                    driftDatabase.add(item);
+                }
+            }
+            return items.size();
+        });
+        when(driftMapper.selectByFingerprintsForShare(
+                org.mockito.ArgumentMatchers.anyLong(), anyList())).thenAnswer(invocation -> {
+                    List<String> fingerprints = invocation.getArgument(1);
+                    return driftDatabase.stream()
+                            .filter(item -> fingerprints.contains(item.eventFingerprint)).toList();
+                });
+        return new Fixture(performanceMapper, driftMapper);
+    }
+
+    private record Fixture(
+            AiFactorPerformanceV2Mapper performanceMapper,
+            AiDriftEventMapper driftMapper
+    ) {
+    }
+}

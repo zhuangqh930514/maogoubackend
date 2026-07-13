@@ -30,7 +30,7 @@ class AiDailyInsightScoringTest {
     }
 
     @Test
-    void forcesAvoidWhenDataQualityIsTooLow() {
+    void watchesWhenDataQualityIsTooLow() {
         AiDailyInsightScoring.Decision decision = AiDailyInsightScoring.classify(new AiDailyInsightScoring.Input(
                 new BigDecimal("88"),
                 new BigDecimal("20"),
@@ -44,9 +44,9 @@ class AiDailyInsightScoringTest {
                 0
         ));
 
-        assertThat(decision.finalAction()).isEqualTo("REDUCE");
-        assertThat(decision.actionBucket()).isEqualTo("AVOID");
-        assertThat(decision.confidenceLevel()).isEqualTo("DATA_WEAK");
+        assertThat(decision.finalAction()).isEqualTo("UNAVAILABLE");
+        assertThat(decision.actionBucket()).isEqualTo("WATCH");
+        assertThat(decision.confidenceLevel()).isEqualTo("DATA_UNAVAILABLE");
     }
 
     @Test
@@ -110,7 +110,7 @@ class AiDailyInsightScoringTest {
     }
 
     @Test
-    void avoidsWhenHistoricalHitRateIsPoorWithEnoughSamples() {
+    void watchesWhenHistoricalHitRateIsPoorWithEnoughSamples() {
         AiDailyInsightScoring.Decision decision = AiDailyInsightScoring.classify(new AiDailyInsightScoring.Input(
                 new BigDecimal("74"),
                 new BigDecimal("42"),
@@ -118,6 +118,26 @@ class AiDailyInsightScoringTest {
                 new BigDecimal("86"),
                 "BUY",
                 new BigDecimal("0.78"),
+                new BigDecimal("38"),
+                15,
+                BigDecimal.ZERO,
+                0
+        ));
+
+        assertThat(decision.finalAction()).isEqualTo("WATCH");
+        assertThat(decision.actionBucket()).isEqualTo("WATCH");
+        assertThat(decision.confidenceLevel()).isEqualTo("HISTORY_WEAK");
+    }
+
+    @Test
+    void keepsCurrentReduceDecisionInAvoidBucketWhenHistoryIsWeak() {
+        AiDailyInsightScoring.Decision decision = AiDailyInsightScoring.classify(new AiDailyInsightScoring.Input(
+                new BigDecimal("52"),
+                new BigDecimal("48"),
+                new BigDecimal("82"),
+                new BigDecimal("86"),
+                "REDUCE",
+                new BigDecimal("0.74"),
                 new BigDecimal("38"),
                 15,
                 BigDecimal.ZERO,

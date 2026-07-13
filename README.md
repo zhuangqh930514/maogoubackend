@@ -43,19 +43,42 @@ backend/src/main/java/com/maogou/stock
 
 ## 本地启动
 
-1. 创建数据库并执行建表脚本：
+推荐直接用本仓库自带的本地 MySQL 方案，这样可以把登录、自动化任务、每日投研、投研日报整条链路在本机跑通，不依赖远程数据库。
+
+### 1. 启动本地 MySQL 8
+
+在仓库根目录执行：
 
 ```bash
-mysql -uroot -p < backend/src/main/resources/db/schema.sql
+docker compose -f docker-compose.local.yml up -d
 ```
 
-如果是已有数据库，先执行一次增量脚本：
+默认会启动一个本地 MySQL：
+
+- Host: `127.0.0.1`
+- Port: `3306`
+- Database: `maogou_stock`
+- Username: `root`
+- Password: `root`
+
+### 2. 初始化表结构和本地演示账号
+
+在仓库根目录执行：
 
 ```bash
-mysql -uroot -p maogou < backend/src/main/resources/db/20260522_auth_upgrade.sql
+mysql -h127.0.0.1 -uroot -proot maogou_stock < backend/src/main/resources/db/schema.sql
+mysql -h127.0.0.1 -uroot -proot maogou_stock < backend/src/main/resources/db/20260713_local_dev_seed.sql
 ```
 
-2. 按需配置 MySQL 和本地模型：
+如果你是拿一份旧库做升级，必须按顺序执行认证、AI 进化 V2 和流水线租约迁移。三个脚本均应在目标库先备份后执行；租约脚本可重复执行：
+
+```bash
+mysql -h127.0.0.1 -uroot -proot maogou_stock < backend/src/main/resources/db/20260522_auth_upgrade.sql
+mysql -h127.0.0.1 -uroot -proot maogou_stock < backend/src/main/resources/db/20260712_ai_evolution_v2.sql
+mysql -h127.0.0.1 -uroot -proot maogou_stock < backend/src/main/resources/db/20260713_ai_pipeline_lease.sql
+```
+
+### 3. 配置后端开发环境
 
 ```bash
 export MYSQL_URL='jdbc:mysql://127.0.0.1:3306/maogou_stock?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true'
@@ -65,19 +88,34 @@ export MAOGOU_AI_API_BASE_URL='http://localhost:11434/v1'
 export MAOGOU_AI_MODEL_NAME='qwen3.6'
 export MAOGOU_AI_API_KEY='sk-local-dev-key'
 export MAOGOU_JWT_SECRET='replace-with-a-long-random-secret'
+export MAOGOU_SCHEDULER_ENABLED='true'
 ```
 
-3. 启动后端：
+`MAOGOU_SCHEDULER_ENABLED=true` 是服务端总开关；用户还需要在“自动化任务”页面开启自己的每日流水线，系统才会在 A 股交易日 16:00 执行。
+
+### 4. 启动后端
 
 ```bash
-mvn -f backend/pom.xml spring-boot:run
+mvn -f backend/pom.xml spring-boot:run -Dspring-boot.run.profiles=dev
 ```
 
-4. 前端开发代理已配置：
+### 5. 启动前端
 
 ```bash
+cd frontend
 npm run dev
 ```
+
+Vite 会把 `/api` 代理到 `http://127.0.0.1:8081`，也可以通过 `VITE_API_PROXY_TARGET` 覆盖。
+
+### 6. 本地联调账号
+
+本地默认内置一个演示账号：
+
+- 手机号：`13570237470`
+- 密码：`12345678`
+
+这个账号可直接用来验证登录、自动化任务、每日投研和投研日报页面。
 
 Vite 会把 `/api` 代理到 `http://127.0.0.1:8081`，也可以通过 `VITE_API_PROXY_TARGET` 覆盖。
 

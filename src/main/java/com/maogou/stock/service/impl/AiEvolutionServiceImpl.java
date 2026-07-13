@@ -201,7 +201,6 @@ public class AiEvolutionServiceImpl implements AiEvolutionService {
                 outcomeMapper.insert(outcome);
             }
         }
-        refreshFactors();
         return reviews();
     }
 
@@ -222,44 +221,15 @@ public class AiEvolutionServiceImpl implements AiEvolutionService {
     }
 
     @Override
-    @Transactional
     public AiFactorCenterResponse refreshFactors() {
-        ensureEvolutionTablesReady();
-        Long userId = AuthContext.currentUserIdOrDefault();
-        factorHitMapper.delete(new QueryWrapper<AiAnalysisFactorHit>().eq("user_id", userId));
-        factorStatMapper.delete(new QueryWrapper<AiFactorStat>().eq("user_id", userId));
-        List<AiAnalysisOutcome> outcomes = outcomeMapper.selectList(new QueryWrapper<AiAnalysisOutcome>()
-                .eq("user_id", userId)
-                .orderByDesc("evaluated_at")
-                .last("LIMIT 500"));
-        List<AiAnalysisFactorHit> hits = new ArrayList<>();
-        for (AiAnalysisOutcome outcome : outcomes) {
-            AiAnalysisReport report = reportMapper.selectById(outcome.reportId);
-            if (report == null) {
-                continue;
-            }
-            for (FactorRule rule : extractFactors(report)) {
-                AiAnalysisFactorHit hit = new AiAnalysisFactorHit();
-                hit.userId = userId;
-                hit.reportId = report.id;
-                hit.outcomeId = outcome.id;
-                hit.stockCode = report.stockCode;
-                hit.factorCode = rule.code();
-                hit.factorName = rule.name();
-                hit.factorGroup = rule.group();
-                hit.direction = rule.direction();
-                hit.weightScore = rule.initialWeight();
-                hit.reason = rule.reason();
-                hit.successScore = outcome.successScore;
-                hit.pctChange = outcome.pctChange;
-                hit.marketRegime = marketRegime(outcome);
-                hit.createdAt = LocalDateTime.now();
-                factorHitMapper.insert(hit);
-                hits.add(hit);
-            }
-        }
-        rebuildFactorStats(userId, hits);
-        return factors();
+        AiFactorCenterResponse current = factors();
+        return new AiFactorCenterResponse(
+                current.schemaReady(),
+                "旧版因子刷新已停用，当前页面为只读兼容；有效统计由新版标签学习链路维护。",
+                current.factorCount(),
+                current.sampleCount(),
+                current.factors()
+        );
     }
 
     @Override

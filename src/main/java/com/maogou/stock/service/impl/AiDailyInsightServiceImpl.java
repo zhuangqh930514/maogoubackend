@@ -28,6 +28,7 @@ import com.maogou.stock.mapper.AiPredictionSampleMapper;
 import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.AiDailyInsightService;
 import com.maogou.stock.service.TradingCalendarService;
+import com.maogou.stock.service.v2.AiDailyInsightV2Projector;
 import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -68,6 +69,7 @@ public class AiDailyInsightServiceImpl implements AiDailyInsightService {
     private final AiLearningJobLogMapper jobLogMapper;
     private final TradingCalendarService tradingCalendarService;
     private final ObjectMapper objectMapper;
+    private final AiDailyInsightV2Projector v2Projector;
 
     public AiDailyInsightServiceImpl(
             AiDailyInsightSnapshotMapper snapshotMapper,
@@ -81,7 +83,8 @@ public class AiDailyInsightServiceImpl implements AiDailyInsightService {
             AiFactorStatMapper factorStatMapper,
             AiLearningJobLogMapper jobLogMapper,
             TradingCalendarService tradingCalendarService,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            AiDailyInsightV2Projector v2Projector
     ) {
         this.snapshotMapper = snapshotMapper;
         this.itemMapper = itemMapper;
@@ -95,6 +98,7 @@ public class AiDailyInsightServiceImpl implements AiDailyInsightService {
         this.jobLogMapper = jobLogMapper;
         this.tradingCalendarService = tradingCalendarService;
         this.objectMapper = objectMapper;
+        this.v2Projector = v2Projector;
     }
 
     @Override
@@ -111,7 +115,9 @@ public class AiDailyInsightServiceImpl implements AiDailyInsightService {
                     .eq("snapshot_id", snapshot.id)
                     .orderByDesc("composite_score")
                     .orderByAsc("risk_score"));
-            return response(snapshot, items, "每日 AI 投研结果已加载");
+            return response(snapshot, items, items.isEmpty()
+                    ? "每日投研快照已生成，但当前交易日没有可用样本或预测。"
+                    : "每日 AI 投研结果已加载");
         } catch (DataAccessException ex) {
             return new AiDailyInsightPayloads.DailyInsightResponse(
                     false,
@@ -135,9 +141,37 @@ public class AiDailyInsightServiceImpl implements AiDailyInsightService {
     @Override
     @Transactional
     public AiDailyInsightPayloads.DailyInsightResponse rebuildForCurrentUser(String pipelineStatus, String pipelineMessage) {
-        ensureTablesReady();
         Long userId = AuthContext.currentUserIdOrDefault();
-        LocalDate tradeDate = targetTradeDate();
+        return rebuild(userId, targetTradeDate(), pipelineStatus, pipelineMessage, shouldUseLegacyFallback(pipelineStatus));
+    }
+
+    @Override
+    @Transactional
+    public AiDailyInsightPayloads.DailyInsightResponse rebuildForPipeline(
+            Long userId,
+            LocalDate tradeDate,
+            Long pipelineRunId,
+            String pipelineStatus,
+            String pipelineMessage
+    ) {
+        if (userId == null || tradeDate == null || !Objects.equals(userId, AuthContext.currentUserIdOrDefault())) {
+            throw new IllegalArgumentException("每日投研流水线上下文无效");
+        }
+        String message = blankToDefault(pipelineMessage, "自动收盘流水线已完成每日投研聚合");
+        if (pipelineRunId != null) {
+            message = message + "（运行 #" + pipelineRunId + "）";
+        }
+        return rebuild(userId, tradeDate, pipelineStatus, message, false);
+    }
+
+    private AiDailyInsightPayloads.DailyInsightResponse rebuild(
+            Long userId,
+            LocalDate tradeDate,
+            String pipelineStatus,
+            String pipelineMessage,
+            boolean allowLegacyFallback
+    ) {
+        ensureTablesReady();
         AiDailyInsightSnapshot snapshot = findSnapshot(userId, tradeDate);
         LocalDateTime now = LocalDateTime.now();
         if (snapshot == null) {
@@ -153,7 +187,7 @@ public class AiDailyInsightServiceImpl implements AiDailyInsightService {
         saveSnapshot(snapshot);
 
         itemMapper.delete(new QueryWrapper<AiDailyInsightItem>().eq("snapshot_id", snapshot.id));
-        List<AiDailyInsightItem> items = buildItems(userId, tradeDate, snapshot.id, now);
+        List<AiDailyInsightItem> items = buildItems(userId, tradeDate, snapshot.id, now, allowLegacyFallback);
         for (AiDailyInsightItem item : items) {
             itemMapper.insert(item);
         }
@@ -162,7 +196,20 @@ public class AiDailyInsightServiceImpl implements AiDailyInsightService {
         return response(snapshot, items, items.isEmpty() ? "未找到今日可汇总的 AI 样本，请先执行收盘学习流水线。" : "每日 AI 投研结果已重建");
     }
 
-    private List<AiDailyInsightItem> buildItems(Long userId, LocalDate tradeDate, Long snapshotId, LocalDateTime now) {
+    private List<AiDailyInsightItem> buildItems(
+            Long userId,
+            LocalDate tradeDate,
+            Long snapshotId,
+            LocalDateTime now,
+            boolean allowLegacyFallback
+    ) {
+        List<AiDailyInsightItem> v2Items = v2Projector.project(userId, tradeDate, snapshotId, now);
+        if (!v2Items.isEmpty()) {
+            return v2Items;
+        }
+        if (!allowLegacyFallback) {
+            return List.of();
+        }
         List<AiPredictionSample> samples = sampleMapper.selectList(new QueryWrapper<AiPredictionSample>()
                 .eq("user_id", userId)
                 .eq("trade_date", tradeDate)
@@ -212,10 +259,15 @@ public class AiDailyInsightServiceImpl implements AiDailyInsightService {
             items.add(buildItem(snapshotId, userId, tradeDate, sample, prediction, report, decision, factors, freshness, classified, now));
         }
         return items.stream()
-                .sorted(Comparator.comparing((AiDailyInsightItem item) -> bucketRank(item.actionBucket))
-                        .thenComparing((AiDailyInsightItem item) -> safe(item.compositeScore)).reversed()
-                        .thenComparing(item -> safe(item.riskScore)))
+                .sorted(AiDailyInsightOrdering.comparator())
                 .toList();
+    }
+
+    static boolean shouldUseLegacyFallback(String pipelineStatus) {
+        return pipelineStatus == null
+                || pipelineStatus.isBlank()
+                || "MANUAL".equalsIgnoreCase(pipelineStatus)
+                || "LEGACY".equalsIgnoreCase(pipelineStatus);
     }
 
     private AiDailyInsightItem buildItem(
@@ -311,7 +363,7 @@ public class AiDailyInsightServiceImpl implements AiDailyInsightService {
                 .toList();
         return new AiDailyInsightPayloads.DailyInsightResponse(
                 true,
-                true,
+                !items.isEmpty(),
                 message,
                 AiDailyInsightPayloads.SnapshotSummary.from(snapshot),
                 recommendations,

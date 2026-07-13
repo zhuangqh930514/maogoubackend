@@ -1,0 +1,81 @@
+SET NAMES utf8mb4;
+
+INSERT INTO user_account (
+    id,
+    username,
+    display_name,
+    email,
+    phone,
+    password_hash,
+    status,
+    risk_preference,
+    last_login_at,
+    deleted,
+    created_at,
+    updated_at
+) VALUES (
+    1357,
+    'maogou-demo',
+    '猫狗智投演示账号',
+    'demo@maogou.local',
+    '13570237470',
+    '$2a$10$A1CwWsMBvLS56zCSfu1CsePi7MsR/0jLH..h2tomG6Ss1YHDrm8ZK',
+    'ACTIVE',
+    '均衡',
+    NOW(),
+    0,
+    NOW(),
+    NOW()
+) ON DUPLICATE KEY UPDATE
+    display_name = VALUES(display_name),
+    email = VALUES(email),
+    phone = VALUES(phone),
+    password_hash = VALUES(password_hash),
+    status = VALUES(status),
+    risk_preference = VALUES(risk_preference),
+    last_login_at = VALUES(last_login_at),
+    deleted = 0,
+    updated_at = NOW();
+
+INSERT INTO ai_model_config (
+    user_id,
+    api_base_url,
+    model_name,
+    api_key,
+    timeout_ms,
+    temperature,
+    max_tokens,
+    intraday_interval_minutes,
+    close_analysis_time,
+    analysis_scope,
+    prompt_template,
+    auto_close_pipeline_enabled,
+    auto_close_pipeline_last_status,
+    deleted,
+    created_at,
+    updated_at
+) VALUES (
+    1357,
+    'http://127.0.0.1:11434/v1',
+    'qwen3.6',
+    '',
+    60000,
+    0.20,
+    2048,
+    30,
+    '15:30',
+    '全部自选股',
+    '你是一名A股投研助手，请基于真实时点数据输出严格 JSON。',
+    0,
+    'IDLE',
+    0,
+    NOW(),
+    NOW()
+) ON DUPLICATE KEY UPDATE
+    api_base_url = VALUES(api_base_url),
+    model_name = VALUES(model_name),
+    timeout_ms = VALUES(timeout_ms),
+    temperature = VALUES(temperature),
+    max_tokens = VALUES(max_tokens),
+    deleted = 0,
+    updated_at = NOW();
