@@ -330,10 +330,11 @@ public final class AiLearningPayloads {
             Long strategyVersionId,
             BigDecimal dataQualityScore,
             BigDecimal calibratedConfidence,
+            String marketRegime,
             String promptContext
     ) {
         public static AnalysisLearningContext empty() {
-            return new AnalysisLearningContext(null, null, null, BigDecimal.ZERO, BigDecimal.ZERO, "");
+            return new AnalysisLearningContext(null, null, null, BigDecimal.ZERO, BigDecimal.ZERO, "UNKNOWN", "");
         }
     }
 }

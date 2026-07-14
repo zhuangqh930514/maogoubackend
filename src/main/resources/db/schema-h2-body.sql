@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS ai_analysis_report (
     technical_analysis TEXT NULL,
     risk_warning TEXT NULL,
     buy_sell_points TEXT NULL,
+    conditional_strategy CLOB NULL,
     prompt_summary TEXT NULL,
     raw_prompt MEDIUMTEXT NULL,
     raw_response MEDIUMTEXT NULL,
@@ -116,6 +117,74 @@ CREATE TABLE IF NOT EXISTS ai_analysis_report (
     KEY idx_ai_report_sample (sample_id),
     KEY idx_ai_report_prediction (prediction_id),
     UNIQUE KEY uk_ai_report_daily_source (user_id, stock_code, report_date, source_model, deleted)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_trade_rule_config (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL DEFAULT 0,
+    version_no VARCHAR(64) NOT NULL,
+    name VARCHAR(128) NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
+    config_json CLOB NOT NULL,
+    source_strategy_release_id BIGINT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_trade_rule_config_user_version (user_id, version_no),
+    KEY idx_trade_rule_config_active (user_id, status, updated_at)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_trade_plan_review (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    report_id BIGINT NOT NULL,
+    stock_code VARCHAR(16) NOT NULL,
+    report_date DATE NOT NULL,
+    horizon_days INT NOT NULL,
+    target_trade_date DATE NULL,
+    outcome_trade_date DATE NULL,
+    status VARCHAR(24) NOT NULL DEFAULT 'PENDING',
+    triggered_rule_code VARCHAR(64) NULL,
+    rule_type VARCHAR(32) NOT NULL DEFAULT 'HORIZON_PLAN',
+    triggered_state VARCHAR(64) NULL,
+    suggested_action VARCHAR(32) NULL,
+    market_regime VARCHAR(32) NOT NULL DEFAULT 'UNKNOWN',
+    trigger_price DECIMAL(18, 4) NULL,
+    outcome_price DECIMAL(18, 4) NULL,
+    post_trigger_return DECIMAL(12, 4) NULL,
+    max_favorable_return DECIMAL(12, 4) NULL,
+    max_adverse_return DECIMAL(12, 4) NULL,
+    action_effective TINYINT NULL,
+    review_score DECIMAL(10, 4) NULL,
+    actual_metrics_json CLOB NULL,
+    feedback_json CLOB NULL,
+    feedback_summary VARCHAR(1024) NULL,
+    evaluated_at DATETIME NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_trade_plan_review_report_horizon (user_id, report_id, horizon_days),
+    KEY idx_trade_plan_review_pending (user_id, status, outcome_trade_date),
+    KEY idx_trade_plan_review_rule (user_id, triggered_rule_code, horizon_days)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_trade_rule_performance (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    rule_code VARCHAR(64) NOT NULL,
+    rule_type VARCHAR(32) NOT NULL,
+    horizon_days INT NOT NULL,
+    market_regime VARCHAR(32) NOT NULL DEFAULT 'UNKNOWN',
+    sample_count INT NOT NULL DEFAULT 0,
+    effective_count INT NOT NULL DEFAULT 0,
+    effectiveness_rate DECIMAL(10, 4) NOT NULL DEFAULT 0,
+    avg_post_trigger_return DECIMAL(12, 4) NOT NULL DEFAULT 0,
+    avg_adverse_return DECIMAL(12, 4) NOT NULL DEFAULT 0,
+    learned_weight DECIMAL(10, 4) NOT NULL DEFAULT 50,
+    confidence_level VARCHAR(24) NOT NULL DEFAULT 'LOW_SAMPLE',
+    last_evaluated_at DATETIME NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_trade_rule_performance (user_id, rule_code, horizon_days, market_regime),
+    KEY idx_trade_rule_performance_weight (user_id, learned_weight, sample_count)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 
 CREATE TABLE IF NOT EXISTS ai_analysis_outcome (

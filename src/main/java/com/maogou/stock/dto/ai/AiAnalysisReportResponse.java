@@ -4,6 +4,7 @@ import com.maogou.stock.domain.entity.AiAnalysisReport;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 
 public record AiAnalysisReportResponse(
         Long id,
@@ -15,6 +16,8 @@ public record AiAnalysisReportResponse(
         String technicalAnalysis,
         String riskWarning,
         String buySellPoints,
+        String conditionalStrategy,
+        List<AiConditionalStrategyPayload.ReviewResult> tradePlanReviews,
         String promptSummary,
         String sourceModel,
         String status,
@@ -26,6 +29,13 @@ public record AiAnalysisReportResponse(
         BigDecimal calibratedConfidence
 ) {
     public static AiAnalysisReportResponse from(AiAnalysisReport entity) {
+        return from(entity, List.of());
+    }
+
+    public static AiAnalysisReportResponse from(
+            AiAnalysisReport entity,
+            List<AiConditionalStrategyPayload.ReviewResult> tradePlanReviews
+    ) {
         String stockName = entity.stockName;
         if (stockName == null || stockName.isBlank() || "未知股票".equals(stockName.trim())) {
             stockName = entity.stockCode;
@@ -40,6 +50,8 @@ public record AiAnalysisReportResponse(
                 entity.technicalAnalysis,
                 entity.riskWarning,
                 entity.buySellPoints,
+                entity.conditionalStrategy,
+                tradePlanReviews == null ? List.of() : List.copyOf(tradePlanReviews),
                 entity.promptSummary,
                 entity.sourceModel,
                 entity.status == null ? null : entity.status.name(),

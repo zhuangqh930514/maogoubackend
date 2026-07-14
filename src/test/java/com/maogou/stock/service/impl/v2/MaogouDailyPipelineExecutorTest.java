@@ -14,6 +14,7 @@ import com.maogou.stock.dto.market.StockQuoteResponse;
 import com.maogou.stock.mapper.WatchStockMapper;
 import com.maogou.stock.mapper.v2.AiStrategyReleaseMapper;
 import com.maogou.stock.service.AiAnalysisService;
+import com.maogou.stock.service.AiConditionalTradeStrategyService;
 import com.maogou.stock.service.AiDailyInsightService;
 import com.maogou.stock.service.AiResearchDailyReportService;
 import com.maogou.stock.service.MarketDataService;
@@ -339,7 +340,7 @@ class MaogouDailyPipelineExecutorTest {
     }
 
     @Test
-    void verifyLabelsRunsTheRealV2VerificationCoordinator() {
+    void verifyLabelsRunsPredictionAndConditionalPlanReviewsTogether() {
         WatchStockMapper watchStockMapper = mock(WatchStockMapper.class);
         MarketDataService marketDataService = mock(MarketDataService.class);
         AiSampleSnapshotService sampleSnapshotService = mock(AiSampleSnapshotService.class);
@@ -348,23 +349,28 @@ class MaogouDailyPipelineExecutorTest {
         AiAnalysisService aiAnalysisService = mock(AiAnalysisService.class);
         AiDailyInsightService aiDailyInsightService = mock(AiDailyInsightService.class);
         AiLabelVerificationCoordinatorV2 labelVerificationCoordinator = mock(AiLabelVerificationCoordinatorV2.class);
+        AiConditionalTradeStrategyService conditionalTradeStrategyService = mock(AiConditionalTradeStrategyService.class);
         AiResearchDailyReportService researchDailyReportService = mock(AiResearchDailyReportService.class);
         when(labelVerificationCoordinator.verifyMatured(any(), any(), any())).thenReturn(
                 new AiLabelVerificationCoordinatorV2.VerificationResult(
                         3, 2, 1, List.of("300058: K线暂不可用"), "label-fingerprint"));
+        when(conditionalTradeStrategyService.verifyMatured(5L, LocalDate.of(2026, 7, 10))).thenReturn(
+                new AiConditionalTradeStrategyService.ReviewRunResult(
+                        2, 1, 1, 0, 0, List.of()));
         MaogouDailyPipelineExecutor executor = new MaogouDailyPipelineExecutor(
                 watchStockMapper, marketDataService, sampleSnapshotService, factorEngine,
-                predictionEngine, aiAnalysisService, aiDailyInsightService, labelVerificationCoordinator,
-                researchDailyReportService);
+                predictionEngine, null, aiAnalysisService, aiDailyInsightService, labelVerificationCoordinator,
+                conditionalTradeStrategyService, researchDailyReportService);
 
         AiDailyPipelineExecutor.StepOutcome outcome = executor.execute("VERIFY_LABELS", context());
 
-        assertThat(outcome.processedCount()).isEqualTo(3);
-        assertThat(outcome.successCount()).isEqualTo(2);
+        assertThat(outcome.processedCount()).isEqualTo(5);
+        assertThat(outcome.successCount()).isEqualTo(4);
         assertThat(outcome.failedCount()).isEqualTo(1);
         assertThat(outcome.errors()).containsExactly("300058: K线暂不可用");
         verify(labelVerificationCoordinator).verifyMatured(
                 5L, LocalDate.of(2026, 7, 10), LocalDateTime.of(2026, 7, 10, 16, 0));
+        verify(conditionalTradeStrategyService).verifyMatured(5L, LocalDate.of(2026, 7, 10));
     }
 
     @Test
@@ -392,7 +398,7 @@ class MaogouDailyPipelineExecutorTest {
         when(aiAnalysisService.analyzeStockForTradeDate(
                 "600519", false, null, null, LocalDate.of(2026, 7, 10))).thenReturn(
                 new AiAnalysisReportResponse(1L, "贵州茅台", "600519", 88, "建议观察上攻延续", LocalDateTime.now(),
-                        "技术面", "风险", "买卖点", "摘要", "qwen", "SUCCESS", null,
+                        "技术面", "风险", "买卖点", "{}", List.of(), "摘要", "qwen", "SUCCESS", null,
                         11L, 21L, 31L, BigDecimal.ONE, BigDecimal.ONE));
         when(aiAnalysisService.analyzeStockForTradeDate(
                 "300058", false, null, null, LocalDate.of(2026, 7, 10)))
@@ -502,7 +508,7 @@ class MaogouDailyPipelineExecutorTest {
         when(aiAnalysisService.analyzeStockForTradeDate(
                 "600519", false, null, null, LocalDate.of(2026, 7, 10))).thenReturn(
                 new AiAnalysisReportResponse(9L, "贵州茅台", "600519", 0, "", LocalDateTime.now(),
-                        "", "", "", "", "qwen", "FAILED", "模型输出无法解析",
+                        "", "", "", "{}", List.of(), "", "qwen", "FAILED", "模型输出无法解析",
                         null, null, null, BigDecimal.ZERO, BigDecimal.ZERO));
         MaogouDailyPipelineExecutor executor = new MaogouDailyPipelineExecutor(
                 watchStockMapper, marketDataService, sampleSnapshotService, factorEngine,

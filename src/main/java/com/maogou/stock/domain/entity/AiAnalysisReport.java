@@ -22,6 +22,7 @@ public class AiAnalysisReport {
     public String technicalAnalysis;
     public String riskWarning;
     public String buySellPoints;
+    public String conditionalStrategy;
     public String promptSummary;
     public String rawPrompt;
     public String rawResponse;

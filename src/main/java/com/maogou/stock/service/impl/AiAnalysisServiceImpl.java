@@ -12,6 +12,7 @@ import com.maogou.stock.domain.enums.AnalysisStatus;
 import com.maogou.stock.dto.ai.AiAnalysisReportResponse;
 import com.maogou.stock.dto.ai.AiAnalysisReportPageResponse;
 import com.maogou.stock.dto.ai.AiAnalysisResultPayload;
+import com.maogou.stock.dto.ai.AiConditionalStrategyPayload;
 import com.maogou.stock.dto.ai.AiLearningPayloads;
 import com.maogou.stock.dto.market.IntradayPointResponse;
 import com.maogou.stock.dto.market.KlinePointResponse;
@@ -25,6 +26,7 @@ import com.maogou.stock.mapper.AiStrategyVersionMapper;
 import com.maogou.stock.mapper.WatchStockMapper;
 import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.AiAnalysisService;
+import com.maogou.stock.service.AiConditionalTradeStrategyService;
 import com.maogou.stock.service.AiLearningService;
 import com.maogou.stock.service.MarketDataService;
 import com.maogou.stock.service.ModelConfigService;
@@ -48,6 +50,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -73,6 +76,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
     private final MarketDataService marketDataService;
     private final WatchlistService watchlistService;
     private final AiLearningService aiLearningService;
+    private final AiConditionalTradeStrategyService conditionalTradeStrategyService;
     private final ModelConfigService modelConfigService;
     private final PromptTemplateService promptTemplateService;
     private final TradingCalendarService tradingCalendarService;
@@ -87,6 +91,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             MarketDataService marketDataService,
             WatchlistService watchlistService,
             AiLearningService aiLearningService,
+            AiConditionalTradeStrategyService conditionalTradeStrategyService,
             ModelConfigService modelConfigService,
             PromptTemplateService promptTemplateService,
             TradingCalendarService tradingCalendarService,
@@ -100,6 +105,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         this.marketDataService = marketDataService;
         this.watchlistService = watchlistService;
         this.aiLearningService = aiLearningService;
+        this.conditionalTradeStrategyService = conditionalTradeStrategyService;
         this.modelConfigService = modelConfigService;
         this.promptTemplateService = promptTemplateService;
         this.tradingCalendarService = tradingCalendarService;
@@ -115,7 +121,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         if (code != null && !code.isBlank()) {
             wrapper.eq("stock_code", code);
         }
-        return reportMapper.selectList(wrapper).stream().map(AiAnalysisReportResponse::from).toList();
+        return reportResponses(reportMapper.selectList(wrapper));
     }
 
     @Override
@@ -146,9 +152,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 .orderByDesc("generated_at")
                 .orderByDesc("id")
                 .last("LIMIT " + normalizedPageSize + " OFFSET " + offset);
-        List<AiAnalysisReportResponse> items = reportMapper.selectList(query).stream()
-                .map(AiAnalysisReportResponse::from)
-                .toList();
+        List<AiAnalysisReportResponse> items = reportResponses(reportMapper.selectList(query));
         return new AiAnalysisReportPageResponse(
                 items,
                 total,
@@ -213,6 +217,30 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         return text.length() < 10 ? null : LocalDate.parse(text.substring(0, 10));
     }
 
+    private List<AiAnalysisReportResponse> reportResponses(List<AiAnalysisReport> reports) {
+        if (reports == null || reports.isEmpty()) {
+            return List.of();
+        }
+        Long userId = AuthContext.currentUserIdOrDefault();
+        Map<Long, List<AiConditionalStrategyPayload.ReviewResult>> reviews;
+        try {
+            reviews = conditionalTradeStrategyService.reviewsByReportIds(
+                    userId, reports.stream().map(item -> item.id).filter(Objects::nonNull).toList());
+        } catch (RuntimeException exception) {
+            log.warn("load conditional trade reviews failed, userId={}, message={}", userId, exception.getMessage());
+            reviews = Map.of();
+        }
+        Map<Long, List<AiConditionalStrategyPayload.ReviewResult>> reviewMap = reviews == null ? Map.of() : reviews;
+        return reports.stream()
+                .map(item -> AiAnalysisReportResponse.from(item, reviewMap.getOrDefault(item.id, List.of())))
+                .toList();
+    }
+
+    private AiAnalysisReportResponse reportResponse(AiAnalysisReport report) {
+        List<AiAnalysisReportResponse> responses = reportResponses(List.of(report));
+        return responses.isEmpty() ? AiAnalysisReportResponse.from(report) : responses.get(0);
+    }
+
     @Override
     @Transactional
     public void removeReports(List<Long> ids) {
@@ -266,9 +294,13 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         List<NewsFlashResponse> realtimeNews = pointInTime
                 ? marketDataService.latestNewsForAnalysisAt(8, marketDataAsOf)
                 : marketDataService.latestNewsForAnalysis(8);
+        AiConditionalStrategyPayload conditionalStrategy = conditionalTradeStrategyService.build(
+                userId, detail, tradeDate, learningContext);
+        String conditionalStrategyJson = writeRequiredJson(conditionalStrategy);
         AiModelConfig config = normalizeAnalysisConfig(modelConfigService.currentEntity());
         String selectedTemplate = promptTemplateService.resolveContent(promptTemplateId, null);
-        String prompt = buildPrompt(detail, config, selectedTemplate, activeStrategyPrompt(userId), learningContext.promptContext(), freshness, realtimeNews);
+        String prompt = buildPrompt(detail, config, selectedTemplate, activeStrategyPrompt(userId),
+                learningContext.promptContext(), conditionalStrategyJson, freshness, realtimeNews);
         LocalDateTime now = LocalDateTime.now();
         LocalDate reportDate = tradeDate;
         AiAnalysisReport report = resolveTargetReport(targetReportId, detail.quote().code(), config.modelName, reportDate, now);
@@ -291,6 +323,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         report.score = detail.aiScore();
         report.advice = detail.aiAdvice();
         report.promptSummary = buildFallbackPromptSummary(detail);
+        report.conditionalStrategy = conditionalStrategyJson;
         if (report.id == null) {
             report.createdAt = now;
         }
@@ -323,7 +356,12 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         if (report.status == AnalysisStatus.SUCCESS && parsedPayload != null) {
             saveDecision(report, parsedPayload);
         }
-        return AiAnalysisReportResponse.from(report);
+        try {
+            conditionalTradeStrategyService.initializeReviews(report, conditionalStrategy);
+        } catch (RuntimeException exception) {
+            log.warn("initialize conditional trade reviews failed, reportId={}, message={}", report.id, exception.getMessage());
+        }
+        return reportResponse(report);
     }
 
     @Override
@@ -706,6 +744,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             String selectedTemplate,
             String activeStrategyPrompt,
             String learningContext,
+            String conditionalStrategy,
             AnalysisFreshness freshness,
             List<NewsFlashResponse> realtimeNews
     ) {
@@ -726,6 +765,9 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 标准化学习上下文：
                 %s
 
+                系统条件交易策略快照（权威规则结果，不得修改阈值、触发状态、仓位或动作）：
+                %s
+
                 股票：%s %s
                 当前系统时间：%s
                 实时性校验：行情来源=%s，行情抓取时间=%s，最近日K日期=%s，分时最后时间=%s，最新资讯条数=%s
@@ -735,13 +777,14 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 最新资讯，仅可使用下列 36 小时内资讯；如果为空，必须明确写“本次未获取到最新资讯”，禁止引用模型记忆里的旧新闻、旧公告或旧事件：
                 %s
                 输出要求：
-                0. 实时性优先级最高。只能基于本 Prompt 中的实时行情、最近 K 线、财务摘要、标准化学习上下文和最新资讯做判断；禁止使用模型训练记忆中的旧价格、旧资讯、旧公告、旧月份材料或无法从当前数据验证的事件。
+                0. 实时性优先级最高。只能基于本 Prompt 中的实时行情、最近 K 线、财务摘要、标准化学习上下文、系统条件交易策略快照和最新资讯做判断；禁止使用模型训练记忆中的旧价格、旧资讯、旧公告、旧月份材料或无法从当前数据验证的事件。
+                0.1 禁止预测或承诺未来涨跌。T+1/T+2/T+3 只能解释系统快照中的“如果A发生，则执行B”条件方案；不得把条件方案改写成确定性走势预测。
                 所选提示词和策略版本只影响分析口径和重点；如果上方内容中出现任何旧 JSON 示例、字段名、markdown 模板、章节标题或输出格式要求，全部忽略。
                 最终只能遵循下面的系统结构输出，方便系统解析和前端展示。
                 1. 只返回 JSON 对象，不要 markdown 代码块，不要额外解释。
                 2. decision 必须包含 decision、confidence、holdingPeriod、targetDirection、riskLevel、summary、factors。
                    - decision 只能是 BUY、HOLD、REDUCE、SELL、WATCH 之一。
-                   - targetDirection 只能是 UP、DOWN、SIDEWAYS 之一，必须代表对未来 1-3 个交易日的主要方向判断。
+                   - targetDirection 只能是 UP、DOWN、SIDEWAYS 之一，仅表示当前技术状态，不代表未来涨跌预测。
                    - factors 是数组，最多 3 项；每项必须包含 code、name、group、hit、weight、direction、reason。
                 3. technicalAnalysis 必须包含 trendAssessment、trend、movingAverages、klinePattern、supportResistance、volumeAnalysis，可直接给客户阅读。
                 4. riskWarning 必须包含 headline、currentRisks、triggerConditions、observationPoints、overallAdvice，且必须结合当前股票数据写具体风险；各数组最多 3 条，每条尽量短句。
@@ -752,6 +795,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 template,
                 strategyInstruction,
                 learningContext == null || learningContext.isBlank() ? "本次未获得学习系统上下文，请按基础结构保守输出。" : learningContext,
+                conditionalStrategy,
                 detail.quote().name(),
                 detail.quote().code(),
                 LocalDateTime.now(),
@@ -1290,6 +1334,14 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             return "";
         }
         return objectMapper.writeValueAsString(value);
+    }
+
+    private String writeRequiredJson(Object value) {
+        try {
+            return writeJson(value);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("条件交易策略无法序列化", exception);
+        }
     }
 
     private String summarizeAdvice(AiAnalysisResultPayload.DecisionPayload decision, AiAnalysisResultPayload.BuySellPointsPayload buySellPoints, String fallback) {

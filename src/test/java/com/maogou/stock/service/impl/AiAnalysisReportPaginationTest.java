@@ -4,12 +4,14 @@ import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.maogou.stock.domain.entity.AiAnalysisReport;
 import com.maogou.stock.mapper.AiAnalysisReportMapper;
 import com.maogou.stock.security.AuthContext;
+import com.maogou.stock.service.AiConditionalTradeStrategyService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -102,6 +104,8 @@ class AiAnalysisReportPaginationTest {
     }
 
     private static AiAnalysisServiceImpl service(AiAnalysisReportMapper reportMapper) {
+        AiConditionalTradeStrategyService conditionalStrategyService = mock(AiConditionalTradeStrategyService.class);
+        when(conditionalStrategyService.reviewsByReportIds(any(), any())).thenReturn(Map.of());
         return new AiAnalysisServiceImpl(
                 reportMapper,
                 null,
@@ -110,6 +114,7 @@ class AiAnalysisReportPaginationTest {
                 null,
                 null,
                 null,
+                conditionalStrategyService,
                 null,
                 null,
                 null,

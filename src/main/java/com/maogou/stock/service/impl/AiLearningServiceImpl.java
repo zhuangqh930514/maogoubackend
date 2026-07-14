@@ -572,6 +572,7 @@ public class AiLearningServiceImpl implements AiLearningService {
                     active == null ? 0L : active.id,
                     sample.dataQualityScore,
                     prediction.confidence,
+                    sample.marketRegime,
                     buildPromptContext(sample, factors, prediction)
             );
         } catch (RuntimeException ex) {

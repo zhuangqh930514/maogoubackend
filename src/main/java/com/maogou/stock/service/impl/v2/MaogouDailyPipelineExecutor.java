@@ -20,6 +20,7 @@ import com.maogou.stock.dto.market.StockQuoteResponse;
 import com.maogou.stock.mapper.WatchStockMapper;
 import com.maogou.stock.mapper.v2.AiStrategyReleaseMapper;
 import com.maogou.stock.service.AiAnalysisService;
+import com.maogou.stock.service.AiConditionalTradeStrategyService;
 import com.maogou.stock.service.AiDailyInsightService;
 import com.maogou.stock.service.AiResearchDailyReportService;
 import com.maogou.stock.service.MarketDataService;
@@ -60,6 +61,7 @@ public class MaogouDailyPipelineExecutor implements AiDailyPipelineExecutor {
     private final AiAnalysisService aiAnalysisService;
     private final AiDailyInsightService aiDailyInsightService;
     private final AiLabelVerificationCoordinatorV2 labelVerificationCoordinator;
+    private final AiConditionalTradeStrategyService conditionalTradeStrategyService;
     private final AiResearchDailyReportService researchDailyReportService;
     private final ConcurrentMap<Long, DataFlowState> states = new ConcurrentHashMap<>();
 
@@ -74,6 +76,7 @@ public class MaogouDailyPipelineExecutor implements AiDailyPipelineExecutor {
             AiAnalysisService aiAnalysisService,
             AiDailyInsightService aiDailyInsightService,
             AiLabelVerificationCoordinatorV2 labelVerificationCoordinator,
+            AiConditionalTradeStrategyService conditionalTradeStrategyService,
             AiResearchDailyReportService researchDailyReportService
     ) {
         this.watchStockMapper = watchStockMapper;
@@ -85,7 +88,25 @@ public class MaogouDailyPipelineExecutor implements AiDailyPipelineExecutor {
         this.aiAnalysisService = aiAnalysisService;
         this.aiDailyInsightService = aiDailyInsightService;
         this.labelVerificationCoordinator = labelVerificationCoordinator;
+        this.conditionalTradeStrategyService = conditionalTradeStrategyService;
         this.researchDailyReportService = researchDailyReportService;
+    }
+
+    MaogouDailyPipelineExecutor(
+            WatchStockMapper watchStockMapper,
+            MarketDataService marketDataService,
+            AiSampleSnapshotService sampleSnapshotService,
+            AiFactorEngineV2 factorEngine,
+            AiPredictionEngineV2 predictionEngine,
+            AiStrategyReleaseMapper strategyReleaseMapper,
+            AiAnalysisService aiAnalysisService,
+            AiDailyInsightService aiDailyInsightService,
+            AiLabelVerificationCoordinatorV2 labelVerificationCoordinator,
+            AiResearchDailyReportService researchDailyReportService
+    ) {
+        this(watchStockMapper, marketDataService, sampleSnapshotService, factorEngine,
+                predictionEngine, strategyReleaseMapper, aiAnalysisService, aiDailyInsightService,
+                labelVerificationCoordinator, null, researchDailyReportService);
     }
 
     MaogouDailyPipelineExecutor(
@@ -101,7 +122,7 @@ public class MaogouDailyPipelineExecutor implements AiDailyPipelineExecutor {
     ) {
         this(watchStockMapper, marketDataService, sampleSnapshotService, factorEngine,
                 predictionEngine, null, aiAnalysisService, aiDailyInsightService,
-                labelVerificationCoordinator, researchDailyReportService);
+                labelVerificationCoordinator, null, researchDailyReportService);
     }
 
     @Override
@@ -153,14 +174,24 @@ public class MaogouDailyPipelineExecutor implements AiDailyPipelineExecutor {
         context.checkpointLease();
         AiLabelVerificationCoordinatorV2.VerificationResult result = labelVerificationCoordinator.verifyMatured(
                 context.userId(), context.tradeDate(), context.startedAt());
+        AiConditionalTradeStrategyService.ReviewRunResult tradeReviews = conditionalTradeStrategyService == null
+                ? new AiConditionalTradeStrategyService.ReviewRunResult(0, 0, 0, 0, 0, List.of())
+                : conditionalTradeStrategyService.verifyMatured(context.userId(), context.tradeDate());
         context.checkpointLease();
+        List<String> errors = new java.util.ArrayList<>(result.errors());
+        errors.addAll(tradeReviews.errors());
+        int reviewSuccess = tradeReviews.verifiedCount() + tradeReviews.noTriggerCount();
         return new StepOutcome(
-                result.processedCount(),
-                result.successCount(),
-                result.failedCount(),
-                "{\"verified\":" + result.successCount() + ",\"failed\":" + result.failedCount() + "}",
-                result.outputFingerprint(),
-                result.errors());
+                result.processedCount() + tradeReviews.processedCount(),
+                result.successCount() + reviewSuccess,
+                result.failedCount() + tradeReviews.failedCount(),
+                "{\"predictionLabels\":" + result.successCount()
+                        + ",\"conditionalReviews\":" + tradeReviews.verifiedCount()
+                        + ",\"conditionalNoTrigger\":" + tradeReviews.noTriggerCount()
+                        + ",\"failed\":" + (result.failedCount() + tradeReviews.failedCount()) + "}",
+                fingerprint(result.outputFingerprint(), String.valueOf(tradeReviews.verifiedCount()),
+                        String.valueOf(tradeReviews.noTriggerCount())),
+                errors);
     }
 
     @Override
