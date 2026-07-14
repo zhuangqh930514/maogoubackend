@@ -70,7 +70,7 @@ public interface AiFactorPerformanceMapper extends BaseMapper<AiFactorPerformanc
               </foreach>
               AND fv.hit = 1 AND fv.missing = 0
               AND fp.horizon_trading_days = 3
-              AND fp.window_end_date < #{tradeDate}
+              AND fp.window_end_date &lt; #{tradeDate}
             ORDER BY fp.window_end_date DESC, fp.evaluated_at DESC
             </script>
             """)

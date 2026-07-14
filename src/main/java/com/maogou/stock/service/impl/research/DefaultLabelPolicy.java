@@ -7,6 +7,7 @@ import com.maogou.stock.domain.entity.research.AiSampleLabel;
 import com.maogou.stock.dto.market.KlinePointResponse;
 import com.maogou.stock.dto.market.KlineSeriesSnapshot;
 import com.maogou.stock.service.research.AiSampleLabelService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -50,6 +51,7 @@ public class DefaultLabelPolicy {
     private final ObjectMapper objectMapper;
     private final PolicyConfig config;
 
+    @Autowired
     public DefaultLabelPolicy(ObjectMapper objectMapper) {
         this(objectMapper, DEFAULT_CONFIG);
     }

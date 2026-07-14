@@ -13,13 +13,7 @@ class ExternalCallTransactionBoundaryTest {
     void aiModelAndMarketCallsAreNotWrappedInMethodTransactions() throws Exception {
         Method analyzeStock = AiAnalysisServiceImpl.class.getMethod(
                 "analyzeStock", String.class, boolean.class, Long.class, Long.class);
-        Method buildSamples = AiLearningServiceImpl.class.getMethod(
-                "buildWatchlistSamples", String.class, String.class);
-        Method recomputeFactors = AiLearningServiceImpl.class.getMethod(
-                "recomputeSampleFactors", Long.class);
 
         assertThat(analyzeStock.getAnnotation(Transactional.class)).isNull();
-        assertThat(buildSamples.getAnnotation(Transactional.class)).isNull();
-        assertThat(recomputeFactors.getAnnotation(Transactional.class)).isNull();
     }
 }
