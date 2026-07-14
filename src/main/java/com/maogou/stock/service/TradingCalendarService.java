@@ -10,5 +10,7 @@ public interface TradingCalendarService {
 
     LocalDate latestExpectedKlineDate(LocalDateTime now);
 
+    LocalDate minimumRequiredAnalysisKlineDate(LocalDateTime now);
+
     LocalDateTime nextTradingDateTime(LocalDateTime now, int hour, int minute);
 }

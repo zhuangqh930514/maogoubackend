@@ -32,6 +32,16 @@ class TradingCalendarServiceImplTest {
     }
 
     @Test
+    void allowsPreviousCompletedKlineWhenRealtimeQuoteIsCurrent() {
+        TradingCalendarServiceImpl service = new TradingCalendarServiceImpl(new AppProperties());
+
+        assertThat(service.minimumRequiredAnalysisKlineDate(LocalDateTime.parse("2026-07-14T15:27:04")))
+                .isEqualTo(LocalDate.parse("2026-07-13"));
+        assertThat(service.minimumRequiredAnalysisKlineDate(LocalDateTime.parse("2026-07-19T12:00:00")))
+                .isEqualTo(LocalDate.parse("2026-07-17"));
+    }
+
+    @Test
     void skipsHolidaysForNextScheduledRun() {
         TradingCalendarServiceImpl service = new TradingCalendarServiceImpl(new AppProperties());
 

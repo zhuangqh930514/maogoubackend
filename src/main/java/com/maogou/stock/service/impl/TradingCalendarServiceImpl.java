@@ -71,6 +71,16 @@ public class TradingCalendarServiceImpl implements TradingCalendarService {
     }
 
     @Override
+    public LocalDate minimumRequiredAnalysisKlineDate(LocalDateTime now) {
+        LocalDateTime current = now == null ? LocalDateTime.now() : now;
+        LocalDate date = current.toLocalDate();
+        if (isTradingDay(date)) {
+            return previousTradingDay(date);
+        }
+        return latestExpectedKlineDate(current);
+    }
+
+    @Override
     public LocalDateTime nextTradingDateTime(LocalDateTime now, int hour, int minute) {
         LocalDateTime current = now == null ? LocalDateTime.now() : now;
         LocalTime time = LocalTime.of(hour, minute);

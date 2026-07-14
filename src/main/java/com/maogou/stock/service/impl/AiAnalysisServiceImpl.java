@@ -708,9 +708,9 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         if (latestKlineDate == null) {
             throw new IllegalStateException("最近 K 线数据不可用，已停止 AI 分析。");
         }
-        LocalDate expectedKlineDate = tradingCalendarService.latestExpectedKlineDate(now);
-        if (latestKlineDate.isBefore(expectedKlineDate)) {
-            throw new IllegalStateException("最近 K 线日期为 " + latestKlineDate + "，低于当前应有交易日 " + expectedKlineDate + "，已停止 AI 分析。");
+        LocalDate minimumKlineDate = tradingCalendarService.minimumRequiredAnalysisKlineDate(now);
+        if (latestKlineDate.isBefore(minimumKlineDate)) {
+            throw new IllegalStateException("最近 K 线日期为 " + latestKlineDate + "，低于当前允许的最近完整交易日 " + minimumKlineDate + "，已停止 AI 分析。");
         }
         LocalDate staleBefore = now.toLocalDate().minusDays(MAX_ANALYSIS_KLINE_AGE_DAYS);
         if (latestKlineDate.isBefore(staleBefore)) {
@@ -770,7 +770,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
 
                 股票：%s %s
                 当前系统时间：%s
-                实时性校验：行情来源=%s，行情抓取时间=%s，最近日K日期=%s，分时最后时间=%s，最新资讯条数=%s
+                实时性校验：行情来源=%s，行情抓取时间=%s，最近完整日K日期=%s，分时最后时间=%s，最新资讯条数=%s
                 实时行情：价格=%s，涨跌额=%s，涨跌幅=%s%%，量比=%s，市场=%s
                 财务摘要：PE=%s，PB=%s，营收=%s，营收同比=%s%%，净利润=%s，净利同比=%s%%，ROE=%s%%，毛利率=%s%%，资产负债率=%s%%
                 近K线样本：%s
