@@ -1,0 +1,55 @@
+# ACTION|TABLE|REASON
+KEEP|ai_model_config|用户模型接入配置
+KEEP|ai_prompt_template|用户提示词
+KEEP|ai_chat_session|猫狗畅聊会话
+KEEP|ai_chat_message|猫狗畅聊消息
+KEEP|ai_user_memory|用户聊天记忆
+DROP_AND_RECREATE|ai_analysis_report|正式版本化个股报告
+DROP|ai_analysis_decision|由正式预测和每日决策替代
+DROP|ai_analysis_factor_hit|由正式因子值替代
+DROP|ai_analysis_outcome|由样本标签和预测评价替代
+DROP|ai_backtest_run|由正式组合回测替代
+DROP|ai_backtest_trade|由正式组合回测替代
+DROP_AND_RECREATE|ai_daily_insight_snapshot|重命名为每日决策快照
+DROP_AND_RECREATE|ai_daily_insight_item|重命名为每日决策明细
+DROP_AND_RECREATE|ai_data_batch|改为全局研究批次
+DROP_AND_RECREATE|ai_drift_event|正式漂移事件
+DROP_AND_RECREATE|ai_factor_definition|正式因子定义
+DROP|ai_factor_performance_v2|由正式因子表现替代
+DROP|ai_factor_stat|由正式因子表现替代
+DROP|ai_factor_value|删除旧因子值
+DROP|ai_factor_value_v2|由正式因子值替代
+DROP_AND_RECREATE|ai_label_cost_evidence|改为样本标签成本证据
+DROP|ai_label_v2|拆分为样本标签和预测评价
+DROP|ai_learning_job_log|由 pipeline run/step 替代
+DROP|ai_model_eval_run|由模型版本和 Shadow 替代
+DROP_AND_RECREATE|ai_model_version|正式模型版本
+DROP_AND_RECREATE|ai_pipeline_run|增加 GLOBAL/USER 作用域
+DROP_AND_RECREATE|ai_pipeline_step|正式步骤检查点
+DROP_AND_RECREATE|ai_portfolio_backtest_daily|正式组合回测
+DROP_AND_RECREATE|ai_portfolio_backtest_position|正式组合回测
+DROP_AND_RECREATE|ai_portfolio_backtest_run|正式组合回测
+DROP_AND_RECREATE|ai_portfolio_backtest_trade|正式组合回测
+DROP|ai_prediction_label|由样本标签和预测评价替代
+DROP|ai_prediction_result|删除旧预测
+DROP|ai_prediction_sample|删除旧样本
+DROP|ai_prediction_v2|由正式预测替代
+DROP_AND_RECREATE|ai_research_daily_report|绑定每日决策快照
+DROP|ai_sample_v2|由正式样本替代
+DROP_AND_RECREATE|ai_shadow_evaluation|正式 Shadow
+DROP_AND_RECREATE|ai_shadow_evaluation_item|正式 Shadow 明细
+DROP|ai_stock_universe|由研究股票池三表替代
+DROP|ai_strategy_evolution_log|由治理事件替代
+DROP|ai_strategy_experiment|由 Walk-forward 替代
+DROP_AND_RECREATE|ai_strategy_governance_event|正式治理事件
+DROP_AND_RECREATE|ai_strategy_release|唯一全局策略发布
+DROP|ai_strategy_version|删除旧策略
+DROP_AND_RECREATE|ai_trade_plan_review|正式条件计划复盘
+DROP_AND_RECREATE|ai_trade_rule_config|正式用户条件规则
+DROP_AND_RECREATE|ai_trade_rule_performance|正式条件规则表现
+DROP_AND_RECREATE|ai_trading_calendar|正式交易日历
+DROP_AND_RECREATE|ai_training_dataset|正式训练数据集
+DROP_AND_RECREATE|ai_training_dataset_item|正式训练数据明细
+DROP_AND_RECREATE|ai_walk_forward_baseline|正式 Walk-forward
+DROP_AND_RECREATE|ai_walk_forward_fold|正式 Walk-forward
+DROP_AND_RECREATE|ai_walk_forward_run|正式 Walk-forward
