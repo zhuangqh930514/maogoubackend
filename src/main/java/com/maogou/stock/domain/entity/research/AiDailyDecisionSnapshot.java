@@ -8,27 +8,32 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
-@TableName("ai_research_daily_report")
-public class AiResearchDailyReport {
+@TableName("ai_daily_decision_snapshot")
+public class AiDailyDecisionSnapshot {
     @TableId(type = IdType.AUTO)
     public Long id;
     public Long userId;
-    public Long decisionSnapshotId;
     public LocalDate tradeDate;
-    public Integer reportVersion;
+    public Integer snapshotVersion;
     public Long pipelineRunId;
+    public Long globalPipelineRunId;
     public Long strategyReleaseId;
     public Long modelVersionId;
-    public Long supersedesReportId;
+    public Long supersedesSnapshotId;
     public String idempotencyKey;
     public Integer isCurrent;
-    public String reportStatus;
-    public String title;
-    public String executiveSummary;
+    public String snapshotStatus;
+    public String marketRegime;
+    public Integer recommendationCount;
+    public Integer cautiousCount;
+    public Integer avoidCount;
+    public Integer holdingRiskCount;
+    public Integer unavailableCount;
+    public BigDecimal overallHitRate;
     public String freshnessStatus;
     public BigDecimal dataQualityScore;
-    public String contentJson;
-    public String markdownContent;
+    public String decisionPolicyVersion;
+    public String summaryJson;
     public LocalDateTime generatedAt;
     public LocalDateTime createdAt;
     public LocalDateTime updatedAt;

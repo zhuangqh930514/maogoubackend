@@ -3,6 +3,7 @@ package com.maogou.stock.domain.entity.research;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.baomidou.mybatisplus.annotation.TableField;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -25,4 +26,8 @@ public class AiPredictionEvaluation {
     public String evidenceJson;
     public LocalDateTime evaluatedAt;
     public LocalDateTime createdAt;
+    @TableField(exist = false)
+    public String stockCode;
+    @TableField(exist = false)
+    public Integer horizonDays;
 }

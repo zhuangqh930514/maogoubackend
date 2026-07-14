@@ -56,4 +56,26 @@ public interface AiFactorPerformanceMapper extends BaseMapper<AiFactorPerformanc
             @Param("windowStartDate") LocalDate windowStartDate,
             @Param("windowEndDate") LocalDate windowEndDate
     );
+
+    @Select("""
+            <script>
+            SELECT DISTINCT fp.*, d.factor_code AS factor_code, d.factor_name AS factor_name,
+                   d.factor_version AS factor_version
+            FROM ai_factor_performance fp
+            INNER JOIN ai_factor_definition d ON d.id = fp.factor_definition_id
+            INNER JOIN ai_factor_value fv ON fv.factor_definition_id = fp.factor_definition_id
+            WHERE fv.sample_id IN
+              <foreach collection="sampleIds" item="sampleId" open="(" separator="," close=")">
+                #{sampleId}
+              </foreach>
+              AND fv.hit = 1 AND fv.missing = 0
+              AND fp.horizon_trading_days = 3
+              AND fp.window_end_date < #{tradeDate}
+            ORDER BY fp.window_end_date DESC, fp.evaluated_at DESC
+            </script>
+            """)
+    List<AiFactorPerformance> selectForSamplesBefore(
+            @Param("sampleIds") List<Long> sampleIds,
+            @Param("tradeDate") LocalDate tradeDate
+    );
 }

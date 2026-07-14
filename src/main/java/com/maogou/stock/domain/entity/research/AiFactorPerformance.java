@@ -3,6 +3,7 @@ package com.maogou.stock.domain.entity.research;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.baomidou.mybatisplus.annotation.TableField;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -12,9 +13,16 @@ import java.time.LocalDateTime;
 public class AiFactorPerformance {
     @TableId(type = IdType.AUTO)
     public Long id;
+    public Long factorDefinitionId;
+    @TableField(exist = false)
     public Long userId;
+    @TableField(exist = false)
     public String factorCode;
+    @TableField(exist = false)
+    public String factorName;
+    @TableField(exist = false)
     public String factorVersion;
+    @TableField("horizon_trading_days")
     public Integer horizonDays;
     public String marketRegime;
     public String windowType;

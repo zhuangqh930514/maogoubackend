@@ -16,6 +16,7 @@ public final class AiResearchDailyReportPayloads {
 
     public record ReportView(
             Long id,
+            Long decisionSnapshotId,
             LocalDate tradeDate,
             Integer reportVersion,
             Long pipelineRunId,
@@ -40,6 +41,7 @@ public final class AiResearchDailyReportPayloads {
         public static ReportView from(AiResearchDailyReport entity, ReportContent content) {
             return new ReportView(
                     entity.id,
+                    entity.decisionSnapshotId,
                     entity.tradeDate,
                     entity.reportVersion,
                     entity.pipelineRunId,
@@ -50,11 +52,11 @@ public final class AiResearchDailyReportPayloads {
                     entity.reportStatus,
                     entity.title,
                     entity.executiveSummary,
-                    entity.marketRegime,
-                    entity.recommendationCount,
-                    entity.watchCount,
-                    entity.avoidCount,
-                    entity.holdingRiskCount,
+                    content.insightSummary().marketRegime(),
+                    content.recommendations().size(),
+                    content.watches().size(),
+                    content.avoids().size(),
+                    content.holdingRisks().size(),
                     entity.freshnessStatus,
                     entity.dataQualityScore,
                     content,
@@ -98,6 +100,7 @@ public final class AiResearchDailyReportPayloads {
             List<StockCard> watches,
             List<StockCard> avoids,
             List<StockCard> holdingRisks,
+            List<StockCard> unavailable,
             List<FactorCard> keyFactors,
             InsightSummary insightSummary
     ) {
@@ -128,7 +131,13 @@ public final class AiResearchDailyReportPayloads {
             String freshnessMessage,
             List<TriggerFactor> triggerFactors,
             LocalDateTime reportGeneratedAt,
-            LocalDateTime sampleTime
+            LocalDateTime sampleTime,
+            BigDecimal horizonSignalScore,
+            BigDecimal factorReliabilityScore,
+            BigDecimal strategyValidationScore,
+            BigDecimal riskComponent,
+            String decisionSource,
+            String unavailableReason
     ) {
     }
 
@@ -140,7 +149,8 @@ public final class AiResearchDailyReportPayloads {
             BigDecimal overallHitRate,
             Integer itemCount,
             Integer lowSampleCount,
-            Long latestJobLogId
+            Long latestJobLogId,
+            String marketRegime
     ) {
     }
 

@@ -1,18 +1,21 @@
 package com.maogou.stock.service.impl;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.maogou.stock.domain.entity.AiDailyInsightItem;
-import com.maogou.stock.domain.entity.AiDailyInsightSnapshot;
-import com.maogou.stock.domain.entity.TradeRecord;
+import com.maogou.stock.domain.entity.research.AiDailyDecisionItem;
+import com.maogou.stock.domain.entity.research.AiDailyDecisionItemPrediction;
+import com.maogou.stock.domain.entity.research.AiDailyDecisionSnapshot;
 import com.maogou.stock.domain.entity.research.AiResearchDailyReport;
-import com.maogou.stock.domain.enums.TradeSide;
-import com.maogou.stock.dto.ai.AiResearchDailyReportPayloads;
+import com.maogou.stock.domain.entity.research.AiStrategyRelease;
+import com.maogou.stock.mapper.research.AiDailyDecisionItemMapper;
+import com.maogou.stock.mapper.research.AiDailyDecisionItemPredictionMapper;
+import com.maogou.stock.mapper.research.AiDailyDecisionSnapshotMapper;
+import com.maogou.stock.mapper.research.AiPipelineRunMapper;
+import com.maogou.stock.mapper.research.AiPipelineStepMapper;
 import com.maogou.stock.mapper.research.AiResearchDailyReportMapper;
+import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
+import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.AiResearchDailyReportService;
 import com.maogou.stock.service.TradingCalendarService;
-import com.maogou.stock.service.research.AiResearchDailyReportSource;
-import com.maogou.stock.security.AuthContext;
 import org.junit.jupiter.api.Test;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -22,9 +25,9 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -36,146 +39,57 @@ import static org.mockito.Mockito.when;
 class AiResearchDailyReportServiceImplTest {
 
     @Test
-    void generatesCompleteDeterministicReportWithoutAnyLlmDependency() {
-        Fixture fixture = fixture(source("SUCCESS", null));
-        AiResearchDailyReportService service = service(fixture);
+    void archivesThePersistedDecisionSnapshotWithoutReclassifyingIt() {
+        Fixture fixture = fixture();
+        AiResearchDailyReportService service = fixture.service;
 
-        AiResearchDailyReportService.ReportView report = service.generate(request(
-                "REPORT:81:SUCCESS", "SUCCESS", null, null));
+        AiResearchDailyReportService.ReportView first = service.generate(request("REPORT:41"));
+        fixture.items.get(0).category = "AVOID";
+        fixture.items.get(0).finalAction = "SELL";
+        fixture.items.get(0).systemScore = BigDecimal.ZERO;
+        AiResearchDailyReportService.ReportView second = service.generate(request("REPORT:41"));
 
-        assertThat(report.reportStatus()).isEqualTo("READY");
-        assertThat(report.recommendationCount()).isEqualTo(1);
-        assertThat(report.watchCount()).isEqualTo(1);
-        assertThat(report.avoidCount()).isEqualTo(1);
-        assertThat(report.holdingRiskCount()).isEqualTo(1);
-        assertThat(report.content().recommendations()).extracting(item -> item.stockCode())
+        assertThat(first.decisionSnapshotId()).isEqualTo(41L);
+        assertThat(first.content().recommendations()).extracting(item -> item.stockCode())
                 .containsExactly("600519");
-        assertThat(report.content().watches()).extracting(item -> item.stockCode())
-                .containsExactly("000001");
-        assertThat(report.content().avoids()).extracting(item -> item.stockCode())
-                .containsExactly("300058");
-        assertThat(report.content().holdingRisks()).extracting(item -> item.stockCode())
-                .containsExactly("300058");
-        assertThat(report.content().keyFactors()).extracting(item -> item.factorCode())
-                .contains("MOMENTUM_20D", "PE_TTM");
-        assertThat(report.content().strategyPerformance().versionNo()).isEqualTo("v2.3");
-        assertThat(report.content().freshness().status()).isEqualTo("REALTIME");
-        assertThat(report.markdownContent()).contains("猫狗智投", "推荐关注", "持仓风险");
-    }
-
-    @Test
-    void freezesDailyInsightSummaryAndDecisionEvidenceIntoTheReportJson() throws Exception {
-        Fixture fixture = fixture(source("SUCCESS", null));
-        AiResearchDailyReportService service = service(fixture);
-
-        AiResearchDailyReportService.ReportView report = service.generate(
-                request("REPORT:MERGED", "SUCCESS", null, null));
-
-        JsonNode content = new ObjectMapper().findAndRegisterModules()
-                .readTree(fixture.reports.get(0).contentJson);
-        assertThat(content.at("/insightSummary/snapshotId").asLong()).isEqualTo(41L);
-        assertThat(content.at("/insightSummary/overallHitRate").decimalValue())
-                .isEqualByComparingTo("61.80");
-        assertThat(content.at("/insightSummary/itemCount").asInt()).isEqualTo(3);
-        assertThat(content.at("/insightSummary/lowSampleCount").asInt()).isEqualTo(1);
-
-        JsonNode recommendation = content.at("/recommendations/0");
-        assertThat(recommendation.get("systemScore").decimalValue()).isEqualByComparingTo("74.5");
-        assertThat(recommendation.get("aiDecision").asText()).isEqualTo("BUY");
-        assertThat(recommendation.get("aiConfidence").decimalValue()).isEqualByComparingTo("82.5");
-        assertThat(recommendation.get("targetDirection").asText()).isEqualTo("UP");
-        assertThat(recommendation.get("riskLevel").asText()).isEqualTo("MEDIUM");
-        assertThat(recommendation.get("dataQualityScore").decimalValue()).isEqualByComparingTo("92");
-        assertThat(recommendation.get("freshnessScore").decimalValue()).isEqualByComparingTo("95");
-        assertThat(recommendation.get("freshnessMessage").asText()).isEqualTo("行情与样本均为当日数据");
-        assertThat(recommendation.get("triggerFactors")).hasSize(1);
-        assertThat(recommendation.at("/triggerFactors/0/factorCode").asText()).isEqualTo("MOMENTUM_20D");
-        assertThat(report.markdownContent())
-                .contains("平均命中率 61.80%", "数据质量 92.50%", "低样本结论 1 只");
-    }
-
-    @Test
-    void sameIdempotencyKeyReturnsTheOriginalCurrentReport() {
-        Fixture fixture = fixture(source("SUCCESS", null));
-        AiResearchDailyReportService service = service(fixture);
-        AiResearchDailyReportService.GenerationRequest request = request(
-                "REPORT:81:SUCCESS", "SUCCESS", null, null);
-
-        AiResearchDailyReportService.ReportView first = service.generate(request);
-        AiResearchDailyReportService.ReportView second = service.generate(request);
-
-        assertThat(second.id()).isEqualTo(first.id());
-        assertThat(second.reportVersion()).isEqualTo(1);
+        assertThat(first.content().avoids()).isEmpty();
+        assertThat(second.content()).isEqualTo(first.content());
         verify(fixture.reportMapper, times(1)).insert(any(AiResearchDailyReport.class));
     }
 
     @Test
-    void aNewBuildSupersedesThePreviousCurrentVersion() {
-        Fixture fixture = fixture(source("SUCCESS", null));
-        AiResearchDailyReportService service = service(fixture);
+    void keepsDataUnavailableOutsideWatchRecommendationAndHitRateGroups() {
+        Fixture fixture = fixture();
+        AiDailyDecisionItem unavailable = item("300058", "蓝色光标", "DATA_UNAVAILABLE", null);
+        unavailable.systemScore = null;
+        unavailable.finalAction = null;
+        unavailable.riskScore = null;
+        unavailable.riskLevel = null;
+        unavailable.unavailableReason = "MISSING_T2_PREDICTION";
+        fixture.items.clear();
+        fixture.items.add(unavailable);
+        fixture.snapshot.snapshotStatus = "DATA_UNAVAILABLE";
+        fixture.snapshot.overallHitRate = null;
 
-        AiResearchDailyReportService.ReportView first = service.generate(request(
-                "REPORT:81:SUCCESS", "SUCCESS", null, null));
-        AiResearchDailyReportService.ReportView second = service.generate(request(
-                "MANUAL:2026-07-10:2", "MANUAL", null, null));
+        AiResearchDailyReportService.ReportView report = fixture.service.generate(request("REPORT:UNAVAILABLE"));
 
-        assertThat(second.reportVersion()).isEqualTo(2);
-        assertThat(second.supersedesReportId()).isEqualTo(first.id());
-        assertThat(second.current()).isTrue();
-        assertThat(fixture.reports.get(0).isCurrent).isEqualTo(0);
-        assertThat(fixture.reports).filteredOn(item -> item.isCurrent == 1).hasSize(1);
+        assertThat(report.reportStatus()).isEqualTo("DATA_UNAVAILABLE");
+        assertThat(report.recommendationCount()).isZero();
+        assertThat(report.watchCount()).isZero();
+        assertThat(report.avoidCount()).isZero();
+        assertThat(report.content().unavailable()).hasSize(1);
+        assertThat(report.content().unavailable().get(0).unavailableReason())
+                .isEqualTo("MISSING_T2_PREDICTION");
     }
 
     @Test
-    void failedPipelineStillProducesAnExceptionReportWithTheFailedStep() {
-        Fixture fixture = fixture(source("FAILED", "GENERATE_REPORTS"));
-        AiResearchDailyReportService service = service(fixture);
+    void refusesToArchiveAnotherUsersDecisionSnapshot() {
+        Fixture fixture = fixture();
+        fixture.snapshot.userId = 6L;
 
-        AiResearchDailyReportService.ReportView report = service.generate(request(
-                "REPORT:81:FAILED:GENERATE_REPORTS", "FAILED", "GENERATE_REPORTS",
-                "模型服务暂时不可用"));
-
-        assertThat(report.reportStatus()).isEqualTo("FAILED_PIPELINE");
-        assertThat(report.executiveSummary()).contains("GENERATE_REPORTS", "模型服务暂时不可用");
-        assertThat(report.content().pipeline().status()).isEqualTo("FAILED");
-        assertThat(report.content().pipeline().failedStep()).isEqualTo("GENERATE_REPORTS");
-        assertThat(report.markdownContent()).contains("流水线异常", "仅展示已固化数据");
-    }
-
-    @Test
-    void manualRebuildUsesTheLatestExpectedTradingDateInsteadOfTheNaturalDate() {
-        Fixture fixture = fixture(source("SUCCESS", null));
-        LocalDate expectedTradeDate = LocalDate.of(2026, 7, 10);
-        when(fixture.tradingCalendarService.latestExpectedKlineDate(any(LocalDateTime.class)))
-                .thenReturn(expectedTradeDate);
-        AiResearchDailyReportService service = service(fixture);
-        AtomicReference<AiResearchDailyReportService.ReportView> result = new AtomicReference<>();
-
-        AuthContext.runAs(5L, () -> result.set(service.rebuildToday()));
-
-        assertThat(result.get().tradeDate()).isEqualTo(expectedTradeDate);
-        verify(fixture.source).load(
-                org.mockito.ArgumentMatchers.eq(5L),
-                org.mockito.ArgumentMatchers.eq(expectedTradeDate),
-                any());
-    }
-
-    @Test
-    void manualRebuildCanTargetTheTradingDateOfTheSelectedHistoricalReport() {
-        Fixture fixture = fixture(source("SUCCESS", null));
-        LocalDate selectedTradeDate = LocalDate.of(2026, 7, 9);
-        when(fixture.tradingCalendarService.latestExpectedKlineDate(any(LocalDateTime.class)))
-                .thenReturn(LocalDate.of(2026, 7, 10));
-        AiResearchDailyReportService service = service(fixture);
-        AtomicReference<AiResearchDailyReportService.ReportView> result = new AtomicReference<>();
-
-        AuthContext.runAs(5L, () -> result.set(service.rebuild(selectedTradeDate)));
-
-        assertThat(result.get().tradeDate()).isEqualTo(selectedTradeDate);
-        verify(fixture.source).load(
-                org.mockito.ArgumentMatchers.eq(5L),
-                org.mockito.ArgumentMatchers.eq(selectedTradeDate),
-                any());
+        assertThatThrownBy(() -> fixture.service.generate(request("REPORT:FOREIGN")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("其他用户");
     }
 
     @Test
@@ -188,224 +102,150 @@ class AiResearchDailyReportServiceImplTest {
     }
 
     @Test
-    void latestReportNeverSelectsAReportAfterTheExpectedTradingDate() {
-        Fixture fixture = fixture(source("SUCCESS", null));
-        LocalDate expectedTradeDate = LocalDate.of(2026, 7, 10);
+    void manualRebuildArchivesTheCurrentSnapshotForTheSelectedTradingDate() {
+        Fixture fixture = fixture();
         when(fixture.tradingCalendarService.latestExpectedKlineDate(any(LocalDateTime.class)))
-                .thenReturn(expectedTradeDate);
-        when(fixture.reportMapper.selectLatestCurrent(5L, expectedTradeDate)).thenReturn(null);
-        AiResearchDailyReportService service = service(fixture);
+                .thenReturn(LocalDate.of(2026, 7, 10));
+        when(fixture.snapshotMapper.selectCurrent(5L, LocalDate.of(2026, 7, 9)))
+                .thenReturn(fixture.snapshot);
+        fixture.snapshot.tradeDate = LocalDate.of(2026, 7, 9);
 
-        AiResearchDailyReportService.ReportView result = service.latestOrNull(5L);
+        java.util.concurrent.atomic.AtomicReference<AiResearchDailyReportService.ReportView> result =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        AuthContext.runAs(5L, () -> result.set(fixture.service.rebuild(LocalDate.of(2026, 7, 9))));
 
-        assertThat(result).isNull();
-        verify(fixture.reportMapper).selectLatestCurrent(5L, expectedTradeDate);
+        assertThat(result.get().tradeDate()).isEqualTo(LocalDate.of(2026, 7, 9));
+        assertThat(result.get().decisionSnapshotId()).isEqualTo(41L);
     }
 
-    @Test
-    void successfulPipelineWithNoInsightItemsProducesAnExplicitEmptyReport() {
-        AiDailyInsightSnapshot snapshot = new AiDailyInsightSnapshot();
-        snapshot.tradeDate = LocalDate.of(2026, 7, 10);
-        snapshot.freshnessStatus = "EMPTY";
-        snapshot.dataQualityScore = BigDecimal.ZERO;
-        AiResearchDailyReportPayloads.PipelineSummary pipeline =
-                new AiResearchDailyReportPayloads.PipelineSummary(
-                        81L, "SUCCESS", "BUILD_RESEARCH_DAILY_REPORT", null,
-                        9, 9, 0, null, List.of());
-        AiResearchDailyReportSource.ReportSource emptySource = new AiResearchDailyReportSource.ReportSource(
-                snapshot, List.of(), List.of(), "DEFENSIVE", null, pipeline);
-        Fixture fixture = fixture(emptySource);
-        AiResearchDailyReportService service = service(fixture);
+    private static Fixture fixture() {
+        AiResearchDailyReportMapper reportMapper = mock(AiResearchDailyReportMapper.class);
+        AiDailyDecisionSnapshotMapper snapshotMapper = mock(AiDailyDecisionSnapshotMapper.class);
+        AiDailyDecisionItemMapper itemMapper = mock(AiDailyDecisionItemMapper.class);
+        AiDailyDecisionItemPredictionMapper linkMapper = mock(AiDailyDecisionItemPredictionMapper.class);
+        AiPipelineRunMapper runMapper = mock(AiPipelineRunMapper.class);
+        AiPipelineStepMapper stepMapper = mock(AiPipelineStepMapper.class);
+        AiStrategyReleaseMapper releaseMapper = mock(AiStrategyReleaseMapper.class);
+        TradingCalendarService calendar = mock(TradingCalendarService.class);
 
-        AiResearchDailyReportService.ReportView report = service.generate(request(
-                "REPORT:EMPTY", "SUCCESS", null, null));
+        AiDailyDecisionSnapshot snapshot = snapshot();
+        List<AiDailyDecisionItem> items = new ArrayList<>();
+        AiDailyDecisionItem recommendation = item("600519", "贵州茅台", "RECOMMEND", "BUY");
+        recommendation.id = 51L;
+        items.add(recommendation);
+        AiDailyDecisionItemPrediction link = new AiDailyDecisionItemPrediction();
+        link.id = 61L;
+        link.userId = 5L;
+        link.decisionItemId = 51L;
+        link.predictionId = 71L;
+        link.purpose = "PRIMARY_RANKING";
+        link.weight = new BigDecimal("0.500000");
 
-        assertThat(report.reportStatus()).isEqualTo("EMPTY_RESULT");
-        assertThat(report.executiveSummary()).contains("没有可用投研结论");
+        when(snapshotMapper.selectById(41L)).thenReturn(snapshot);
+        when(snapshotMapper.selectCurrent(5L, snapshot.tradeDate)).thenReturn(snapshot);
+        when(itemMapper.selectBySnapshot(anyLong(), anyLong())).thenAnswer(invocation -> List.copyOf(items));
+        when(linkMapper.selectByItems(anyLong(), any())).thenReturn(List.of(link));
+        when(stepMapper.selectByRunIdForUpdate(anyLong())).thenReturn(List.of());
+        AiStrategyRelease release = new AiStrategyRelease();
+        release.id = 91L;
+        release.versionNo = "baseline-1";
+        release.title = "统一研究基线";
+        release.validationMetricsJson = "{\"status\":\"BASELINE_NOT_VALIDATED\"}";
+        when(releaseMapper.selectById(91L)).thenReturn(release);
+
+        List<AiResearchDailyReport> reports = new ArrayList<>();
+        AtomicLong ids = new AtomicLong(8000);
+        when(reportMapper.lockUser(anyLong())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(reportMapper.selectByIdempotencyForShare(anyLong(), anyString())).thenAnswer(invocation ->
+                reports.stream().filter(value -> value.userId.equals(invocation.getArgument(0))
+                                && value.idempotencyKey.equals(invocation.getArgument(1)))
+                        .findFirst().orElse(null));
+        when(reportMapper.selectMaxVersionForUpdate(anyLong(), any(LocalDate.class))).thenReturn(0);
+        when(reportMapper.insert(any(AiResearchDailyReport.class))).thenAnswer(invocation -> {
+            AiResearchDailyReport report = invocation.getArgument(0);
+            report.id = ids.incrementAndGet();
+            reports.add(report);
+            return 1;
+        });
+        when(reportMapper.updateById(any(AiResearchDailyReport.class))).thenReturn(1);
+
+        AiResearchDailyReportService service = new AiResearchDailyReportServiceImpl(
+                reportMapper, snapshotMapper, itemMapper, linkMapper, runMapper, stepMapper,
+                releaseMapper, new ObjectMapper().findAndRegisterModules(), calendar);
+        return new Fixture(service, reportMapper, snapshotMapper, calendar, snapshot, items);
     }
 
-    @Test
-    void nonEmptyButUnusableMarketDataProducesDataUnavailableReport() {
-        AiDailyInsightSnapshot snapshot = new AiDailyInsightSnapshot();
-        snapshot.tradeDate = LocalDate.of(2026, 7, 10);
-        snapshot.freshnessStatus = "UNAVAILABLE";
-        snapshot.dataQualityScore = new BigDecimal("35");
-        AiDailyInsightItem unavailable = item(
-                "600519", "贵州茅台", "UNAVAILABLE", "WATCH", "20", "80", "QUOTE_STALE");
-        unavailable.confidenceLevel = "DATA_UNAVAILABLE";
-        unavailable.freshnessStatus = "UNAVAILABLE";
-        AiResearchDailyReportPayloads.PipelineSummary pipeline =
-                new AiResearchDailyReportPayloads.PipelineSummary(
-                        81L, "SUCCESS", "BUILD_RESEARCH_DAILY_REPORT", null,
-                        9, 9, 0, null, List.of());
-        AiResearchDailyReportSource.ReportSource unavailableSource = new AiResearchDailyReportSource.ReportSource(
-                snapshot, List.of(unavailable), List.of(), "DEFENSIVE", null, pipeline);
-        AiResearchDailyReportService service = service(fixture(unavailableSource));
-
-        AiResearchDailyReportService.ReportView report = service.generate(request(
-                "REPORT:UNAVAILABLE", "PARTIAL_SUCCESS", null, "行情质量不足"));
-
-        assertThat(report.reportStatus()).isEqualTo("DATA_UNAVAILABLE");
-        assertThat(report.watchCount()).isEqualTo(1);
-    }
-
-    private static AiResearchDailyReportService service(Fixture fixture) {
-        return new AiResearchDailyReportServiceImpl(
-                fixture.reportMapper, fixture.source, new ObjectMapper().findAndRegisterModules(),
-                fixture.tradingCalendarService);
-    }
-
-    private static AiResearchDailyReportService.GenerationRequest request(
-            String idempotencyKey,
-            String status,
-            String failedStep,
-            String message
-    ) {
+    private static AiResearchDailyReportService.GenerationRequest request(String idempotencyKey) {
         return new AiResearchDailyReportService.GenerationRequest(
                 5L,
                 LocalDate.of(2026, 7, 10),
-                81L,
+                41L,
+                null,
                 91L,
                 101L,
                 idempotencyKey,
-                status,
-                failedStep,
-                message,
-                LocalDateTime.of(2026, 7, 10, 16, 30)
-        );
+                "READY",
+                null,
+                "已完成",
+                LocalDateTime.of(2026, 7, 10, 16, 30));
     }
 
-    private static AiResearchDailyReportSource.ReportSource source(String status, String failedStep) {
-        AiDailyInsightSnapshot snapshot = new AiDailyInsightSnapshot();
-        snapshot.id = 41L;
-        snapshot.userId = 5L;
-        snapshot.tradeDate = LocalDate.of(2026, 7, 10);
-        snapshot.generatedAt = LocalDateTime.of(2026, 7, 10, 16, 20);
-        snapshot.pipelineStatus = status;
-        snapshot.freshnessStatus = "REALTIME";
-        snapshot.dataQualityScore = new BigDecimal("92.50");
-        snapshot.latestReportAt = LocalDateTime.of(2026, 7, 10, 16, 18);
-        snapshot.latestSampleAt = LocalDateTime.of(2026, 7, 10, 15, 5);
-        snapshot.itemCount = 3;
-        snapshot.lowSampleCount = 1;
-        snapshot.overallHitRate = new BigDecimal("61.80");
-        snapshot.latestJobLogId = 701L;
-        List<AiDailyInsightItem> items = List.of(
-                item("600519", "贵州茅台", "BUY", "RECOMMEND", "78.2", "35", "MOMENTUM_20D"),
-                item("000001", "平安银行", "WATCH", "WATCH", "61.0", "45", "PE_TTM"),
-                item("300058", "蓝色光标", "REDUCE", "AVOID", "40.0", "82", "MOMENTUM_20D")
-        );
-        TradeRecord holding = new TradeRecord();
-        holding.userId = 5L;
-        holding.stockCode = "300058";
-        holding.stockName = "蓝色光标";
-        holding.side = TradeSide.BUY;
-        holding.quantity = 1200;
-        holding.price = new BigDecimal("8.50");
-        holding.tradedAt = LocalDateTime.of(2026, 7, 1, 10, 0);
-        AiResearchDailyReportPayloads.StrategyPerformance strategy =
-                new AiResearchDailyReportPayloads.StrategyPerformance(
-                        91L, "v2.3", "Champion v2.3", 101L,
-                        new BigDecimal("0.0820"), new BigDecimal("0.0510"),
-                        new BigDecimal("-0.0430"), new BigDecimal("1.25"),
-                        126, new BigDecimal("0.6180"), "NORMAL");
-        AiResearchDailyReportPayloads.PipelineSummary pipeline =
-                new AiResearchDailyReportPayloads.PipelineSummary(
-                        81L, status, failedStep, failedStep,
-                        9, "FAILED".equals(status) ? 6 : 9,
-                        "FAILED".equals(status) ? 3 : 0,
-                        "FAILED".equals(status) ? "模型服务暂时不可用" : null,
-                        List.of(
-                                new AiResearchDailyReportPayloads.PipelineStep(
-                                        "FETCH_DATA", "SUCCESS", 3, 3, null),
-                                new AiResearchDailyReportPayloads.PipelineStep(
-                                        "GENERATE_REPORTS", "FAILED".equals(status) ? "FAILED" : "SUCCESS",
-                                        3, "FAILED".equals(status) ? 0 : 3,
-                                        "FAILED".equals(status) ? "模型服务暂时不可用" : null)
-                        ));
-        return new AiResearchDailyReportSource.ReportSource(
-                snapshot, items, List.of(holding), "TRENDING", strategy, pipeline);
+    private static AiDailyDecisionSnapshot snapshot() {
+        AiDailyDecisionSnapshot value = new AiDailyDecisionSnapshot();
+        value.id = 41L;
+        value.userId = 5L;
+        value.tradeDate = LocalDate.of(2026, 7, 10);
+        value.snapshotVersion = 1;
+        value.globalPipelineRunId = 81L;
+        value.strategyReleaseId = 91L;
+        value.modelVersionId = 101L;
+        value.snapshotStatus = "READY";
+        value.marketRegime = "BALANCED";
+        value.overallHitRate = new BigDecimal("61.8");
+        value.freshnessStatus = "CURRENT_CLOSE";
+        value.dataQualityScore = new BigDecimal("95");
+        value.decisionPolicyVersion = "DECISION/1.0.0";
+        value.generatedAt = LocalDateTime.of(2026, 7, 10, 16, 20);
+        return value;
     }
 
-    private static AiDailyInsightItem item(
-            String code,
-            String name,
-            String action,
-            String bucket,
-            String score,
-            String risk,
-            String factorCode
-    ) {
-        AiDailyInsightItem item = new AiDailyInsightItem();
-        item.stockCode = code;
-        item.stockName = name;
-        item.finalAction = action;
-        item.actionBucket = bucket;
-        item.compositeScore = new BigDecimal(score);
-        item.systemScore = new BigDecimal("74.5");
-        item.aiDecision = "BUY";
-        item.aiConfidence = new BigDecimal("82.5");
-        item.targetDirection = "UP";
-        item.riskLevel = "MEDIUM";
-        item.riskScore = new BigDecimal(risk);
-        item.dataQualityScore = new BigDecimal("92");
-        item.freshnessScore = new BigDecimal("95");
-        item.freshnessStatus = "REALTIME";
-        item.freshnessMessage = "行情与样本均为当日数据";
-        item.historicalHitRate = new BigDecimal("61.8");
-        item.historicalSampleCount = 26;
-        item.confidenceLevel = "READY";
-        item.reasonSummary = name + " 的结构化结论";
-        item.triggerFactorsJson = "[{\"factorCode\":\"" + factorCode
-                + "\",\"factorName\":\"" + factorCode
-                + "\",\"direction\":\"SUPPORT\",\"contribution\":12.5,"
-                + "\"evidence\":\"测试证据\"}]";
-        item.reportId = (long) Math.abs(code.hashCode());
-        item.predictionId = item.reportId + 1;
-        item.sampleId = item.reportId + 2;
-        item.reportGeneratedAt = LocalDateTime.of(2026, 7, 10, 16, 18);
-        item.sampleTime = LocalDateTime.of(2026, 7, 10, 15, 5);
-        return item;
-    }
-
-    private static Fixture fixture(AiResearchDailyReportSource.ReportSource reportSource) {
-        AiResearchDailyReportMapper mapper = mock(AiResearchDailyReportMapper.class);
-        AiResearchDailyReportSource source = mock(AiResearchDailyReportSource.class);
-        TradingCalendarService tradingCalendarService = mock(TradingCalendarService.class);
-        List<AiResearchDailyReport> reports = new ArrayList<>();
-        AtomicLong ids = new AtomicLong(8000);
-        when(mapper.lockUser(anyLong())).thenAnswer(invocation -> invocation.getArgument(0));
-        when(mapper.selectByIdempotencyForShare(anyLong(), anyString())).thenAnswer(invocation -> reports.stream()
-                .filter(item -> item.userId.equals(invocation.getArgument(0))
-                        && item.idempotencyKey.equals(invocation.getArgument(1)))
-                .findFirst().orElse(null));
-        when(mapper.selectCurrentForUpdate(anyLong(), any(LocalDate.class))).thenAnswer(invocation -> reports.stream()
-                .filter(item -> item.userId.equals(invocation.getArgument(0))
-                        && item.tradeDate.equals(invocation.getArgument(1))
-                        && item.isCurrent == 1)
-                .findFirst().orElse(null));
-        when(mapper.selectMaxVersionForUpdate(anyLong(), any(LocalDate.class))).thenAnswer(invocation -> reports.stream()
-                .filter(item -> item.userId.equals(invocation.getArgument(0))
-                        && item.tradeDate.equals(invocation.getArgument(1)))
-                .map(item -> item.reportVersion)
-                .max(Integer::compareTo)
-                .orElse(0));
-        when(mapper.insert(any(AiResearchDailyReport.class))).thenAnswer(invocation -> {
-            AiResearchDailyReport item = invocation.getArgument(0);
-            item.id = ids.incrementAndGet();
-            reports.add(item);
-            return 1;
-        });
-        when(mapper.updateById(any(AiResearchDailyReport.class))).thenReturn(1);
-        when(source.load(anyLong(), any(LocalDate.class), any())).thenReturn(reportSource);
-        return new Fixture(mapper, source, reports, tradingCalendarService);
+    private static AiDailyDecisionItem item(String code, String name, String category, String action) {
+        AiDailyDecisionItem value = new AiDailyDecisionItem();
+        value.userId = 5L;
+        value.decisionSnapshotId = 41L;
+        value.tradeDate = LocalDate.of(2026, 7, 10);
+        value.sampleId = 31L;
+        value.stockCode = code;
+        value.stockName = name;
+        value.category = category;
+        value.systemScore = new BigDecimal("76.2");
+        value.horizonSignalScore = new BigDecimal("80");
+        value.factorReliabilityScore = new BigDecimal("65");
+        value.strategyValidationScore = new BigDecimal("70");
+        value.dataQualityComponent = new BigDecimal("95");
+        value.riskComponent = new BigDecimal("65");
+        value.finalAction = action;
+        value.riskScore = new BigDecimal("35");
+        value.riskLevel = "MEDIUM";
+        value.decisionSource = "DETERMINISTIC_POLICY";
+        value.freshnessStatus = "CURRENT_CLOSE";
+        value.decisionPolicyVersion = "DECISION/1.0.0";
+        value.confidenceLevel = "OOS_VALIDATED";
+        value.outOfSampleCount = 240;
+        value.historicalHitRate = new BigDecimal("61.8");
+        value.triggerFactorsJson = "[]";
+        value.reasonSummary = "已持久化的确定性结论";
+        value.inputFingerprint = "fingerprint";
+        return value;
     }
 
     private record Fixture(
+            AiResearchDailyReportService service,
             AiResearchDailyReportMapper reportMapper,
-            AiResearchDailyReportSource source,
-            List<AiResearchDailyReport> reports,
-            TradingCalendarService tradingCalendarService
+            AiDailyDecisionSnapshotMapper snapshotMapper,
+            TradingCalendarService tradingCalendarService,
+            AiDailyDecisionSnapshot snapshot,
+            List<AiDailyDecisionItem> items
     ) {
     }
 }

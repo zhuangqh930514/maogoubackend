@@ -25,6 +25,7 @@ public interface AiResearchDailyReportService {
     record GenerationRequest(
             Long userId,
             LocalDate tradeDate,
+            Long decisionSnapshotId,
             Long pipelineRunId,
             Long strategyReleaseId,
             Long modelVersionId,
@@ -34,10 +35,26 @@ public interface AiResearchDailyReportService {
             String pipelineMessage,
             LocalDateTime generatedAt
     ) {
+        public GenerationRequest(
+                Long userId,
+                LocalDate tradeDate,
+                Long pipelineRunId,
+                Long strategyReleaseId,
+                Long modelVersionId,
+                String idempotencyKey,
+                String pipelineStatus,
+                String failedStep,
+                String pipelineMessage,
+                LocalDateTime generatedAt
+        ) {
+            this(userId, tradeDate, null, pipelineRunId, strategyReleaseId, modelVersionId,
+                    idempotencyKey, pipelineStatus, failedStep, pipelineMessage, generatedAt);
+        }
     }
 
     record ReportView(
             Long id,
+            Long decisionSnapshotId,
             LocalDate tradeDate,
             Integer reportVersion,
             Long pipelineRunId,
@@ -61,7 +78,8 @@ public interface AiResearchDailyReportService {
     ) {
         public static ReportView from(AiResearchDailyReportPayloads.ReportView view) {
             return new ReportView(
-                    view.id(), view.tradeDate(), view.reportVersion(), view.pipelineRunId(),
+                    view.id(), view.decisionSnapshotId(), view.tradeDate(), view.reportVersion(),
+                    view.pipelineRunId(),
                     view.strategyReleaseId(), view.modelVersionId(), view.supersedesReportId(),
                     view.current(), view.reportStatus(), view.title(), view.executiveSummary(),
                     view.marketRegime(), view.recommendationCount(), view.watchCount(),

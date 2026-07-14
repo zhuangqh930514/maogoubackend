@@ -2,17 +2,26 @@ package com.maogou.stock.service.impl;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.maogou.stock.domain.entity.AiDailyInsightItem;
-import com.maogou.stock.domain.entity.AiDailyInsightSnapshot;
-import com.maogou.stock.domain.entity.TradeRecord;
+import com.maogou.stock.domain.entity.research.AiDailyDecisionItem;
+import com.maogou.stock.domain.entity.research.AiDailyDecisionItemPrediction;
+import com.maogou.stock.domain.entity.research.AiDailyDecisionSnapshot;
+import com.maogou.stock.domain.entity.research.AiPipelineRun;
+import com.maogou.stock.domain.entity.research.AiPipelineStep;
 import com.maogou.stock.domain.entity.research.AiResearchDailyReport;
+import com.maogou.stock.domain.entity.research.AiStrategyRelease;
 import com.maogou.stock.dto.ai.AiResearchDailyReportPayloads;
+import com.maogou.stock.mapper.research.AiDailyDecisionItemMapper;
+import com.maogou.stock.mapper.research.AiDailyDecisionItemPredictionMapper;
+import com.maogou.stock.mapper.research.AiDailyDecisionSnapshotMapper;
+import com.maogou.stock.mapper.research.AiPipelineRunMapper;
+import com.maogou.stock.mapper.research.AiPipelineStepMapper;
 import com.maogou.stock.mapper.research.AiResearchDailyReportMapper;
+import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
 import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.AiResearchDailyReportService;
 import com.maogou.stock.service.TradingCalendarService;
-import com.maogou.stock.service.research.AiResearchDailyReportSource;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -26,25 +35,40 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Service
 public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportService {
 
     private final AiResearchDailyReportMapper reportMapper;
-    private final AiResearchDailyReportSource source;
+    private final AiDailyDecisionSnapshotMapper snapshotMapper;
+    private final AiDailyDecisionItemMapper itemMapper;
+    private final AiDailyDecisionItemPredictionMapper itemPredictionMapper;
+    private final AiPipelineRunMapper pipelineRunMapper;
+    private final AiPipelineStepMapper pipelineStepMapper;
+    private final AiStrategyReleaseMapper strategyReleaseMapper;
     private final ObjectMapper objectMapper;
     private final TradingCalendarService tradingCalendarService;
 
     public AiResearchDailyReportServiceImpl(
             AiResearchDailyReportMapper reportMapper,
-            AiResearchDailyReportSource source,
+            AiDailyDecisionSnapshotMapper snapshotMapper,
+            AiDailyDecisionItemMapper itemMapper,
+            AiDailyDecisionItemPredictionMapper itemPredictionMapper,
+            AiPipelineRunMapper pipelineRunMapper,
+            AiPipelineStepMapper pipelineStepMapper,
+            AiStrategyReleaseMapper strategyReleaseMapper,
             ObjectMapper objectMapper,
             TradingCalendarService tradingCalendarService
     ) {
         this.reportMapper = reportMapper;
-        this.source = source;
+        this.snapshotMapper = snapshotMapper;
+        this.itemMapper = itemMapper;
+        this.itemPredictionMapper = itemPredictionMapper;
+        this.pipelineRunMapper = pipelineRunMapper;
+        this.pipelineStepMapper = pipelineStepMapper;
+        this.strategyReleaseMapper = strategyReleaseMapper;
         this.objectMapper = objectMapper;
         this.tradingCalendarService = tradingCalendarService;
     }
@@ -53,7 +77,8 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
     @Transactional
     public ReportView generate(GenerationRequest request) {
         validate(request);
-        AiResearchDailyReport existing = reportMapper.selectByIdempotencyForShare(request.userId(), request.idempotencyKey());
+        AiResearchDailyReport existing = reportMapper.selectByIdempotencyForShare(
+                request.userId(), request.idempotencyKey());
         if (existing != null) {
             return ReportView.from(toView(existing));
         }
@@ -64,10 +89,13 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
             return ReportView.from(toView(existing));
         }
 
+        AiDailyDecisionSnapshot snapshot = requireSnapshot(request);
+        List<AiDailyDecisionItem> items = safeList(itemMapper.selectBySnapshot(request.userId(), snapshot.id));
+        AiResearchDailyReportPayloads.ReportContent content = buildContent(snapshot, items, request);
         AiResearchDailyReport current = reportMapper.selectCurrentForUpdate(request.userId(), request.tradeDate());
-        int nextVersion = Math.max(0, safe(reportMapper.selectMaxVersionForUpdate(request.userId(), request.tradeDate()))) + 1;
-        AiResearchDailyReportPayloads.ReportContent content = buildContent(request);
-        AiResearchDailyReport entity = buildEntity(request, current, nextVersion, content);
+        int nextVersion = value(reportMapper.selectMaxVersionForUpdate(
+                request.userId(), request.tradeDate())) + 1;
+        AiResearchDailyReport entity = buildEntity(request, snapshot, current, nextVersion, content);
         if (current != null) {
             current.isCurrent = 0;
             current.updatedAt = request.generatedAt();
@@ -124,234 +152,269 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
     @Override
     public ReportView rebuild(LocalDate requestedTradeDate) {
         long userId = AuthContext.currentUserIdOrDefault();
-        LocalDate latestExpectedTradeDate = latestExpectedTradeDate();
-        LocalDate tradeDate = requestedTradeDate == null ? latestExpectedTradeDate : requestedTradeDate;
-        if (tradeDate.isAfter(latestExpectedTradeDate)) {
+        LocalDate maxTradeDate = latestExpectedTradeDate();
+        LocalDate tradeDate = requestedTradeDate == null ? maxTradeDate : requestedTradeDate;
+        if (tradeDate.isAfter(maxTradeDate)) {
             throw new IllegalArgumentException("不能重建尚未结束的未来交易日报");
+        }
+        AiDailyDecisionSnapshot snapshot = snapshotMapper.selectCurrent(userId, tradeDate);
+        if (snapshot == null) {
+            throw new IllegalStateException("该交易日尚无每日决策快照，请先运行用户投影流水线");
         }
         return generate(new GenerationRequest(
                 userId,
                 tradeDate,
+                snapshot.id,
+                snapshot.pipelineRunId,
+                snapshot.strategyReleaseId,
+                snapshot.modelVersionId,
+                "REPORT:MANUAL:" + snapshot.id + ":" + System.currentTimeMillis(),
+                snapshot.snapshotStatus,
                 null,
-                null,
-                null,
-                "MANUAL:" + tradeDate + ":" + System.currentTimeMillis(),
-                "MANUAL",
-                null,
-                "手动重建 " + tradeDate + " 投研日报",
+                "手动重新归档已固化的每日决策快照",
                 LocalDateTime.now()));
     }
 
-    private AiResearchDailyReportPayloads.ReportView toView(AiResearchDailyReport entity) {
-        AiResearchDailyReportPayloads.ReportContent content;
-        try {
-            content = objectMapper.readValue(entity.contentJson, AiResearchDailyReportPayloads.ReportContent.class);
-        } catch (JsonProcessingException exception) {
-            throw new IllegalStateException("投研日报内容解析失败", exception);
+    private AiDailyDecisionSnapshot requireSnapshot(GenerationRequest request) {
+        AiDailyDecisionSnapshot snapshot = request.decisionSnapshotId() == null
+                ? snapshotMapper.selectCurrent(request.userId(), request.tradeDate())
+                : snapshotMapper.selectById(request.decisionSnapshotId());
+        if (snapshot == null) {
+            throw new IllegalStateException("投研日报缺少已持久化的每日决策快照");
         }
-        return AiResearchDailyReportPayloads.ReportView.from(entity, content);
+        if (!Objects.equals(snapshot.userId, request.userId())
+                || !Objects.equals(snapshot.tradeDate, request.tradeDate())) {
+            throw new IllegalStateException("投研日报不得引用其他用户或其他交易日的决策快照");
+        }
+        return snapshot;
     }
 
-    private AiResearchDailyReportPayloads.ReportContent buildContent(GenerationRequest request) {
-        AiResearchDailyReportSource.ReportSource loaded = source.load(
-                request.userId(),
-                request.tradeDate(),
-                new AiResearchDailyReportSource.PipelineRequest(
-                        request.pipelineRunId(),
-                        request.strategyReleaseId(),
-                        request.modelVersionId(),
-                        request.pipelineStatus(),
-                        request.failedStep(),
-                        request.pipelineMessage()));
-        AiDailyInsightSnapshot snapshot = loaded.snapshot();
-        List<AiDailyInsightItem> items = loaded.items() == null ? List.of() : loaded.items();
-        List<AiResearchDailyReportPayloads.StockCard> recommendations = mapItems(items, "RECOMMEND");
-        List<AiResearchDailyReportPayloads.StockCard> watches = mapItems(items, "WATCH");
-        List<AiResearchDailyReportPayloads.StockCard> avoids = mapItems(items, "AVOID");
-        List<AiResearchDailyReportPayloads.StockCard> holdingRisks = mapHoldingRisks(items, loaded.holdings());
-        List<AiResearchDailyReportPayloads.FactorCard> keyFactors = aggregateFactors(items);
+    private AiResearchDailyReportPayloads.ReportContent buildContent(
+            AiDailyDecisionSnapshot snapshot,
+            List<AiDailyDecisionItem> items,
+            GenerationRequest request
+    ) {
+        Map<Long, AiDailyDecisionItemPrediction> primaryPredictions = primaryPredictions(snapshot.userId, items);
+        List<AiResearchDailyReportPayloads.StockCard> recommendations = mapItems(
+                items, "RECOMMEND", primaryPredictions);
+        List<AiResearchDailyReportPayloads.StockCard> watches = mapItems(
+                items, "CAUTIOUS", primaryPredictions);
+        List<AiResearchDailyReportPayloads.StockCard> avoids = mapItems(
+                items, "AVOID", primaryPredictions);
+        List<AiResearchDailyReportPayloads.StockCard> holdingRisks = mapItems(
+                items, "HOLDING_RISK", primaryPredictions);
+        List<AiResearchDailyReportPayloads.StockCard> unavailable = mapItems(
+                items, "DATA_UNAVAILABLE", primaryPredictions);
         return new AiResearchDailyReportPayloads.ReportContent(
                 new AiResearchDailyReportPayloads.Freshness(
-                        snapshot == null ? "UNAVAILABLE" : snapshot.freshnessStatus,
-                        snapshot == null ? BigDecimal.ZERO : zero(snapshot.dataQualityScore),
-                        snapshot == null ? null : snapshot.latestSampleAt,
-                        snapshot == null ? null : snapshot.latestReportAt,
+                        snapshot.freshnessStatus,
+                        zero(snapshot.dataQualityScore),
+                        snapshot.generatedAt,
+                        snapshot.generatedAt,
                         request.generatedAt()),
-                loaded.pipeline(),
-                loaded.strategyPerformance(),
+                pipelineSummary(snapshot, request),
+                strategyPerformance(snapshot),
                 recommendations,
                 watches,
                 avoids,
                 holdingRisks,
-                keyFactors,
-                insightSummary(snapshot));
+                unavailable,
+                aggregateFactors(items),
+                new AiResearchDailyReportPayloads.InsightSummary(
+                        snapshot.id,
+                        snapshot.generatedAt,
+                        snapshot.snapshotStatus,
+                        request.pipelineMessage(),
+                        snapshot.overallHitRate,
+                        items.size(),
+                        (int) items.stream().filter(item -> "LOW_SAMPLE".equals(item.confidenceLevel)).count(),
+                        snapshot.globalPipelineRunId,
+                        snapshot.marketRegime));
+    }
+
+    private Map<Long, AiDailyDecisionItemPrediction> primaryPredictions(
+            Long userId,
+            List<AiDailyDecisionItem> items
+    ) {
+        List<Long> itemIds = items.stream().map(item -> item.id).filter(Objects::nonNull).toList();
+        if (itemIds.isEmpty()) {
+            return Map.of();
+        }
+        return safeList(itemPredictionMapper.selectByItems(userId, itemIds)).stream()
+                .filter(link -> "PRIMARY_RANKING".equals(link.purpose))
+                .collect(Collectors.toMap(link -> link.decisionItemId, Function.identity(),
+                        (left, right) -> left, LinkedHashMap::new));
+    }
+
+    private List<AiResearchDailyReportPayloads.StockCard> mapItems(
+            List<AiDailyDecisionItem> items,
+            String category,
+            Map<Long, AiDailyDecisionItemPrediction> primaryPredictions
+    ) {
+        return items.stream()
+                .filter(item -> category.equals(item.category))
+                .sorted(Comparator.comparing(
+                        (AiDailyDecisionItem item) -> zero(item.systemScore), Comparator.reverseOrder())
+                        .thenComparing(item -> item.stockCode))
+                .map(item -> stockCard(item,
+                        item.id == null ? null : primaryPredictions.get(item.id)))
+                .toList();
+    }
+
+    private AiResearchDailyReportPayloads.StockCard stockCard(
+            AiDailyDecisionItem item,
+            AiDailyDecisionItemPrediction primaryPrediction
+    ) {
+        return new AiResearchDailyReportPayloads.StockCard(
+                item.stockCode,
+                item.stockName,
+                item.finalAction,
+                item.category,
+                item.systemScore,
+                item.riskScore,
+                item.historicalHitRate,
+                item.outOfSampleCount,
+                item.confidenceLevel,
+                item.freshnessStatus,
+                item.reasonSummary,
+                item.reportId,
+                primaryPrediction == null ? null : primaryPrediction.predictionId,
+                item.sampleId,
+                item.systemScore,
+                item.finalAction,
+                BigDecimal.ZERO,
+                direction(item.finalAction),
+                item.riskLevel,
+                item.dataQualityComponent,
+                freshnessScore(item.freshnessStatus),
+                freshnessMessage(item),
+                parseFactors(item.triggerFactorsJson),
+                null,
+                null,
+                item.horizonSignalScore,
+                item.factorReliabilityScore,
+                item.strategyValidationScore,
+                item.riskComponent,
+                item.decisionSource,
+                item.unavailableReason);
+    }
+
+    private AiResearchDailyReportPayloads.PipelineSummary pipelineSummary(
+            AiDailyDecisionSnapshot snapshot,
+            GenerationRequest request
+    ) {
+        Long runId = snapshot.globalPipelineRunId != null
+                ? snapshot.globalPipelineRunId : request.pipelineRunId();
+        AiPipelineRun run = runId == null ? null : pipelineRunMapper.selectById(runId);
+        List<AiPipelineStep> steps = runId == null
+                ? List.of() : safeList(pipelineStepMapper.selectByRunIdForUpdate(runId));
+        return new AiResearchDailyReportPayloads.PipelineSummary(
+                runId,
+                run == null ? snapshot.snapshotStatus : run.status,
+                run == null ? null : run.currentStep,
+                request.failedStep(),
+                run == null ? 0 : value(run.processedCount),
+                run == null ? 0 : value(run.successCount),
+                run == null ? 0 : value(run.failedCount),
+                request.pipelineMessage() != null ? request.pipelineMessage()
+                        : run == null ? null : run.errorMessage,
+                steps.stream().map(step -> new AiResearchDailyReportPayloads.PipelineStep(
+                        step.stepKey, step.status, value(step.inputCount), value(step.outputCount),
+                        step.errorMessage)).toList());
+    }
+
+    private AiResearchDailyReportPayloads.StrategyPerformance strategyPerformance(
+            AiDailyDecisionSnapshot snapshot
+    ) {
+        AiStrategyRelease release = strategyReleaseMapper.selectById(snapshot.strategyReleaseId);
+        JsonNode metrics = parse(release == null ? null : release.validationMetricsJson);
+        return new AiResearchDailyReportPayloads.StrategyPerformance(
+                snapshot.strategyReleaseId,
+                release == null ? null : release.versionNo,
+                release == null ? "策略版本不可用" : release.title,
+                snapshot.modelVersionId,
+                decimal(metrics, "totalReturn"),
+                decimal(metrics, "alpha"),
+                decimal(metrics, "maxDrawdown"),
+                decimal(metrics, "sharpeRatio"),
+                integer(metrics, "sampleCount"),
+                decimal(metrics, "hitRate"),
+                text(metrics, "driftStatus", "UNASSESSED"));
     }
 
     private AiResearchDailyReport buildEntity(
             GenerationRequest request,
+            AiDailyDecisionSnapshot snapshot,
             AiResearchDailyReport current,
             int nextVersion,
             AiResearchDailyReportPayloads.ReportContent content
     ) {
-        LocalDateTime now = request.generatedAt();
         AiResearchDailyReport entity = new AiResearchDailyReport();
         entity.userId = request.userId();
+        entity.decisionSnapshotId = snapshot.id;
         entity.tradeDate = request.tradeDate();
         entity.reportVersion = nextVersion;
-        entity.pipelineRunId = request.pipelineRunId();
-        entity.strategyReleaseId = request.strategyReleaseId();
-        entity.modelVersionId = request.modelVersionId();
+        entity.pipelineRunId = request.pipelineRunId() == null
+                ? snapshot.pipelineRunId : request.pipelineRunId();
+        entity.strategyReleaseId = snapshot.strategyReleaseId;
+        entity.modelVersionId = snapshot.modelVersionId;
         entity.supersedesReportId = current == null ? null : current.id;
         entity.idempotencyKey = request.idempotencyKey();
         entity.isCurrent = 1;
-        entity.reportStatus = resolveReportStatus(request.pipelineStatus(), request.failedStep(), content);
-        entity.marketRegime = inferMarketRegime(content, request.pipelineStatus());
-        entity.recommendationCount = content.recommendations().size();
-        entity.watchCount = content.watches().size();
-        entity.avoidCount = content.avoids().size();
-        entity.holdingRiskCount = content.holdingRisks().size();
-        entity.freshnessStatus = content.freshness().status();
-        entity.dataQualityScore = zero(content.freshness().dataQualityScore());
-        entity.title = buildTitle(request.tradeDate(), entity.reportStatus, entity.marketRegime);
-        entity.executiveSummary = buildExecutiveSummary(entity, content, request);
-        entity.markdownContent = buildMarkdown(entity, content, request);
+        entity.reportStatus = reportStatus(snapshot, request);
+        entity.title = buildTitle(snapshot, entity.reportStatus);
+        entity.executiveSummary = buildExecutiveSummary(content, entity.reportStatus, request);
+        entity.freshnessStatus = snapshot.freshnessStatus;
+        entity.dataQualityScore = zero(snapshot.dataQualityScore);
         entity.contentJson = writeJson(content);
+        entity.markdownContent = buildMarkdown(entity.title, entity.executiveSummary, content);
         entity.generatedAt = request.generatedAt();
-        entity.createdAt = now;
-        entity.updatedAt = now;
+        entity.createdAt = request.generatedAt();
+        entity.updatedAt = request.generatedAt();
         return entity;
     }
 
-    private List<AiResearchDailyReportPayloads.StockCard> mapItems(List<AiDailyInsightItem> items, String bucket) {
-        return items.stream()
-                .filter(item -> bucket.equals(item.actionBucket))
-                .sorted(Comparator.comparing((AiDailyInsightItem item) -> zero(item.compositeScore)).reversed())
-                .map(item -> new AiResearchDailyReportPayloads.StockCard(
-                        item.stockCode,
-                        item.stockName,
-                        item.finalAction,
-                        item.actionBucket,
-                        zero(item.compositeScore),
-                        zero(item.riskScore),
-                        zero(item.historicalHitRate),
-                        safe(item.historicalSampleCount),
-                        item.confidenceLevel,
-                        item.freshnessStatus,
-                        item.reasonSummary,
-                        item.reportId,
-                        item.predictionId,
-                        item.sampleId,
-                        zero(item.systemScore),
-                        item.aiDecision,
-                        zero(item.aiConfidence),
-                        item.targetDirection,
-                        item.riskLevel,
-                        zero(item.dataQualityScore),
-                        zero(item.freshnessScore),
-                        item.freshnessMessage,
-                        parseFactors(item.triggerFactorsJson),
-                        item.reportGeneratedAt,
-                        item.sampleTime))
-                .toList();
-    }
-
-    private List<AiResearchDailyReportPayloads.StockCard> mapHoldingRisks(
-            List<AiDailyInsightItem> items,
-            List<TradeRecord> holdings
-    ) {
-        Set<String> holdingCodes = holdings == null ? Set.of() : holdings.stream()
-                .map(item -> item.stockCode)
-                .filter(Objects::nonNull)
-                .collect(Collectors.toSet());
-        return items.stream()
-                .filter(item -> holdingCodes.contains(item.stockCode))
-                .filter(item -> "AVOID".equals(item.actionBucket)
-                        || zero(item.riskScore).compareTo(new BigDecimal("70")) >= 0)
-                .sorted(Comparator.comparing((AiDailyInsightItem item) -> zero(item.riskScore)).reversed())
-                .map(item -> new AiResearchDailyReportPayloads.StockCard(
-                        item.stockCode,
-                        item.stockName,
-                        item.finalAction,
-                        item.actionBucket,
-                        zero(item.compositeScore),
-                        zero(item.riskScore),
-                        zero(item.historicalHitRate),
-                        safe(item.historicalSampleCount),
-                        item.confidenceLevel,
-                        item.freshnessStatus,
-                        item.reasonSummary,
-                        item.reportId,
-                        item.predictionId,
-                        item.sampleId,
-                        zero(item.systemScore),
-                        item.aiDecision,
-                        zero(item.aiConfidence),
-                        item.targetDirection,
-                        item.riskLevel,
-                        zero(item.dataQualityScore),
-                        zero(item.freshnessScore),
-                        item.freshnessMessage,
-                        parseFactors(item.triggerFactorsJson),
-                        item.reportGeneratedAt,
-                        item.sampleTime))
-                .toList();
-    }
-
-    private AiResearchDailyReportPayloads.InsightSummary insightSummary(AiDailyInsightSnapshot snapshot) {
-        if (snapshot == null) {
-            return new AiResearchDailyReportPayloads.InsightSummary(
-                    null, null, "UNAVAILABLE", "每日投研快照不可用",
-                    BigDecimal.ZERO, 0, 0, null);
+    private AiResearchDailyReportPayloads.ReportView toView(AiResearchDailyReport entity) {
+        try {
+            AiResearchDailyReportPayloads.ReportContent content = objectMapper.readValue(
+                    entity.contentJson, AiResearchDailyReportPayloads.ReportContent.class);
+            return AiResearchDailyReportPayloads.ReportView.from(entity, content);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("投研日报内容解析失败", exception);
         }
-        return new AiResearchDailyReportPayloads.InsightSummary(
-                snapshot.id,
-                snapshot.generatedAt,
-                snapshot.pipelineStatus,
-                snapshot.pipelineMessage,
-                zero(snapshot.overallHitRate),
-                safe(snapshot.itemCount),
-                safe(snapshot.lowSampleCount),
-                snapshot.latestJobLogId);
     }
 
-    private List<AiResearchDailyReportPayloads.FactorCard> aggregateFactors(List<AiDailyInsightItem> items) {
+    private List<AiResearchDailyReportPayloads.FactorCard> aggregateFactors(
+            List<AiDailyDecisionItem> items
+    ) {
         Map<String, FactorAggregate> aggregate = new LinkedHashMap<>();
-        for (AiDailyInsightItem item : items) {
+        for (AiDailyDecisionItem item : items) {
+            if ("DATA_UNAVAILABLE".equals(item.category)) {
+                continue;
+            }
             for (AiResearchDailyReportPayloads.TriggerFactor factor : parseFactors(item.triggerFactorsJson)) {
-                aggregate.compute(factor.factorCode(), (key, existing) -> {
-                    if (existing == null) {
-                        return new FactorAggregate(
-                                factor.factorCode(), factor.factorName(), factor.direction(),
-                                zero(factor.contribution()), factor.evidence(), 1);
-                    }
-                    return new FactorAggregate(
-                            existing.factorCode,
-                            existing.factorName,
-                            existing.direction,
-                            existing.contribution.add(zero(factor.contribution())),
-                            existing.evidence,
-                            existing.count + 1);
-                });
+                aggregate.compute(factor.factorCode(), (key, current) -> current == null
+                        ? new FactorAggregate(factor.factorCode(), factor.factorName(), factor.direction(),
+                        zero(factor.contribution()), factor.evidence(), 1)
+                        : new FactorAggregate(current.factorCode(), current.factorName(), current.direction(),
+                        current.contribution().add(zero(factor.contribution())), current.evidence(), current.count() + 1));
             }
         }
         return aggregate.values().stream()
-                .sorted(Comparator.comparing((FactorAggregate item) -> item.contribution).reversed())
+                .sorted(Comparator.comparing(FactorAggregate::contribution).reversed())
                 .limit(6)
-                .map(item -> new AiResearchDailyReportPayloads.FactorCard(
-                        item.factorCode,
-                        item.factorName,
-                        item.direction,
-                        item.contribution,
-                        item.evidence))
+                .map(value -> new AiResearchDailyReportPayloads.FactorCard(
+                        value.factorCode(), value.factorName(), value.direction(),
+                        value.contribution(), value.evidence()))
                 .toList();
     }
 
-    private List<AiResearchDailyReportPayloads.TriggerFactor> parseFactors(String rawJson) {
-        if (rawJson == null || rawJson.isBlank()) {
+    private List<AiResearchDailyReportPayloads.TriggerFactor> parseFactors(String json) {
+        if (json == null || json.isBlank()) {
             return List.of();
         }
         try {
-            return objectMapper.readValue(rawJson,
+            return objectMapper.readValue(json,
                     new TypeReference<List<AiResearchDailyReportPayloads.TriggerFactor>>() {
                     });
         } catch (JsonProcessingException exception) {
@@ -359,137 +422,133 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
         }
     }
 
-    private String buildTitle(LocalDate tradeDate, String reportStatus, String marketRegime) {
-        return switch (reportStatus) {
-            case "FAILED_PIPELINE" -> "猫狗智投投研日报 · " + tradeDate + " · 流水线异常";
-            case "PARTIAL_READY" -> "猫狗智投投研日报 · " + tradeDate + " · 部分完成";
-            case "EMPTY_RESULT" -> "猫狗智投投研日报 · " + tradeDate + " · 暂无有效结论";
-            default -> "猫狗智投投研日报 · " + tradeDate + " · " + marketRegime;
-        };
-    }
-
     private String buildExecutiveSummary(
-            AiResearchDailyReport entity,
             AiResearchDailyReportPayloads.ReportContent content,
+            String status,
             GenerationRequest request
     ) {
-        if ("FAILED_PIPELINE".equals(entity.reportStatus)) {
-            return "今日自动化流水线在 " + safeText(request.failedStep(), "未知步骤")
-                    + " 失败，原因：" + safeText(request.pipelineMessage(), "未记录")
-                    + "。本日报仅展示已固化数据，不扩展新的 AI 推理结论。";
+        if ("FAILED_PIPELINE".equals(status)) {
+            return "今日流水线异常：" + safeText(request.pipelineMessage(), "未记录原因")
+                    + "。日报仅归档已固化的每日决策，不补造结论。";
         }
-        if ("EMPTY_RESULT".equals(entity.reportStatus)) {
-            return "流水线已完成，但当前交易日没有可用投研结论。请检查自选股、数据质量和模型配置；系统未生成任何伪推荐。";
+        if ("DATA_UNAVAILABLE".equals(status)) {
+            return "当前交易日核心研究数据不完整，共 " + content.unavailable().size()
+                    + " 只股票无法形成决策，系统未生成伪推荐。";
         }
-        return "今日推荐关注 " + entity.recommendationCount + " 只，谨慎观察 " + entity.watchCount
-                + " 只，建议回避 " + entity.avoidCount + " 只，持仓风险提示 " + entity.holdingRiskCount
-                + " 只。数据新鲜度为 " + entity.freshnessStatus + "，市场状态判断为 " + entity.marketRegime + "。";
+        if ("EMPTY_RESULT".equals(status)) {
+            return "当前用户股票池为空，日报已归档但没有个股结论。";
+        }
+        return "今日推荐关注 " + content.recommendations().size()
+                + " 只，谨慎观察 " + content.watches().size()
+                + " 只，建议回避 " + content.avoids().size()
+                + " 只，持仓风险 " + content.holdingRisks().size()
+                + " 只；另有 " + content.unavailable().size() + " 只数据不可用。";
     }
 
     private String buildMarkdown(
-            AiResearchDailyReport entity,
-            AiResearchDailyReportPayloads.ReportContent content,
-            GenerationRequest request
+            String title,
+            String summary,
+            AiResearchDailyReportPayloads.ReportContent content
     ) {
-        StringBuilder builder = new StringBuilder();
-        builder.append("# ").append(entity.title).append('\n').append('\n');
-        builder.append(entity.executiveSummary).append('\n').append('\n');
-        builder.append("## 数据质量\n");
-        AiResearchDailyReportPayloads.InsightSummary insight = content.insightSummary();
-        builder.append("- 平均命中率 ").append(percent(insight.overallHitRate())).append('\n');
-        builder.append("- 数据质量 ").append(percent(content.freshness().dataQualityScore())).append('\n');
-        builder.append("- 低样本结论 ").append(safe(insight.lowSampleCount())).append(" 只\n");
-        builder.append("- 快照时间 ").append(insight.generatedAt()).append('\n').append('\n');
-        builder.append("## 推荐关注\n");
-        appendStocks(builder, content.recommendations());
-        builder.append("\n## 谨慎观察\n");
-        appendStocks(builder, content.watches());
-        builder.append("\n## 建议回避\n");
-        appendStocks(builder, content.avoids());
-        builder.append("\n## 持仓风险\n");
-        appendStocks(builder, content.holdingRisks());
-        builder.append("\n## 关键因子\n");
-        if (content.keyFactors().isEmpty()) {
-            builder.append("- 暂无关键因子\n");
-        } else {
-            for (AiResearchDailyReportPayloads.FactorCard factor : content.keyFactors()) {
-                builder.append("- ").append(factor.factorName())
-                        .append("（").append(factor.factorCode()).append("）")
-                        .append("，贡献度 ").append(factor.contribution())
-                        .append("，证据：").append(safeText(factor.evidence(), "无")).append('\n');
-            }
-        }
-        builder.append("\n## 流水线状态\n");
-        builder.append("- 状态：").append(safeText(content.pipeline().status(), "UNKNOWN")).append('\n');
-        if ("FAILED_PIPELINE".equals(entity.reportStatus)) {
-            builder.append("- 流水线异常：")
-                    .append(safeText(request.failedStep(), "未知步骤"))
-                    .append("，仅展示已固化数据\n");
-        }
+        StringBuilder builder = new StringBuilder("# ").append(title).append("\n\n")
+                .append(summary).append("\n\n")
+                .append("## 数据质量\n")
+                .append("- 数据新鲜度：").append(content.freshness().status()).append('\n')
+                .append("- 数据质量：").append(zero(content.freshness().dataQualityScore())).append('\n')
+                .append("- 决策快照：").append(content.insightSummary().snapshotId()).append("\n\n");
+        appendStocks(builder, "推荐关注", content.recommendations());
+        appendStocks(builder, "谨慎观察", content.watches());
+        appendStocks(builder, "建议回避", content.avoids());
+        appendStocks(builder, "持仓风险", content.holdingRisks());
+        appendStocks(builder, "数据不可用", content.unavailable());
         return builder.toString();
     }
 
-    private void appendStocks(StringBuilder builder, List<AiResearchDailyReportPayloads.StockCard> items) {
+    private static void appendStocks(
+            StringBuilder builder,
+            String title,
+            List<AiResearchDailyReportPayloads.StockCard> items
+    ) {
+        builder.append("## ").append(title).append('\n');
         if (items.isEmpty()) {
-            builder.append("- 暂无\n");
+            builder.append("- 暂无\n\n");
             return;
         }
         for (AiResearchDailyReportPayloads.StockCard item : items) {
             builder.append("- ").append(item.stockName()).append(' ').append(item.stockCode())
-                    .append("，评分 ").append(item.compositeScore())
+                    .append("，动作 ").append(safeText(item.action(), "不可用"))
                     .append("，系统分 ").append(item.systemScore())
-                    .append("，AI决策 ").append(safeText(item.aiDecision(), "未结构化"))
-                    .append("（置信度 ").append(percent(item.aiConfidence())).append("）")
                     .append("，风险 ").append(item.riskScore())
-                    .append("，命中率 ").append(percent(item.historicalHitRate()))
-                    .append(" / ").append(safe(item.historicalSampleCount())).append(" 样本")
-                    .append("，新鲜度 ").append(safeText(item.freshnessStatus(), "UNAVAILABLE"))
-                    .append("，结论：").append(safeText(item.reasonSummary(), "无")).append('\n');
+                    .append("，结论：").append(safeText(item.reasonSummary(), item.unavailableReason()))
+                    .append('\n');
         }
+        builder.append('\n');
     }
 
-    private String percent(BigDecimal value) {
-        return zero(value).setScale(2, RoundingMode.HALF_UP).toPlainString() + "%";
-    }
-
-    private String inferMarketRegime(AiResearchDailyReportPayloads.ReportContent content, String pipelineStatus) {
-        if (content.recommendations().size() >= 3) {
-            return "TRENDING";
-        }
-        if ("FAILED".equals(pipelineStatus)) {
-            return "DEFENSIVE";
-        }
-        if (content.freshness().dataQualityScore().compareTo(new BigDecimal("80")) >= 0) {
-            return "BALANCED";
-        }
-        return "DEFENSIVE";
-    }
-
-    private String resolveReportStatus(
-            String pipelineStatus,
-            String failedStep,
-            AiResearchDailyReportPayloads.ReportContent content
-    ) {
-        if ("FAILED".equals(pipelineStatus) || failedStep != null && !failedStep.isBlank()) {
+    private static String reportStatus(AiDailyDecisionSnapshot snapshot, GenerationRequest request) {
+        if ("FAILED".equals(request.pipelineStatus())
+                || request.failedStep() != null && !request.failedStep().isBlank()) {
             return "FAILED_PIPELINE";
         }
-        List<AiResearchDailyReportPayloads.StockCard> decisionItems = new ArrayList<>();
-        decisionItems.addAll(content.recommendations());
-        decisionItems.addAll(content.watches());
-        decisionItems.addAll(content.avoids());
-        if (!decisionItems.isEmpty() && decisionItems.stream().allMatch(item ->
-                "UNAVAILABLE".equals(item.action()) || "DATA_UNAVAILABLE".equals(item.confidenceLevel()))) {
-            return "DATA_UNAVAILABLE";
+        return switch (safeText(snapshot.snapshotStatus, "DATA_UNAVAILABLE")) {
+            case "EMPTY" -> "EMPTY_RESULT";
+            case "DATA_UNAVAILABLE" -> "DATA_UNAVAILABLE";
+            case "PARTIAL" -> "PARTIAL_READY";
+            default -> "READY";
+        };
+    }
+
+    private static String buildTitle(AiDailyDecisionSnapshot snapshot, String status) {
+        return switch (status) {
+            case "FAILED_PIPELINE" -> "猫狗智投投研日报 · " + snapshot.tradeDate + " · 流水线异常";
+            case "DATA_UNAVAILABLE" -> "猫狗智投投研日报 · " + snapshot.tradeDate + " · 数据不可用";
+            case "PARTIAL_READY" -> "猫狗智投投研日报 · " + snapshot.tradeDate + " · 部分完成";
+            case "EMPTY_RESULT" -> "猫狗智投投研日报 · " + snapshot.tradeDate + " · 暂无结论";
+            default -> "猫狗智投投研日报 · " + snapshot.tradeDate + " · " + snapshot.marketRegime;
+        };
+    }
+
+    private static String direction(String action) {
+        return switch (safeText(action, "WATCH")) {
+            case "BUY" -> "UP";
+            case "REDUCE", "SELL" -> "DOWN";
+            default -> "SIDEWAYS";
+        };
+    }
+
+    private static BigDecimal freshnessScore(String status) {
+        return "CURRENT_CLOSE".equals(status) ? new BigDecimal("100") : BigDecimal.ZERO;
+    }
+
+    private static String freshnessMessage(AiDailyDecisionItem item) {
+        return "DATA_UNAVAILABLE".equals(item.category)
+                ? item.unavailableReason : "使用当日完整收盘研究快照";
+    }
+
+    private JsonNode parse(String json) {
+        if (json == null || json.isBlank()) {
+            return null;
         }
-        if ("PARTIAL_SUCCESS".equals(pipelineStatus)) {
-            return "PARTIAL_READY";
+        try {
+            return objectMapper.readTree(json);
+        } catch (JsonProcessingException exception) {
+            return null;
         }
-        if (content.recommendations().isEmpty()
-                && content.watches().isEmpty()
-                && content.avoids().isEmpty()) {
-            return "EMPTY_RESULT";
-        }
-        return "READY";
+    }
+
+    private static BigDecimal decimal(JsonNode node, String key) {
+        JsonNode value = node == null ? null : node.get(key);
+        return value == null || value.isNull() ? BigDecimal.ZERO : value.decimalValue();
+    }
+
+    private static int integer(JsonNode node, String key) {
+        JsonNode value = node == null ? null : node.get(key);
+        return value == null || value.isNull() ? 0 : value.asInt();
+    }
+
+    private static String text(JsonNode node, String key, String fallback) {
+        JsonNode value = node == null ? null : node.get(key);
+        return value == null || value.isNull() || value.asText().isBlank() ? fallback : value.asText();
     }
 
     private String writeJson(AiResearchDailyReportPayloads.ReportContent content) {
@@ -502,27 +561,30 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
 
     private static void validate(GenerationRequest request) {
         if (request == null || request.userId() == null || request.userId() <= 0
-                || request.tradeDate() == null || request.idempotencyKey() == null || request.idempotencyKey().isBlank()
-                || request.pipelineStatus() == null || request.pipelineStatus().isBlank()
-                || request.generatedAt() == null) {
+                || request.tradeDate() == null || request.idempotencyKey() == null
+                || request.idempotencyKey().isBlank() || request.generatedAt() == null) {
             throw new IllegalArgumentException("投研日报生成请求不完整");
         }
     }
 
-    private static int safe(Integer value) {
+    private LocalDate latestExpectedTradeDate() {
+        return tradingCalendarService.latestExpectedKlineDate(LocalDateTime.now());
+    }
+
+    private static int value(Integer value) {
         return value == null ? 0 : value;
     }
 
     private static BigDecimal zero(BigDecimal value) {
-        return value == null ? BigDecimal.ZERO : value;
+        return value == null ? BigDecimal.ZERO : value.setScale(4, RoundingMode.HALF_UP);
     }
 
     private static String safeText(String value, String fallback) {
         return value == null || value.isBlank() ? fallback : value;
     }
 
-    private LocalDate latestExpectedTradeDate() {
-        return tradingCalendarService.latestExpectedKlineDate(LocalDateTime.now());
+    private static <T> List<T> safeList(List<T> values) {
+        return values == null ? List.of() : List.copyOf(values);
     }
 
     private record FactorAggregate(

@@ -33,6 +33,7 @@ public interface AiFactorValueMapper extends BaseMapper<AiFactorValue> {
             <script>
             SELECT v.*,
                    d.factor_code AS factor_code,
+                   d.factor_name AS factor_name,
                    d.factor_version AS factor_version,
                    d.factor_group AS factor_group,
                    d.direction AS direction
@@ -55,6 +56,7 @@ public interface AiFactorValueMapper extends BaseMapper<AiFactorValue> {
             <script>
             SELECT v.*,
                    d.factor_code AS factor_code,
+                   d.factor_name AS factor_name,
                    d.factor_version AS factor_version,
                    d.factor_group AS factor_group,
                    d.direction AS direction

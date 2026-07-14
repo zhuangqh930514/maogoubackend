@@ -252,7 +252,6 @@ class AiPredictionEngineImplTest {
     ) {
         return new AiPredictionEngineImpl(
                 mapper,
-                new DefaultAiDecisionPolicy(),
                 inferenceService,
                 new ObjectMapper().findAndRegisterModules());
     }

@@ -6,7 +6,6 @@ import com.maogou.stock.domain.entity.research.AiFactorValue;
 import com.maogou.stock.domain.entity.research.AiPrediction;
 import com.maogou.stock.domain.entity.research.AiSample;
 import com.maogou.stock.mapper.research.AiPredictionMapper;
-import com.maogou.stock.service.research.AiDecisionPolicy;
 import com.maogou.stock.service.research.AiFactorSignalPolicy;
 import com.maogou.stock.service.research.AiModelInferenceService;
 import com.maogou.stock.service.research.AiPredictionEngine;
@@ -28,6 +27,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 @Service
 public class AiPredictionEngineImpl implements AiPredictionEngine {
@@ -38,18 +38,15 @@ public class AiPredictionEngineImpl implements AiPredictionEngine {
     private static final BigDecimal ONE = BigDecimal.ONE.setScale(6, RoundingMode.HALF_UP);
 
     private final AiPredictionMapper predictionMapper;
-    private final AiDecisionPolicy decisionPolicy;
     private final AiModelInferenceService modelInferenceService;
     private final ObjectMapper objectMapper;
 
     public AiPredictionEngineImpl(
             AiPredictionMapper predictionMapper,
-            AiDecisionPolicy decisionPolicy,
             AiModelInferenceService modelInferenceService,
             ObjectMapper objectMapper
     ) {
         this.predictionMapper = predictionMapper;
-        this.decisionPolicy = decisionPolicy;
         this.modelInferenceService = modelInferenceService;
         this.objectMapper = objectMapper;
     }
@@ -75,15 +72,7 @@ public class AiPredictionEngineImpl implements AiPredictionEngine {
                 prediction.reasonJson = reasonJson(candidate, null);
                 continue;
             }
-            AiDecisionPolicy.Decision decision = decisionPolicy.decide(
-                    candidate.sample(),
-                    new AiDecisionPolicy.Signal(
-                            prediction.score,
-                            prediction.riskScore,
-                            prediction.calibratedConfidence,
-                            prediction.expectedReturn),
-                    prediction.rankNo,
-                    batch.topK());
+            PredictionDecision decision = decidePrediction(candidate.sample(), prediction, batch.topK());
             prediction.action = decision.action();
             prediction.actionBucket = decision.actionBucket();
             prediction.targetDirection = decision.targetDirection();
@@ -257,7 +246,7 @@ public class AiPredictionEngineImpl implements AiPredictionEngine {
         return predictions.stream().map(item -> resultByKey.get(item.idempotencyKey)).toList();
     }
 
-    private String reasonJson(Candidate candidate, AiDecisionPolicy.Decision decision) {
+    private String reasonJson(Candidate candidate, PredictionDecision decision) {
         List<Map<String, Object>> factorReasons = candidate.contributions().stream()
                 .sorted(Comparator.comparing(
                         (FactorContribution item) -> item.contribution().abs(), Comparator.reverseOrder()))
@@ -305,6 +294,46 @@ public class AiPredictionEngineImpl implements AiPredictionEngine {
 
     private static BigDecimal contribution(AiFactorValue factor, BigDecimal normalized) {
         return AiFactorSignalPolicy.orient(factor, normalized);
+    }
+
+    private static PredictionDecision decidePrediction(AiSample sample, AiPrediction prediction, int topK) {
+        if (sample == null
+                || !Set.of("READY", "PARTIAL").contains(sample.qualityStatus)
+                || !"TRADABLE".equals(sample.tradableStatus)
+                || sample.dataQualityScore == null
+                || sample.dataQualityScore.compareTo(new BigDecimal("60")) < 0) {
+            return new PredictionDecision(
+                    "UNAVAILABLE", "UNAVAILABLE", "SIDEWAYS", "DATA_UNAVAILABLE_OR_UNTRADABLE");
+        }
+        if (prediction.calibratedConfidence.compareTo(new BigDecimal("60")) < 0) {
+            return new PredictionDecision("WATCH", "ABSTAIN", "SIDEWAYS", "LOW_CONFIDENCE");
+        }
+        if (prediction.riskScore.compareTo(new BigDecimal("75")) >= 0
+                || prediction.score.compareTo(new BigDecimal("35")) <= 0) {
+            return new PredictionDecision(
+                    "REDUCE", "AVOID", expectedDirection(prediction.expectedReturn), null);
+        }
+        if (prediction.rankNo != null && prediction.rankNo <= Math.max(1, topK)
+                && prediction.score.compareTo(new BigDecimal("65")) >= 0
+                && prediction.riskScore.compareTo(new BigDecimal("70")) <= 0) {
+            return new PredictionDecision("BUY", "RECOMMEND", "UP", null);
+        }
+        return new PredictionDecision(
+                "WATCH", "ABSTAIN", "SIDEWAYS",
+                prediction.rankNo == null ? "NOT_RANKABLE" : "NOT_TOP_K_OR_SIGNAL_WEAK");
+    }
+
+    private static String expectedDirection(BigDecimal expectedReturn) {
+        if (expectedReturn == null) {
+            return "SIDEWAYS";
+        }
+        if (expectedReturn.compareTo(new BigDecimal("0.005")) >= 0) {
+            return "UP";
+        }
+        if (expectedReturn.compareTo(new BigDecimal("-0.005")) <= 0) {
+            return "DOWN";
+        }
+        return "SIDEWAYS";
     }
 
     private static String universeFingerprint(PredictionBatch batch) {
@@ -476,6 +505,14 @@ public class AiPredictionEngineImpl implements AiPredictionEngine {
             AiPrediction prediction,
             AiModelInferenceService.ModelInference modelInference,
             String modelError
+    ) {
+    }
+
+    private record PredictionDecision(
+            String action,
+            String actionBucket,
+            String targetDirection,
+            String abstainReason
     ) {
     }
 }

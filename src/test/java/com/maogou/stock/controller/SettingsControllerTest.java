@@ -76,6 +76,7 @@ class SettingsControllerTest {
         when(aiResearchDailyReportService.latestOrNull(anyLong()))
                 .thenReturn(new AiResearchDailyReportService.ReportView(
                         9001L,
+                        9101L,
                         LocalDate.of(2026, 7, 13),
                         3,
                         8001L,

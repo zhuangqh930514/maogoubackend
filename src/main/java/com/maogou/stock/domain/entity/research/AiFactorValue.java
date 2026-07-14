@@ -21,6 +21,8 @@ public class AiFactorValue {
     @TableField(exist = false)
     public String factorCode;
     @TableField(exist = false)
+    public String factorName;
+    @TableField(exist = false)
     public String factorVersion;
     @TableField(exist = false)
     public String factorGroup;

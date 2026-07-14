@@ -68,4 +68,21 @@ public interface AiPredictionMapper extends BaseMapper<AiPrediction> {
             @Param("evaluationVersion") String evaluationVersion,
             @Param("limit") int limit
     );
+
+    @Select("""
+            <script>
+            SELECT * FROM ai_prediction
+            WHERE strategy_release_id = #{strategyReleaseId}
+              AND horizon_trading_days IN (1, 2, 3)
+              AND sample_id IN
+              <foreach collection="sampleIds" item="sampleId" open="(" separator="," close=")">
+                #{sampleId}
+              </foreach>
+            ORDER BY sample_id, horizon_trading_days
+            </script>
+            """)
+    List<AiPrediction> selectForDailyDecision(
+            @Param("sampleIds") List<Long> sampleIds,
+            @Param("strategyReleaseId") Long strategyReleaseId
+    );
 }
