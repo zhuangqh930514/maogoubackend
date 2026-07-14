@@ -349,7 +349,7 @@ class AiDailyPipelineServiceV2ImplTest {
                                     request.pipelineRunId(), request.pipelineStatus(), request.failedStep(), request.failedStep(),
                                     0, 0, 0, request.pipelineMessage(), List.of()),
                             null,
-                            List.of(), List.of(), List.of(), List.of(), List.of()),
+                            List.of(), List.of(), List.of(), List.of(), List.of(), null),
                     "# 日报",
                     request.generatedAt());
         });

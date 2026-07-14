@@ -1,6 +1,7 @@
 package com.maogou.stock.service.impl;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.maogou.stock.domain.entity.AiDailyInsightItem;
 import com.maogou.stock.domain.entity.AiDailyInsightSnapshot;
 import com.maogou.stock.domain.entity.TradeRecord;
@@ -60,6 +61,37 @@ class AiResearchDailyReportServiceImplTest {
         assertThat(report.content().strategyPerformance().versionNo()).isEqualTo("v2.3");
         assertThat(report.content().freshness().status()).isEqualTo("REALTIME");
         assertThat(report.markdownContent()).contains("猫狗智投", "推荐关注", "持仓风险");
+    }
+
+    @Test
+    void freezesDailyInsightSummaryAndDecisionEvidenceIntoTheReportJson() throws Exception {
+        Fixture fixture = fixture(source("SUCCESS", null));
+        AiResearchDailyReportService service = service(fixture);
+
+        AiResearchDailyReportService.ReportView report = service.generate(
+                request("REPORT:MERGED", "SUCCESS", null, null));
+
+        JsonNode content = new ObjectMapper().findAndRegisterModules()
+                .readTree(fixture.reports.get(0).contentJson);
+        assertThat(content.at("/insightSummary/snapshotId").asLong()).isEqualTo(41L);
+        assertThat(content.at("/insightSummary/overallHitRate").decimalValue())
+                .isEqualByComparingTo("61.80");
+        assertThat(content.at("/insightSummary/itemCount").asInt()).isEqualTo(3);
+        assertThat(content.at("/insightSummary/lowSampleCount").asInt()).isEqualTo(1);
+
+        JsonNode recommendation = content.at("/recommendations/0");
+        assertThat(recommendation.get("systemScore").decimalValue()).isEqualByComparingTo("74.5");
+        assertThat(recommendation.get("aiDecision").asText()).isEqualTo("BUY");
+        assertThat(recommendation.get("aiConfidence").decimalValue()).isEqualByComparingTo("82.5");
+        assertThat(recommendation.get("targetDirection").asText()).isEqualTo("UP");
+        assertThat(recommendation.get("riskLevel").asText()).isEqualTo("MEDIUM");
+        assertThat(recommendation.get("dataQualityScore").decimalValue()).isEqualByComparingTo("92");
+        assertThat(recommendation.get("freshnessScore").decimalValue()).isEqualByComparingTo("95");
+        assertThat(recommendation.get("freshnessMessage").asText()).isEqualTo("行情与样本均为当日数据");
+        assertThat(recommendation.get("triggerFactors")).hasSize(1);
+        assertThat(recommendation.at("/triggerFactors/0/factorCode").asText()).isEqualTo("MOMENTUM_20D");
+        assertThat(report.markdownContent())
+                .contains("平均命中率 61.80%", "数据质量 92.50%", "低样本结论 1 只");
     }
 
     @Test
@@ -125,6 +157,24 @@ class AiResearchDailyReportServiceImplTest {
         verify(fixture.source).load(
                 org.mockito.ArgumentMatchers.eq(5L),
                 org.mockito.ArgumentMatchers.eq(expectedTradeDate),
+                any());
+    }
+
+    @Test
+    void manualRebuildCanTargetTheTradingDateOfTheSelectedHistoricalReport() {
+        Fixture fixture = fixture(source("SUCCESS", null));
+        LocalDate selectedTradeDate = LocalDate.of(2026, 7, 9);
+        when(fixture.tradingCalendarService.latestExpectedKlineDate(any(LocalDateTime.class)))
+                .thenReturn(LocalDate.of(2026, 7, 10));
+        AiResearchDailyReportService service = service(fixture);
+        AtomicReference<AiResearchDailyReportService.ReportView> result = new AtomicReference<>();
+
+        AuthContext.runAs(5L, () -> result.set(service.rebuild(selectedTradeDate)));
+
+        assertThat(result.get().tradeDate()).isEqualTo(selectedTradeDate);
+        verify(fixture.source).load(
+                org.mockito.ArgumentMatchers.eq(5L),
+                org.mockito.ArgumentMatchers.eq(selectedTradeDate),
                 any());
     }
 
@@ -236,6 +286,10 @@ class AiResearchDailyReportServiceImplTest {
         snapshot.dataQualityScore = new BigDecimal("92.50");
         snapshot.latestReportAt = LocalDateTime.of(2026, 7, 10, 16, 18);
         snapshot.latestSampleAt = LocalDateTime.of(2026, 7, 10, 15, 5);
+        snapshot.itemCount = 3;
+        snapshot.lowSampleCount = 1;
+        snapshot.overallHitRate = new BigDecimal("61.80");
+        snapshot.latestJobLogId = 701L;
         List<AiDailyInsightItem> items = List.of(
                 item("600519", "贵州茅台", "BUY", "RECOMMEND", "78.2", "35", "MOMENTUM_20D"),
                 item("000001", "平安银行", "WATCH", "WATCH", "61.0", "45", "PE_TTM"),
@@ -288,10 +342,16 @@ class AiResearchDailyReportServiceImplTest {
         item.finalAction = action;
         item.actionBucket = bucket;
         item.compositeScore = new BigDecimal(score);
+        item.systemScore = new BigDecimal("74.5");
+        item.aiDecision = "BUY";
+        item.aiConfidence = new BigDecimal("82.5");
+        item.targetDirection = "UP";
+        item.riskLevel = "MEDIUM";
         item.riskScore = new BigDecimal(risk);
         item.dataQualityScore = new BigDecimal("92");
         item.freshnessScore = new BigDecimal("95");
         item.freshnessStatus = "REALTIME";
+        item.freshnessMessage = "行情与样本均为当日数据";
         item.historicalHitRate = new BigDecimal("61.8");
         item.historicalSampleCount = 26;
         item.confidenceLevel = "READY";

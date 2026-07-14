@@ -17,6 +17,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -117,18 +118,27 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
 
     @Override
     public ReportView rebuildToday() {
+        return rebuild(null);
+    }
+
+    @Override
+    public ReportView rebuild(LocalDate requestedTradeDate) {
         long userId = AuthContext.currentUserIdOrDefault();
-        LocalDate today = latestExpectedTradeDate();
+        LocalDate latestExpectedTradeDate = latestExpectedTradeDate();
+        LocalDate tradeDate = requestedTradeDate == null ? latestExpectedTradeDate : requestedTradeDate;
+        if (tradeDate.isAfter(latestExpectedTradeDate)) {
+            throw new IllegalArgumentException("不能重建尚未结束的未来交易日报");
+        }
         return generate(new GenerationRequest(
                 userId,
-                today,
+                tradeDate,
                 null,
                 null,
                 null,
-                "MANUAL:" + today + ":" + System.currentTimeMillis(),
+                "MANUAL:" + tradeDate + ":" + System.currentTimeMillis(),
                 "MANUAL",
                 null,
-                "手动重建投研日报",
+                "手动重建 " + tradeDate + " 投研日报",
                 LocalDateTime.now()));
     }
 
@@ -173,7 +183,8 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
                 watches,
                 avoids,
                 holdingRisks,
-                keyFactors);
+                keyFactors,
+                insightSummary(snapshot));
     }
 
     private AiResearchDailyReport buildEntity(
@@ -229,7 +240,18 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
                         item.reasonSummary,
                         item.reportId,
                         item.predictionId,
-                        item.sampleId))
+                        item.sampleId,
+                        zero(item.systemScore),
+                        item.aiDecision,
+                        zero(item.aiConfidence),
+                        item.targetDirection,
+                        item.riskLevel,
+                        zero(item.dataQualityScore),
+                        zero(item.freshnessScore),
+                        item.freshnessMessage,
+                        parseFactors(item.triggerFactorsJson),
+                        item.reportGeneratedAt,
+                        item.sampleTime))
                 .toList();
     }
 
@@ -260,8 +282,36 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
                         item.reasonSummary,
                         item.reportId,
                         item.predictionId,
-                        item.sampleId))
+                        item.sampleId,
+                        zero(item.systemScore),
+                        item.aiDecision,
+                        zero(item.aiConfidence),
+                        item.targetDirection,
+                        item.riskLevel,
+                        zero(item.dataQualityScore),
+                        zero(item.freshnessScore),
+                        item.freshnessMessage,
+                        parseFactors(item.triggerFactorsJson),
+                        item.reportGeneratedAt,
+                        item.sampleTime))
                 .toList();
+    }
+
+    private AiResearchDailyReportPayloads.InsightSummary insightSummary(AiDailyInsightSnapshot snapshot) {
+        if (snapshot == null) {
+            return new AiResearchDailyReportPayloads.InsightSummary(
+                    null, null, "UNAVAILABLE", "每日投研快照不可用",
+                    BigDecimal.ZERO, 0, 0, null);
+        }
+        return new AiResearchDailyReportPayloads.InsightSummary(
+                snapshot.id,
+                snapshot.generatedAt,
+                snapshot.pipelineStatus,
+                snapshot.pipelineMessage,
+                zero(snapshot.overallHitRate),
+                safe(snapshot.itemCount),
+                safe(snapshot.lowSampleCount),
+                snapshot.latestJobLogId);
     }
 
     private List<AiResearchDailyReportPayloads.FactorCard> aggregateFactors(List<AiDailyInsightItem> items) {
@@ -344,6 +394,12 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
         StringBuilder builder = new StringBuilder();
         builder.append("# ").append(entity.title).append('\n').append('\n');
         builder.append(entity.executiveSummary).append('\n').append('\n');
+        builder.append("## 数据质量\n");
+        AiResearchDailyReportPayloads.InsightSummary insight = content.insightSummary();
+        builder.append("- 平均命中率 ").append(percent(insight.overallHitRate())).append('\n');
+        builder.append("- 数据质量 ").append(percent(content.freshness().dataQualityScore())).append('\n');
+        builder.append("- 低样本结论 ").append(safe(insight.lowSampleCount())).append(" 只\n");
+        builder.append("- 快照时间 ").append(insight.generatedAt()).append('\n').append('\n');
         builder.append("## 推荐关注\n");
         appendStocks(builder, content.recommendations());
         builder.append("\n## 谨慎观察\n");
@@ -381,10 +437,19 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
         for (AiResearchDailyReportPayloads.StockCard item : items) {
             builder.append("- ").append(item.stockName()).append(' ').append(item.stockCode())
                     .append("，评分 ").append(item.compositeScore())
+                    .append("，系统分 ").append(item.systemScore())
+                    .append("，AI决策 ").append(safeText(item.aiDecision(), "未结构化"))
+                    .append("（置信度 ").append(percent(item.aiConfidence())).append("）")
                     .append("，风险 ").append(item.riskScore())
-                    .append("，命中率 ").append(item.historicalHitRate())
+                    .append("，命中率 ").append(percent(item.historicalHitRate()))
+                    .append(" / ").append(safe(item.historicalSampleCount())).append(" 样本")
+                    .append("，新鲜度 ").append(safeText(item.freshnessStatus(), "UNAVAILABLE"))
                     .append("，结论：").append(safeText(item.reasonSummary(), "无")).append('\n');
         }
+    }
+
+    private String percent(BigDecimal value) {
+        return zero(value).setScale(2, RoundingMode.HALF_UP).toPlainString() + "%";
     }
 
     private String inferMarketRegime(AiResearchDailyReportPayloads.ReportContent content, String pipelineStatus) {

@@ -20,6 +20,8 @@ public interface AiResearchDailyReportService {
 
     ReportView rebuildToday();
 
+    ReportView rebuild(LocalDate tradeDate);
+
     record GenerationRequest(
             Long userId,
             LocalDate tradeDate,

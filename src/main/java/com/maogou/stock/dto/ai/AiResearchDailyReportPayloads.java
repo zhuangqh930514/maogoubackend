@@ -98,7 +98,8 @@ public final class AiResearchDailyReportPayloads {
             List<StockCard> watches,
             List<StockCard> avoids,
             List<StockCard> holdingRisks,
-            List<FactorCard> keyFactors
+            List<FactorCard> keyFactors,
+            InsightSummary insightSummary
     ) {
     }
 
@@ -116,7 +117,30 @@ public final class AiResearchDailyReportPayloads {
             String reasonSummary,
             Long reportId,
             Long predictionId,
-            Long sampleId
+            Long sampleId,
+            BigDecimal systemScore,
+            String aiDecision,
+            BigDecimal aiConfidence,
+            String targetDirection,
+            String riskLevel,
+            BigDecimal dataQualityScore,
+            BigDecimal freshnessScore,
+            String freshnessMessage,
+            List<TriggerFactor> triggerFactors,
+            LocalDateTime reportGeneratedAt,
+            LocalDateTime sampleTime
+    ) {
+    }
+
+    public record InsightSummary(
+            Long snapshotId,
+            LocalDateTime generatedAt,
+            String pipelineStatus,
+            String pipelineMessage,
+            BigDecimal overallHitRate,
+            Integer itemCount,
+            Integer lowSampleCount,
+            Long latestJobLogId
     ) {
     }
 

@@ -3,6 +3,7 @@ package com.maogou.stock.controller;
 import com.maogou.stock.common.ApiResponse;
 import com.maogou.stock.dto.ai.AiResearchDailyReportPayloads;
 import com.maogou.stock.service.AiResearchDailyReportService;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -10,6 +11,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.LocalDate;
 import java.util.List;
 
 @RestController
@@ -40,7 +42,10 @@ public class AiResearchDailyReportController {
     }
 
     @PostMapping("/rebuild")
-    public ApiResponse<AiResearchDailyReportService.ReportView> rebuild() {
-        return ApiResponse.ok(reportService.rebuildToday());
+    public ApiResponse<AiResearchDailyReportService.ReportView> rebuild(
+            @RequestParam(required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate tradeDate
+    ) {
+        return ApiResponse.ok(reportService.rebuild(tradeDate));
     }
 }
