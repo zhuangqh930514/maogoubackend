@@ -33,7 +33,8 @@ public interface AiFactorEngine {
             LocalDateTime newsAsOfTime,
             KlineSeriesSnapshot stockSeries,
             KlineSeriesSnapshot marketSeries,
-            KlineSeriesSnapshot sectorSeries
+            KlineSeriesSnapshot sectorSeries,
+            String newsSourceFingerprint
     ) {
         public FactorContext(
                 AiSample sample,
@@ -43,7 +44,23 @@ public interface AiFactorEngine {
                 BigDecimal newsSentiment,
                 LocalDateTime newsAsOfTime
         ) {
-            this(sample, detail, marketKlines, sectorKlines, newsSentiment, newsAsOfTime, null, null, null);
+            this(sample, detail, marketKlines, sectorKlines, newsSentiment, newsAsOfTime,
+                    null, null, null, null);
+        }
+
+        public FactorContext(
+                AiSample sample,
+                StockDetailResponse detail,
+                List<KlinePointResponse> marketKlines,
+                List<KlinePointResponse> sectorKlines,
+                BigDecimal newsSentiment,
+                LocalDateTime newsAsOfTime,
+                KlineSeriesSnapshot stockSeries,
+                KlineSeriesSnapshot marketSeries,
+                KlineSeriesSnapshot sectorSeries
+        ) {
+            this(sample, detail, marketKlines, sectorKlines, newsSentiment, newsAsOfTime,
+                    stockSeries, marketSeries, sectorSeries, null);
         }
     }
 }

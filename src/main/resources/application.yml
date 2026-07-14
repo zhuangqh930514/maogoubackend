@@ -41,6 +41,14 @@ maogou:
     finance-cache-ttl-seconds: ${MAOGOU_FINANCE_CACHE_TTL_SECONDS:1800}
     sector-heatmap-cache-ttl-seconds: ${MAOGOU_SECTOR_HEATMAP_CACHE_TTL_SECONDS:60}
     sector-hot-stocks-cache-ttl-seconds: ${MAOGOU_SECTOR_HOT_STOCKS_CACHE_TTL_SECONDS:60}
+    research-provider-order: ${MAOGOU_RESEARCH_PROVIDER_ORDER:EASTMONEY,SINA}
+    benchmark-symbol: ${MAOGOU_RESEARCH_BENCHMARK_SYMBOL:000300}
+    source-cooldown-base-seconds: ${MAOGOU_SOURCE_COOLDOWN_BASE_SECONDS:30}
+    source-cooldown-max-seconds: ${MAOGOU_SOURCE_COOLDOWN_MAX_SECONDS:900}
+    source-price-tolerance-pct: ${MAOGOU_SOURCE_PRICE_TOLERANCE_PCT:0.005}
+    source-volume-tolerance-pct: ${MAOGOU_SOURCE_VOLUME_TOLERANCE_PCT:0.15}
+    source-max-daily-change-pct: ${MAOGOU_SOURCE_MAX_DAILY_CHANGE_PCT:0.35}
+    news-feature-window-hours: ${MAOGOU_NEWS_FEATURE_WINDOW_HOURS:36}
   ai:
     api-base-url: ${MAOGOU_AI_API_BASE_URL:http://localhost:11434/v1}
     model-name: ${MAOGOU_AI_MODEL_NAME:qwen3.6}

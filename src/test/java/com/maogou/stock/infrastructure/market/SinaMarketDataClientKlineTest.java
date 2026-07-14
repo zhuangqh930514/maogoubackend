@@ -17,20 +17,20 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 class SinaMarketDataClientKlineTest {
 
     @Test
-    void pointInTimeKlineUsesUnadjustedVersionedDataAndCutsFutureBars() {
+    void pointInTimeKlineUsesTheIndependentSinaSourceAndCutsFutureBars() {
         RestTemplate restTemplate = new RestTemplate();
         MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
         server.expect(request -> {
-                    assertThat(request.getURI().getPath()).contains("/api/qt/stock/kline/get");
-                    assertThat(request.getURI().getQuery()).contains("fqt=0");
-                    assertThat(request.getURI().getQuery()).contains("end=20260710");
+                    assertThat(request.getURI().getPath()).contains("/CN_MarketDataService.getKLineData");
+                    assertThat(request.getURI().getQuery()).contains("symbol=sh600519");
+                    assertThat(request.getURI().getQuery()).contains("scale=240");
                 })
                 .andRespond(withSuccess("""
-                        {"data":{"klines":[
-                          "2026-07-09,10,10,11,9,100,1000",
-                          "2026-07-10,10,11,12,9,120,1300",
-                          "2026-07-13,11,99,100,10,150,1600"
-                        ]}}
+                        var _sh600519_240=([
+                          {"day":"2026-07-09","open":"10","close":"10","low":"9","high":"11","volume":"10000"},
+                          {"day":"2026-07-10","open":"10","close":"11","low":"9","high":"12","volume":"12000"},
+                          {"day":"2026-07-13","open":"11","close":"99","low":"10","high":"100","volume":"15000"}
+                        ])
                         """, MediaType.APPLICATION_JSON));
         SinaMarketDataClient client = new SinaMarketDataClient(
                 restTemplate, new ObjectMapper().findAndRegisterModules(), new AppProperties());
@@ -39,7 +39,7 @@ class SinaMarketDataClientKlineTest {
                 "600519", "day", 100, LocalDateTime.of(2026, 7, 10, 16, 0));
 
         assertThat(snapshot.adjustmentMode()).isEqualTo("NONE");
-        assertThat(snapshot.source()).isEqualTo("EASTMONEY");
+        assertThat(snapshot.source()).isEqualTo("SINA");
         assertThat(snapshot.asOfTime()).isEqualTo(LocalDateTime.of(2026, 7, 10, 16, 0));
         assertThat(snapshot.sourceFingerprint()).hasSize(64);
         assertThat(snapshot.points()).extracting(point -> point.tradeDate())

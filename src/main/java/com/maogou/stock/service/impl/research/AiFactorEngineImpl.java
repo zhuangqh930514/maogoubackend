@@ -398,7 +398,8 @@ public class AiFactorEngineImpl implements AiFactorEngine {
                 context.sample() == null ? "" : String.valueOf(context.sample().sourceFingerprint),
                 context.stockSeries() == null ? "" : String.valueOf(context.stockSeries().sourceFingerprint()),
                 context.marketSeries() == null ? "" : String.valueOf(context.marketSeries().sourceFingerprint()),
-                context.sectorSeries() == null ? "" : String.valueOf(context.sectorSeries().sourceFingerprint()));
+                context.sectorSeries() == null ? "" : String.valueOf(context.sectorSeries().sourceFingerprint()),
+                context.newsSourceFingerprint() == null ? "" : context.newsSourceFingerprint());
     }
 
     private static List<KlinePointResponse> pointInTimeKlines(StockDetailResponse detail, LocalDateTime asOfTime) {

@@ -13,8 +13,11 @@ import com.maogou.stock.domain.entity.research.AiSample;
 import com.maogou.stock.domain.entity.research.AiSourceObservation;
 import com.maogou.stock.dto.market.KlinePointResponse;
 import com.maogou.stock.dto.market.KlineSeriesSnapshot;
+import com.maogou.stock.dto.market.NewsFlashResponse;
 import com.maogou.stock.dto.market.StockDetailResponse;
 import com.maogou.stock.dto.market.StockQuoteResponse;
+import com.maogou.stock.infrastructure.market.ResearchMarketDataClient;
+import com.maogou.stock.infrastructure.market.ResearchSourceResult;
 import com.maogou.stock.mapper.research.AiDataBatchMapper;
 import com.maogou.stock.mapper.research.AiResearchUniverseItemMapper;
 import com.maogou.stock.mapper.research.AiResearchUniverseSnapshotMapper;
@@ -28,9 +31,13 @@ import com.maogou.stock.service.research.AiPredictionEngine;
 import com.maogou.stock.service.research.AiResearchUniverseService;
 import com.maogou.stock.service.research.AiResearchContract;
 import com.maogou.stock.service.research.AiSampleSnapshotService;
+import com.maogou.stock.service.research.BenchmarkSeriesService;
+import com.maogou.stock.service.research.IndustryMembershipService;
+import com.maogou.stock.service.research.NewsSentimentFeatureService;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -46,6 +53,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -66,6 +74,10 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
     private final AiFactorEngine factorEngine;
     private final AiPredictionEngine predictionEngine;
     private final AiLabelVerificationCoordinator labelCoordinator;
+    private final ResearchMarketDataClient resilientMarketDataClient;
+    private final BenchmarkSeriesService benchmarkSeriesService;
+    private final IndustryMembershipService industryMembershipService;
+    private final NewsSentimentFeatureService newsSentimentFeatureService;
     private final ObjectMapper objectMapper;
 
     public GlobalDailyResearchExecutor(
@@ -80,6 +92,10 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
             AiFactorEngine factorEngine,
             AiPredictionEngine predictionEngine,
             AiLabelVerificationCoordinator labelCoordinator,
+            ResearchMarketDataClient resilientMarketDataClient,
+            BenchmarkSeriesService benchmarkSeriesService,
+            IndustryMembershipService industryMembershipService,
+            NewsSentimentFeatureService newsSentimentFeatureService,
             ObjectMapper objectMapper
     ) {
         this.universeService = universeService;
@@ -93,6 +109,10 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         this.factorEngine = factorEngine;
         this.predictionEngine = predictionEngine;
         this.labelCoordinator = labelCoordinator;
+        this.resilientMarketDataClient = resilientMarketDataClient;
+        this.benchmarkSeriesService = benchmarkSeriesService;
+        this.industryMembershipService = industryMembershipService;
+        this.newsSentimentFeatureService = newsSentimentFeatureService;
         this.objectMapper = objectMapper;
     }
 
@@ -141,15 +161,74 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         AiDataBatch batch = sampleSnapshotService.startOrGetBatch(
                 snapshotId, context.tradeDate(), "AFTER_CLOSE", fetchStartedAt,
                 context.idempotencyKey() + ":BATCH");
+        List<AiSourceObservation> existingObservations = observations(batch.id);
+        if (!existingObservations.isEmpty()) {
+            return resumeExistingSourceData(batch, items, existingObservations);
+        }
+
+        ResearchSourceResult<KlineSeriesSnapshot> benchmark = benchmarkSeriesService.load(fetchStartedAt, 80);
+        storeObservation(sourceObservation(
+                batch, null, "MARKET_BENCHMARK", "KLINE", benchmark.providerCode(),
+                benchmark.sourceUpdatedAt(), null, fetchStartedAt, benchmark.data(),
+                benchmark.formalReady() ? "READY" : benchmark.qualityStatus(), benchmark.message(),
+                benchmark.responseFingerprint()));
+        boolean benchmarkReady = benchmark.formalReady()
+                && latestTradeDate(benchmark.data()).filter(context.tradeDate()::equals).isPresent();
+
+        NewsSentimentFeatureService.NewsBatch newsBatch = newsSentimentFeatureService.load(fetchStartedAt, 100);
+        storeObservation(sourceObservation(
+                batch, null, "NEWS_RAW", "NEWS", newsBatch.providerCode(), null,
+                newsBatch.news().stream().map(NewsFlashResponse::publishedAt).filter(Objects::nonNull)
+                        .max(Comparator.naturalOrder()).orElse(null),
+                fetchStartedAt, newsBatch.news(), newsBatch.available() ? "READY" : "UNAVAILABLE",
+                newsBatch.missingReason(), newsBatch.sourceFingerprint()));
 
         int success = 0;
         List<String> errors = new ArrayList<>();
+        if (!benchmarkReady) {
+            errors.add("市场基准数据不可用：" + benchmark.message());
+        }
         Set<String> seenCodes = new LinkedHashSet<>();
+        Map<String, ResearchSourceResult<KlineSeriesSnapshot>> sectorSeriesByIndustry = new LinkedHashMap<>();
         for (AiResearchUniverseItem item : items) {
             if (!seenCodes.add(item.stockCode)) {
                 continue;
             }
             context.checkpointLease();
+            IndustryMembershipService.Membership membership = industryMembershipService.resolve(
+                    item.stockCode, fetchStartedAt);
+            storeObservation(sourceObservation(
+                    batch, item.stockCode, "INDUSTRY_MEMBERSHIP", "INDUSTRY_MEMBERSHIP",
+                    membership.providerCode(), membership.effectiveFrom() == null ? null
+                            : membership.effectiveFrom().atStartOfDay(), null,
+                    fetchStartedAt, membership, membership.available() ? "READY" : "UNAVAILABLE",
+                    membership.missingReason(), membership.sourceFingerprint()));
+
+            if (membership.available()) {
+                ResearchSourceResult<KlineSeriesSnapshot> sectorSeries = sectorSeriesByIndustry.computeIfAbsent(
+                        membership.industryCode(), ignored -> resilientMarketDataClient.fetchKlineAt(
+                                membership.industryCode(), "day", 80, fetchStartedAt));
+                storeObservation(sourceObservation(
+                        batch, item.stockCode, "INDUSTRY_BENCHMARK", "KLINE",
+                        sectorSeries.providerCode(), sectorSeries.sourceUpdatedAt(), null,
+                        fetchStartedAt, sectorSeries.data(),
+                        sectorSeries.formalReady() ? "READY" : sectorSeries.qualityStatus(),
+                        sectorSeries.message(), sectorSeries.responseFingerprint()));
+            } else {
+                storeObservation(sourceObservation(
+                        batch, item.stockCode, "INDUSTRY_BENCHMARK", "KLINE", "UNAVAILABLE",
+                        null, null, fetchStartedAt, null, "UNAVAILABLE",
+                        membership.missingReason(), membership.sourceFingerprint()));
+            }
+
+            NewsSentimentFeatureService.Feature newsFeature = newsSentimentFeatureService.calculate(
+                    newsBatch.news(), item.stockCode, item.stockName, membership.industryName(), fetchStartedAt);
+            storeObservation(sourceObservation(
+                    batch, item.stockCode, "NEWS_SENTIMENT_FEATURE", "DERIVED_NEWS_FEATURE",
+                    newsBatch.providerCode(), null, newsFeature.latestPublishedAt(), fetchStartedAt,
+                    newsFeature, newsBatch.available() && newsFeature.available() ? "READY" : "UNAVAILABLE",
+                    newsBatch.available() ? newsFeature.missingReason() : newsBatch.missingReason(),
+                    newsFeature.sourceFingerprint()));
             try {
                 StockDetailResponse detail = marketDataService.stockDetailAt(item.stockCode, fetchStartedAt);
                 AiSourceObservation observation = observation(
@@ -171,8 +250,13 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         batch.itemCount = seenCodes.size();
         batch.successCount = success;
         batch.failedCount = Math.max(0, seenCodes.size() - success);
-        batch.sourceStatus = success == seenCodes.size() ? "REALTIME" : success == 0 ? "UNAVAILABLE" : "PARTIAL";
-        batch.qualityStatus = success == seenCodes.size() ? "READY" : success == 0 ? "UNAVAILABLE" : "PARTIAL";
+        boolean coreReady = benchmarkReady && success == seenCodes.size() && !seenCodes.isEmpty();
+        batch.sourceStatus = coreReady ? "REALTIME" : success == 0 ? "UNAVAILABLE" : "PARTIAL";
+        batch.qualityStatus = coreReady ? "READY" : success == 0 ? "UNAVAILABLE" : "PARTIAL";
+        batch.benchmarkAsOf = latestTradeDate(benchmark.data()).orElse(null);
+        batch.newsAsOf = newsBatch.news().stream().map(NewsFlashResponse::publishedAt).filter(Objects::nonNull)
+                .max(Comparator.naturalOrder()).orElse(null);
+        batch.sectorAsOf = fetchStartedAt;
         batch.status = "FETCHED";
         batch.errorMessage = errors.isEmpty() ? null : String.join("；", errors);
         dataBatchMapper.updateById(batch);
@@ -182,9 +266,65 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         checkpoint.put("dataBatchId", batch.id);
         checkpoint.put("expectedCount", seenCodes.size());
         checkpoint.put("readyCount", success);
+        checkpoint.put("benchmarkReady", benchmarkReady);
+        checkpoint.put("newsReady", newsBatch.available());
         checkpoint.put("fetchedAt", fetchStartedAt);
         return success("FETCH_SOURCE_DATA", seenCodes.size(), success,
                 Math.max(0, seenCodes.size() - success), checkpoint, batch.id, errors);
+    }
+
+    private StepOutcome resumeExistingSourceData(
+            AiDataBatch batch,
+            List<AiResearchUniverseItem> items,
+            List<AiSourceObservation> observations
+    ) {
+        Map<String, AiSourceObservation> index = new LinkedHashMap<>();
+        observations.stream()
+                .sorted(Comparator.comparing((AiSourceObservation value) -> value.fetchedAt,
+                        Comparator.nullsLast(Comparator.reverseOrder())))
+                .forEach(observation -> index.putIfAbsent(
+                        observationKey(observation.sourceType, observation.stockCode), observation));
+        List<String> expectedCodes = items.stream().map(item -> item.stockCode).distinct().sorted().toList();
+        long ready = expectedCodes.stream()
+                .map(code -> index.get(observationKey("STOCK_DAILY_SNAPSHOT", code)))
+                .filter(Objects::nonNull)
+                .filter(observation -> "READY".equals(observation.qualityStatus))
+                .count();
+        AiSourceObservation benchmark = index.get(observationKey("MARKET_BENCHMARK", null));
+        boolean benchmarkReady = benchmark != null && "READY".equals(benchmark.qualityStatus);
+        List<String> missing = expectedCodes.stream()
+                .filter(code -> {
+                    AiSourceObservation observation = index.get(
+                            observationKey("STOCK_DAILY_SNAPSHOT", code));
+                    return observation == null || !"READY".equals(observation.qualityStatus);
+                })
+                .toList();
+        List<String> errors = new ArrayList<>();
+        if (!benchmarkReady) {
+            errors.add("原数据批次缺少 READY 市场基准证据");
+        }
+        if (!missing.isEmpty()) {
+            errors.add("原数据批次缺少 READY 个股证据：" + missing);
+        }
+        boolean coreReady = benchmarkReady && ready == expectedCodes.size() && !expectedCodes.isEmpty();
+        batch.itemCount = expectedCodes.size();
+        batch.successCount = Math.toIntExact(ready);
+        batch.failedCount = Math.max(0, expectedCodes.size() - Math.toIntExact(ready));
+        batch.sourceStatus = coreReady ? "REALTIME" : ready == 0 ? "UNAVAILABLE" : "PARTIAL";
+        batch.qualityStatus = coreReady ? "READY" : ready == 0 ? "UNAVAILABLE" : "PARTIAL";
+        batch.status = "FETCHED";
+        batch.errorMessage = errors.isEmpty() ? null : String.join("；", errors);
+        dataBatchMapper.updateById(batch);
+        Map<String, Object> checkpoint = new LinkedHashMap<>();
+        checkpoint.put("universeSnapshotId", batch.universeSnapshotId);
+        checkpoint.put("dataBatchId", batch.id);
+        checkpoint.put("expectedCount", expectedCodes.size());
+        checkpoint.put("readyCount", ready);
+        checkpoint.put("benchmarkReady", benchmarkReady);
+        checkpoint.put("reusedPersistedEvidence", true);
+        return success("FETCH_SOURCE_DATA", expectedCodes.size(), Math.toIntExact(ready),
+                Math.max(0, expectedCodes.size() - Math.toIntExact(ready)),
+                checkpoint, batch.id, errors);
     }
 
     private StepOutcome waitDataReady(PipelineContext context) {
@@ -194,6 +334,9 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         Map<String, AiSourceObservation> latest = latestObservations(batchId);
         int ready = (int) latest.values().stream()
                 .filter(observation -> "READY".equals(observation.qualityStatus)).count();
+        AiSourceObservation benchmark = latestObservation(batchId, "MARKET_BENCHMARK", null);
+        boolean benchmarkReady = benchmark != null && "READY".equals(benchmark.qualityStatus)
+                && "REALTIME".equals(benchmark.freshnessStatus);
         List<String> missing = includedItems(batch.universeSnapshotId).stream()
                 .map(item -> item.stockCode)
                 .filter(code -> latest.get(code) == null || !"READY".equals(latest.get(code).qualityStatus))
@@ -206,15 +349,18 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         checkpoint.put("dataBatchId", batchId);
         checkpoint.put("expectedCount", expected);
         checkpoint.put("readyCount", ready);
+        checkpoint.put("benchmarkReady", benchmarkReady);
         checkpoint.put("missingStockCodes", missing);
-        if (expected == 0 || ready < expected) {
+        if (expected == 0 || ready < expected || !benchmarkReady) {
             LocalDateTime retryAt = LocalDateTime.now().plusMinutes(10);
             batch.status = "WAITING_SOURCE";
             batch.sourceStatus = ready == 0 ? "UNAVAILABLE" : "PARTIAL";
             batch.qualityStatus = ready == 0 ? "UNAVAILABLE" : "PARTIAL";
             batch.successCount = ready;
             batch.failedCount = Math.max(0, expected - ready);
-            batch.errorMessage = expected == 0 ? "研究股票池为空" : "等待完整收盘数据：" + missing;
+            batch.errorMessage = expected == 0 ? "研究股票池为空"
+                    : !benchmarkReady ? "等待同期市场基准完整收盘数据"
+                    : "等待完整收盘数据：" + missing;
             dataBatchMapper.updateById(batch);
             return new StepOutcome(
                     "WAITING_SOURCE", expected, ready, 0, json(checkpoint),
@@ -243,6 +389,10 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
             throw new IllegalStateException("数据批次未通过完整收盘数据门");
         }
         Map<String, AiSourceObservation> observations = latestObservations(batchId);
+        Map<String, AiSourceObservation> sourceIndex = latestObservationIndex(batchId);
+        KlineSeriesSnapshot benchmarkSeries = readPayload(
+                sourceIndex.get(observationKey("MARKET_BENCHMARK", null)), KlineSeriesSnapshot.class);
+        String marketRegime = marketRegime(benchmarkSeries);
         List<AiResearchUniverseItem> items = includedItems(batch.universeSnapshotId);
         List<AiSample> samples = new ArrayList<>();
         List<String> errors = new ArrayList<>();
@@ -255,10 +405,16 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
             try {
                 StockDetailResponse detail = objectMapper.readValue(
                         observation.payloadJson, StockDetailResponse.class);
+                IndustryMembershipService.Membership membership = readPayload(
+                        sourceIndex.get(observationKey("INDUSTRY_MEMBERSHIP", item.stockCode)),
+                        IndustryMembershipService.Membership.class);
                 samples.add(sampleSnapshotService.createOrGetSnapshot(
                         new AiSampleSnapshotService.SnapshotCommand(
                                 batchId, item.id, context.tradeDate(), "AFTER_CLOSE", batch.asOfTime,
-                                "UNCLASSIFIED", item.sectorCode, item.sectorName, detail)));
+                                marketRegime,
+                                membership == null ? null : membership.industryCode(),
+                                membership == null ? null : membership.industryName(),
+                                detail)));
             } catch (JsonProcessingException exception) {
                 errors.add(item.stockCode + ": 来源快照无法反序列化");
             }
@@ -285,6 +441,9 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
     private StepOutcome computeFactors(PipelineContext context) {
         Long batchId = requiredCheckpointId(context, "FETCH_SOURCE_DATA", "dataBatchId");
         List<AiSample> samples = samples(batchId, context.tradeDate());
+        Map<String, AiSourceObservation> sourceIndex = latestObservationIndex(batchId);
+        KlineSeriesSnapshot marketSeries = readPayload(
+                sourceIndex.get(observationKey("MARKET_BENCHMARK", null)), KlineSeriesSnapshot.class);
         List<AiFactorEngine.FactorContext> factorContexts = new ArrayList<>();
         for (AiSample sample : samples) {
             StockDetailResponse detail = readFeatureSnapshot(sample);
@@ -294,9 +453,18 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
                     sample.stockCode, "day", "NONE", source, sample.asOfTime,
                     sample.createdAt == null ? sample.asOfTime : sample.createdAt,
                     detail.kline() == null ? List.of() : detail.kline());
+            KlineSeriesSnapshot sectorSeries = readPayload(
+                    sourceIndex.get(observationKey("INDUSTRY_BENCHMARK", sample.stockCode)),
+                    KlineSeriesSnapshot.class);
+            NewsSentimentFeatureService.Feature newsFeature = readPayload(
+                    sourceIndex.get(observationKey("NEWS_SENTIMENT_FEATURE", sample.stockCode)),
+                    NewsSentimentFeatureService.Feature.class);
             factorContexts.add(new AiFactorEngine.FactorContext(
-                    sample, detail, List.of(), List.of(), null, null,
-                    stockSeries, null, null));
+                    sample, detail, List.of(), List.of(),
+                    newsFeature == null ? null : newsFeature.sentiment(),
+                    newsFeature == null ? null : newsFeature.latestPublishedAt(),
+                    stockSeries, marketSeries, sectorSeries,
+                    newsFeature == null ? null : newsFeature.sourceFingerprint()));
         }
         List<AiFactorValue> factors = factorEngine.computeAndStoreCrossSection(factorContexts);
         Map<String, Object> checkpoint = Map.of(
@@ -391,6 +559,52 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         return observation;
     }
 
+    private AiSourceObservation sourceObservation(
+            AiDataBatch batch,
+            String stockCode,
+            String sourceType,
+            String endpointType,
+            String providerCode,
+            LocalDateTime eventTime,
+            LocalDateTime publishedAt,
+            LocalDateTime fetchedAt,
+            Object payload,
+            String qualityStatus,
+            String missingReason,
+            String responseFingerprint
+    ) {
+        String payloadJson = payload == null ? null : json(payload);
+        String payloadChecksum = responseFingerprint == null || responseFingerprint.isBlank()
+                ? fingerprint(payloadJson == null ? "" : payloadJson)
+                : responseFingerprint;
+        String quality = normalize(qualityStatus, "UNAVAILABLE");
+        String freshness = "READY".equals(quality) ? "REALTIME"
+                : "STALE".equals(quality) ? "STALE" : "UNAVAILABLE";
+        AiSourceObservation observation = new AiSourceObservation();
+        observation.dataBatchId = batch.id;
+        observation.stockCode = stockCode;
+        observation.sourceType = sourceType;
+        observation.providerCode = normalize(providerCode, "UNAVAILABLE");
+        observation.endpointType = endpointType;
+        observation.eventTime = eventTime;
+        observation.publishedAt = publishedAt;
+        observation.firstSeenAt = fetchedAt;
+        observation.fetchedAt = fetchedAt;
+        observation.asOfTime = fetchedAt;
+        observation.availableAt = publishedAt != null ? publishedAt : eventTime != null ? eventTime : fetchedAt;
+        observation.observedAt = fetchedAt;
+        observation.sourceRevision = eventTime == null ? fetchedAt.toString() : eventTime.toString();
+        observation.payloadJson = payloadJson;
+        observation.payloadChecksum = payloadChecksum;
+        observation.sourceFingerprint = fingerprint(
+                batch.id, sourceType, stockCode, observation.providerCode, payloadChecksum, quality);
+        observation.freshnessStatus = freshness;
+        observation.qualityStatus = quality;
+        observation.missingReason = "READY".equals(quality) ? null : missingReason;
+        observation.createdAt = fetchedAt;
+        return observation;
+    }
+
     private void storeObservation(AiSourceObservation observation) {
         try {
             observationMapper.insert(observation);
@@ -423,17 +637,40 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
     }
 
     private Map<String, AiSourceObservation> latestObservations(Long batchId) {
-        List<AiSourceObservation> observations = observationMapper.selectList(
-                new QueryWrapper<AiSourceObservation>()
-                        .eq("data_batch_id", batchId)
-                        .eq("source_type", "STOCK_DAILY_SNAPSHOT")
-                        .orderByDesc("fetched_at")
-                        .orderByDesc("id"));
+        List<AiSourceObservation> observations = latestObservationIndex(batchId).values().stream()
+                .filter(observation -> "STOCK_DAILY_SNAPSHOT".equals(observation.sourceType))
+                .toList();
         Map<String, AiSourceObservation> latest = new LinkedHashMap<>();
         for (AiSourceObservation observation : observations) {
             latest.putIfAbsent(observation.stockCode, observation);
         }
         return latest;
+    }
+
+    private AiSourceObservation latestObservation(Long batchId, String sourceType, String stockCode) {
+        return latestObservationIndex(batchId).get(observationKey(sourceType, stockCode));
+    }
+
+    private Map<String, AiSourceObservation> latestObservationIndex(Long batchId) {
+        List<AiSourceObservation> observations = observations(batchId);
+        Map<String, AiSourceObservation> latest = new LinkedHashMap<>();
+        for (AiSourceObservation observation : observations) {
+            latest.putIfAbsent(observationKey(observation.sourceType, observation.stockCode), observation);
+        }
+        return latest;
+    }
+
+    private List<AiSourceObservation> observations(Long batchId) {
+        List<AiSourceObservation> loaded = observationMapper.selectList(
+                new QueryWrapper<AiSourceObservation>()
+                        .eq("data_batch_id", batchId)
+                        .orderByDesc("fetched_at")
+                        .orderByDesc("id"));
+        return loaded == null ? List.of() : List.copyOf(loaded);
+    }
+
+    private static String observationKey(String sourceType, String stockCode) {
+        return sourceType + "|" + (stockCode == null ? "<GLOBAL>" : stockCode);
     }
 
     private List<AiSample> samples(Long batchId, LocalDate tradeDate) {
@@ -461,6 +698,47 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("无法恢复不可变样本特征：" + sample.id, exception);
         }
+    }
+
+    private <T> T readPayload(AiSourceObservation observation, Class<T> type) {
+        if (observation == null || !"READY".equals(observation.qualityStatus)
+                || observation.payloadJson == null || observation.payloadJson.isBlank()) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(observation.payloadJson, type);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("无法恢复来源证据：" + observation.sourceType, exception);
+        }
+    }
+
+    private static Optional<LocalDate> latestTradeDate(KlineSeriesSnapshot series) {
+        if (series == null || series.points() == null) {
+            return Optional.empty();
+        }
+        return series.points().stream().map(KlinePointResponse::tradeDate)
+                .filter(Objects::nonNull).max(Comparator.naturalOrder());
+    }
+
+    private static String marketRegime(KlineSeriesSnapshot series) {
+        if (series == null || series.points() == null || series.points().size() < 4) {
+            return "UNKNOWN";
+        }
+        List<KlinePointResponse> points = series.points();
+        BigDecimal latest = points.get(points.size() - 1).close();
+        BigDecimal base = points.get(points.size() - 4).close();
+        if (latest == null || base == null || base.signum() <= 0) {
+            return "UNKNOWN";
+        }
+        BigDecimal change = latest.divide(base, 8, java.math.RoundingMode.HALF_UP)
+                .subtract(BigDecimal.ONE);
+        if (change.compareTo(new BigDecimal("0.02")) >= 0) {
+            return "STRONG";
+        }
+        if (change.compareTo(new BigDecimal("-0.02")) <= 0) {
+            return "WEAK";
+        }
+        return "SIDEWAYS";
     }
 
     private <T> List<T> treeList(JsonNode node, Class<T> type) throws JsonProcessingException {

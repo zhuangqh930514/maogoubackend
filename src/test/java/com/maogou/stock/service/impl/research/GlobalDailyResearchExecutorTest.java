@@ -1,6 +1,7 @@
 package com.maogou.stock.service.impl.research;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.maogou.stock.config.AppProperties;
 import com.maogou.stock.domain.entity.research.AiDataBatch;
 import com.maogou.stock.domain.entity.research.AiResearchUniverseItem;
 import com.maogou.stock.domain.entity.research.AiResearchUniverseSnapshot;
@@ -10,6 +11,9 @@ import com.maogou.stock.dto.market.FinanceSnapshotResponse;
 import com.maogou.stock.dto.market.KlinePointResponse;
 import com.maogou.stock.dto.market.StockDetailResponse;
 import com.maogou.stock.dto.market.StockQuoteResponse;
+import com.maogou.stock.infrastructure.market.ResearchMarketDataClient;
+import com.maogou.stock.infrastructure.market.ResearchSourceResult;
+import com.maogou.stock.infrastructure.market.ResearchSourceStatus;
 import com.maogou.stock.mapper.research.AiDataBatchMapper;
 import com.maogou.stock.mapper.research.AiResearchUniverseItemMapper;
 import com.maogou.stock.mapper.research.AiResearchUniverseSnapshotMapper;
@@ -22,12 +26,18 @@ import com.maogou.stock.service.research.AiLabelVerificationCoordinator;
 import com.maogou.stock.service.research.AiPredictionEngine;
 import com.maogou.stock.service.research.AiResearchUniverseService;
 import com.maogou.stock.service.research.AiSampleSnapshotService;
+import com.maogou.stock.service.research.BenchmarkSeriesService;
+import com.maogou.stock.service.research.IndustryMembershipService;
+import com.maogou.stock.service.research.NewsSentimentFeatureService;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentMap;
@@ -36,6 +46,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -82,7 +94,8 @@ class GlobalDailyResearchExecutorTest {
                 item(2L, "000001", "WATCHLIST:USER:6")));
         when(fixture.observationMapper.selectList(any())).thenReturn(List.of(
                 observation("600519", "READY"),
-                observation("000001", "UNAVAILABLE")));
+                observation("000001", "UNAVAILABLE"),
+                benchmarkObservation()));
 
         AiGlobalDailyResearchExecutor.StepOutcome waiting = fixture.executor.execute(
                 "WAIT_DATA_READY", context(Map.of(
@@ -94,7 +107,8 @@ class GlobalDailyResearchExecutorTest {
 
         when(fixture.observationMapper.selectList(any())).thenReturn(List.of(
                 observation("600519", "READY"),
-                observation("000001", "READY")));
+                observation("000001", "READY"),
+                benchmarkObservation()));
         GlobalDailyResearchExecutor restarted = fixture.newExecutor();
         AiGlobalDailyResearchExecutor.StepOutcome recovered = restarted.execute(
                 "WAIT_DATA_READY", context(Map.of(
@@ -136,11 +150,43 @@ class GlobalDailyResearchExecutorTest {
                         || ConcurrentMap.class.isAssignableFrom(field.getType()));
     }
 
+    @Test
+    void retryOfAnExistingBatchReusesPersistedEvidenceWithoutRefetchingLateData() {
+        Fixture fixture = fixture();
+        when(fixture.snapshotMapper.selectById(91L)).thenReturn(snapshot());
+        when(fixture.itemMapper.selectList(any())).thenReturn(List.of(
+                item(1L, "600519", "WATCHLIST:USER:5")));
+        when(fixture.snapshotService.startOrGetBatch(any(), any(), anyString(), any(), anyString()))
+                .thenReturn(batch());
+        when(fixture.observationMapper.selectList(any())).thenReturn(List.of(
+                observation("600519", "READY"), benchmarkObservation()));
+        clearInvocations(fixture.resilientMarketDataClient, fixture.marketDataService);
+
+        AiGlobalDailyResearchExecutor.StepOutcome outcome = fixture.executor.execute(
+                "FETCH_SOURCE_DATA", context(Map.of(
+                        "SNAPSHOT_UNIVERSE", "{\"universeSnapshotId\":91}")));
+
+        assertThat(outcome.checkpointJson()).contains("\"reusedPersistedEvidence\":true");
+        verify(fixture.marketDataService, never()).stockDetailAt(anyString(), any());
+        verify(fixture.resilientMarketDataClient, never()).fetchKlineAt(anyString(), anyString(), any(Integer.class), any());
+    }
+
     private static Fixture fixture() {
+        AiResearchUniverseItemMapper itemMapper = mock(AiResearchUniverseItemMapper.class);
+        ResearchMarketDataClient researchMarketDataClient = mock(ResearchMarketDataClient.class);
+        when(researchMarketDataClient.fetchKlineAt(anyString(), anyString(), any(Integer.class), any()))
+                .thenReturn(benchmarkResult());
+        when(researchMarketDataClient.fetchIndustryAt(anyString(), any())).thenReturn(
+                new ResearchSourceResult<>(null, ResearchSourceStatus.UNAVAILABLE, "UNAVAILABLE",
+                        "UNAVAILABLE", null, STARTED_AT, null, "无行业", List.of()));
+        when(researchMarketDataClient.fetchNewsAt(any(Integer.class), any())).thenReturn(
+                new ResearchSourceResult<>(null, ResearchSourceStatus.UNAVAILABLE, "UNAVAILABLE",
+                        "UNAVAILABLE", null, STARTED_AT, null, "无资讯", List.of()));
+        AppProperties properties = new AppProperties();
         return new Fixture(
                 mock(AiResearchUniverseService.class),
                 mock(AiResearchUniverseSnapshotMapper.class),
-                mock(AiResearchUniverseItemMapper.class),
+                itemMapper,
                 mock(AiDataBatchMapper.class),
                 mock(AiSourceObservationMapper.class),
                 mock(AiSampleMapper.class),
@@ -149,6 +195,11 @@ class GlobalDailyResearchExecutorTest {
                 mock(AiFactorEngine.class),
                 mock(AiPredictionEngine.class),
                 mock(AiLabelVerificationCoordinator.class),
+                researchMarketDataClient,
+                new BenchmarkSeriesService(researchMarketDataClient, properties),
+                new IndustryMembershipService(itemMapper, researchMarketDataClient,
+                        Clock.fixed(Instant.parse("2026-07-14T08:00:00Z"), ZoneId.of("Asia/Shanghai"))),
+                new NewsSentimentFeatureService(researchMarketDataClient, properties),
                 new ObjectMapper().findAndRegisterModules());
     }
 
@@ -193,13 +244,21 @@ class GlobalDailyResearchExecutorTest {
 
     private static AiSourceObservation observation(String code, String status) {
         AiSourceObservation observation = new AiSourceObservation();
-        observation.id = Math.abs((long) code.hashCode());
+        observation.id = code == null ? 0L : Math.abs((long) code.hashCode());
         observation.dataBatchId = 55L;
         observation.stockCode = code;
         observation.sourceType = "STOCK_DAILY_SNAPSHOT";
         observation.qualityStatus = status;
         observation.fetchedAt = STARTED_AT;
         observation.missingReason = "READY".equals(status) ? null : "收盘数据未就绪";
+        return observation;
+    }
+
+    private static AiSourceObservation benchmarkObservation() {
+        AiSourceObservation observation = observation(null, "READY");
+        observation.id = 9001L;
+        observation.sourceType = "MARKET_BENCHMARK";
+        observation.freshnessStatus = "REALTIME";
         return observation;
     }
 
@@ -225,6 +284,10 @@ class GlobalDailyResearchExecutorTest {
             AiFactorEngine factorEngine,
             AiPredictionEngine predictionEngine,
             AiLabelVerificationCoordinator labelCoordinator,
+            ResearchMarketDataClient resilientMarketDataClient,
+            BenchmarkSeriesService benchmarkSeriesService,
+            IndustryMembershipService industryMembershipService,
+            NewsSentimentFeatureService newsSentimentFeatureService,
             ObjectMapper objectMapper,
             GlobalDailyResearchExecutor executor
     ) {
@@ -240,21 +303,40 @@ class GlobalDailyResearchExecutorTest {
                 AiFactorEngine factorEngine,
                 AiPredictionEngine predictionEngine,
                 AiLabelVerificationCoordinator labelCoordinator,
+                ResearchMarketDataClient resilientMarketDataClient,
+                BenchmarkSeriesService benchmarkSeriesService,
+                IndustryMembershipService industryMembershipService,
+                NewsSentimentFeatureService newsSentimentFeatureService,
                 ObjectMapper objectMapper
         ) {
             this(universeService, snapshotMapper, itemMapper, dataBatchMapper, observationMapper,
                     sampleMapper, snapshotService, marketDataService, factorEngine, predictionEngine,
-                    labelCoordinator, objectMapper, new GlobalDailyResearchExecutor(
+                    labelCoordinator, resilientMarketDataClient, benchmarkSeriesService,
+                    industryMembershipService, newsSentimentFeatureService, objectMapper,
+                    new GlobalDailyResearchExecutor(
                             universeService, snapshotMapper, itemMapper, dataBatchMapper, observationMapper,
                             sampleMapper, snapshotService, marketDataService, factorEngine, predictionEngine,
-                            labelCoordinator, objectMapper));
+                            labelCoordinator, resilientMarketDataClient, benchmarkSeriesService,
+                            industryMembershipService, newsSentimentFeatureService, objectMapper));
         }
 
         private GlobalDailyResearchExecutor newExecutor() {
             return new GlobalDailyResearchExecutor(
                     universeService, snapshotMapper, itemMapper, dataBatchMapper, observationMapper,
                     sampleMapper, snapshotService, marketDataService, factorEngine, predictionEngine,
-                    labelCoordinator, objectMapper);
+                    labelCoordinator, resilientMarketDataClient, benchmarkSeriesService,
+                    industryMembershipService, newsSentimentFeatureService, objectMapper);
         }
+    }
+
+    private static ResearchSourceResult<com.maogou.stock.dto.market.KlineSeriesSnapshot> benchmarkResult() {
+        com.maogou.stock.dto.market.KlineSeriesSnapshot series =
+                com.maogou.stock.dto.market.KlineSeriesSnapshot.create(
+                        "000300", "day", "NONE", "EASTMONEY", STARTED_AT, STARTED_AT,
+                        List.of(new KlinePointResponse(
+                                TRADE_DATE, BigDecimal.TEN, BigDecimal.TEN, BigDecimal.TEN,
+                                BigDecimal.TEN, 1000L, new BigDecimal("10000"))));
+        return new ResearchSourceResult<>(series, ResearchSourceStatus.REALTIME, "READY",
+                "EASTMONEY", STARTED_AT, STARTED_AT, series.sourceFingerprint(), "", List.of());
     }
 }

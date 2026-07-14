@@ -36,7 +36,7 @@ import java.util.regex.Pattern;
 
 @Component
 @ConditionalOnProperty(prefix = "maogou.market", name = "provider", havingValue = "sina")
-public class SinaMarketDataClient implements MarketDataClient {
+public class SinaMarketDataClient implements MarketDataClient, ResearchMarketDataProvider {
 
     private static final Logger log = LoggerFactory.getLogger(SinaMarketDataClient.class);
     private static final Charset GBK = Charset.forName("GBK");
@@ -63,6 +63,22 @@ public class SinaMarketDataClient implements MarketDataClient {
         this.restTemplate = restTemplate;
         this.objectMapper = objectMapper;
         this.properties = properties;
+    }
+
+    @Override
+    public String providerCode() {
+        return "SINA";
+    }
+
+    @Override
+    public boolean supports(String endpointType) {
+        return ResearchMarketDataProvider.ENDPOINT_KLINE.equals(endpointType);
+    }
+
+    @Override
+    public boolean supports(String endpointType, String symbol) {
+        return supports(endpointType)
+                && (symbol == null || !symbol.trim().toUpperCase(Locale.ROOT).startsWith("BK"));
     }
 
     @Override
@@ -805,12 +821,7 @@ public class SinaMarketDataClient implements MarketDataClient {
         boolean a50 = "A50.CFD".equalsIgnoreCase(symbol) || "CHA50CFD".equalsIgnoreCase(symbol);
         List<KlinePointResponse> loaded = a50
                 ? fetchA50Kline(period, limit)
-                : fetchEastmoneyKline(
-                        symbol,
-                        period,
-                        limit,
-                        "0",
-                        asOfTime.toLocalDate().format(DateTimeFormatter.BASIC_ISO_DATE));
+                : fetchSinaKline(symbol, period, limit);
         boolean closingBarAvailable = !asOfTime.toLocalTime().isBefore(LocalTime.of(15, 5));
         List<KlinePointResponse> pointInTime = loaded.stream()
                 .filter(point -> point.tradeDate().isBefore(asOfTime.toLocalDate())
@@ -822,11 +833,50 @@ public class SinaMarketDataClient implements MarketDataClient {
                 symbol,
                 normalizedPeriod,
                 "NONE",
-                a50 ? "SINA" : "EASTMONEY",
+                "SINA",
                 asOfTime,
                 fetchedAt,
                 pointInTime
         );
+    }
+
+    private List<KlinePointResponse> fetchSinaKline(String symbol, String period, int limit) {
+        String sinaSymbol = toSinaSymbol(symbol);
+        String scale = switch (period == null ? "day" : period.toLowerCase(Locale.ROOT)) {
+            case "week", "weekly" -> "1200";
+            case "month", "monthly" -> "7200";
+            default -> "240";
+        };
+        URI uri = URI.create("https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20_" + sinaSymbol + "_" + scale
+                + "=/CN_MarketDataService.getKLineData?symbol=" + sinaSymbol
+                + "&scale=" + scale
+                + "&ma=no&datalen=" + Math.max(1, Math.min(limit, 240)));
+        try {
+            String text = getText(uri, StandardCharsets.UTF_8, "https://finance.sina.com.cn/");
+            Matcher matcher = JSONP_ARRAY_PATTERN.matcher(text);
+            if (!matcher.find()) {
+                throw new IllegalStateException("新浪 K 线返回格式异常");
+            }
+            JsonNode points = objectMapper.readTree(matcher.group(1));
+            List<KlinePointResponse> result = new ArrayList<>();
+            for (JsonNode point : points) {
+                result.add(new KlinePointResponse(
+                        LocalDate.parse(point.path("day").asText()),
+                        bd(point.path("open").asText("0")),
+                        bd(point.path("close").asText("0")),
+                        bd(point.path("low").asText("0")),
+                        bd(point.path("high").asText("0")),
+                        point.path("volume").asLong(0),
+                        nullableDecimal(point.path("amount"))
+                ));
+            }
+            if (result.isEmpty()) {
+                throw new IllegalStateException("新浪 K 线返回为空");
+            }
+            return result;
+        } catch (Exception exception) {
+            throw new IllegalStateException("获取新浪 K 线行情失败：" + symbol + "，" + exception.getMessage(), exception);
+        }
     }
 
     private List<KlinePointResponse> fetchA50Kline(String period, int limit) {

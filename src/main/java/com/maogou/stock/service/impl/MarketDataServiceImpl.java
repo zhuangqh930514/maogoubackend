@@ -4,9 +4,12 @@ import com.maogou.stock.config.AppProperties;
 import com.maogou.stock.dto.market.*;
 import com.maogou.stock.infrastructure.market.MarketDataClient;
 import com.maogou.stock.infrastructure.market.MockMarketDataClient;
+import com.maogou.stock.infrastructure.market.ResearchMarketDataClient;
+import com.maogou.stock.infrastructure.market.ResearchSourceResult;
 import com.maogou.stock.service.MarketDataService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -29,6 +32,7 @@ public class MarketDataServiceImpl implements MarketDataService {
     private final MarketDataClient marketDataClient;
     private final MarketDataClient fallbackMarketDataClient = new MockMarketDataClient();
     private final AppProperties properties;
+    private final ResearchMarketDataClient researchMarketDataClient;
     private final ConcurrentMap<String, CacheEntry<StockQuoteResponse>> quoteCache = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, CacheEntry<FinanceSnapshotResponse>> financeCache = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, CacheEntry<List<NewsFlashResponse>>> newsCache = new ConcurrentHashMap<>();
@@ -42,8 +46,18 @@ public class MarketDataServiceImpl implements MarketDataService {
     private volatile long sectorSourceUnavailableUntilMillis = 0;
 
     public MarketDataServiceImpl(MarketDataClient marketDataClient, AppProperties properties) {
+        this(marketDataClient, properties, null);
+    }
+
+    @Autowired
+    public MarketDataServiceImpl(
+            MarketDataClient marketDataClient,
+            AppProperties properties,
+            ResearchMarketDataClient researchMarketDataClient
+    ) {
         this.marketDataClient = marketDataClient;
         this.properties = properties;
+        this.researchMarketDataClient = researchMarketDataClient;
     }
 
     @Override
@@ -170,7 +184,15 @@ public class MarketDataServiceImpl implements MarketDataService {
         String normalizedCode = normalizeCode(symbol);
         String normalizedPeriod = period == null || period.isBlank() ? "day" : period.trim();
         int size = Math.max(1, Math.min(limit, 240));
-        return marketDataClient.fetchKlineAt(normalizedCode, normalizedPeriod, size, asOfTime);
+        if (researchMarketDataClient == null) {
+            return marketDataClient.fetchKlineAt(normalizedCode, normalizedPeriod, size, asOfTime);
+        }
+        ResearchSourceResult<KlineSeriesSnapshot> result = researchMarketDataClient.fetchKlineAt(
+                normalizedCode, normalizedPeriod, size, asOfTime);
+        if (!result.formalReady()) {
+            throw new IllegalStateException("正式研究 K 线不可用：" + result.qualityStatus() + "，" + result.message());
+        }
+        return result.data();
     }
 
     @Override

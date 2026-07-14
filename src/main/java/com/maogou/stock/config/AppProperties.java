@@ -2,6 +2,8 @@ package com.maogou.stock.config;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.math.BigDecimal;
+
 @ConfigurationProperties(prefix = "maogou")
 public class AppProperties {
 
@@ -40,6 +42,14 @@ public class AppProperties {
         private long financeCacheTtlSeconds = 1800;
         private long sectorHeatmapCacheTtlSeconds = 60;
         private long sectorHotStocksCacheTtlSeconds = 60;
+        private String researchProviderOrder = "EASTMONEY,SINA";
+        private String benchmarkSymbol = "000300";
+        private long sourceCooldownBaseSeconds = 30;
+        private long sourceCooldownMaxSeconds = 900;
+        private BigDecimal sourcePriceTolerancePct = new BigDecimal("0.005");
+        private BigDecimal sourceVolumeTolerancePct = new BigDecimal("0.15");
+        private BigDecimal sourceMaxDailyChangePct = new BigDecimal("0.35");
+        private int newsFeatureWindowHours = 36;
 
         public String getProvider() {
             return provider;
@@ -103,6 +113,70 @@ public class AppProperties {
 
         public void setSectorHotStocksCacheTtlSeconds(long sectorHotStocksCacheTtlSeconds) {
             this.sectorHotStocksCacheTtlSeconds = sectorHotStocksCacheTtlSeconds;
+        }
+
+        public String getResearchProviderOrder() {
+            return researchProviderOrder;
+        }
+
+        public void setResearchProviderOrder(String researchProviderOrder) {
+            this.researchProviderOrder = researchProviderOrder;
+        }
+
+        public String getBenchmarkSymbol() {
+            return benchmarkSymbol;
+        }
+
+        public void setBenchmarkSymbol(String benchmarkSymbol) {
+            this.benchmarkSymbol = benchmarkSymbol;
+        }
+
+        public long getSourceCooldownBaseSeconds() {
+            return sourceCooldownBaseSeconds;
+        }
+
+        public void setSourceCooldownBaseSeconds(long sourceCooldownBaseSeconds) {
+            this.sourceCooldownBaseSeconds = sourceCooldownBaseSeconds;
+        }
+
+        public long getSourceCooldownMaxSeconds() {
+            return sourceCooldownMaxSeconds;
+        }
+
+        public void setSourceCooldownMaxSeconds(long sourceCooldownMaxSeconds) {
+            this.sourceCooldownMaxSeconds = sourceCooldownMaxSeconds;
+        }
+
+        public BigDecimal getSourcePriceTolerancePct() {
+            return sourcePriceTolerancePct;
+        }
+
+        public void setSourcePriceTolerancePct(BigDecimal sourcePriceTolerancePct) {
+            this.sourcePriceTolerancePct = sourcePriceTolerancePct;
+        }
+
+        public BigDecimal getSourceVolumeTolerancePct() {
+            return sourceVolumeTolerancePct;
+        }
+
+        public void setSourceVolumeTolerancePct(BigDecimal sourceVolumeTolerancePct) {
+            this.sourceVolumeTolerancePct = sourceVolumeTolerancePct;
+        }
+
+        public BigDecimal getSourceMaxDailyChangePct() {
+            return sourceMaxDailyChangePct;
+        }
+
+        public void setSourceMaxDailyChangePct(BigDecimal sourceMaxDailyChangePct) {
+            this.sourceMaxDailyChangePct = sourceMaxDailyChangePct;
+        }
+
+        public int getNewsFeatureWindowHours() {
+            return newsFeatureWindowHours;
+        }
+
+        public void setNewsFeatureWindowHours(int newsFeatureWindowHours) {
+            this.newsFeatureWindowHours = newsFeatureWindowHours;
         }
     }
 
