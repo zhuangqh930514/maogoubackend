@@ -219,8 +219,11 @@ CREATE TABLE IF NOT EXISTS ai_research_universe_item (
     industry_code VARCHAR(32) NULL,
     industry_name VARCHAR(64) NULL,
     listed_status VARCHAR(32) NOT NULL DEFAULT 'LISTED',
+    source_type VARCHAR(96) NOT NULL,
     included TINYINT NOT NULL DEFAULT 1,
     inclusion_reason VARCHAR(255) NULL,
+    exclude_reason VARCHAR(255) NULL,
+    effective_from DATE NOT NULL,
     evidence_json CLOB NOT NULL,
     source_fingerprint VARCHAR(128) NOT NULL,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -272,8 +275,12 @@ CREATE TABLE IF NOT EXISTS ai_source_observation (
     endpoint_type VARCHAR(64) NOT NULL,
     event_time DATETIME(3) NULL,
     published_at DATETIME(3) NULL,
+    first_seen_at DATETIME(3) NOT NULL,
+    fetched_at DATETIME(3) NOT NULL,
+    as_of_time DATETIME(3) NOT NULL,
     available_at DATETIME(3) NOT NULL,
     observed_at DATETIME(3) NOT NULL,
+    source_revision VARCHAR(64) NOT NULL,
     source_uri VARCHAR(1024) NULL,
     payload_json CLOB NULL,
     payload_checksum VARCHAR(128) NOT NULL,
@@ -286,6 +293,8 @@ CREATE TABLE IF NOT EXISTS ai_source_observation (
     KEY idx_source_batch_type (data_batch_id, source_type, quality_status),
     KEY idx_source_stock_type_event (stock_code, source_type, event_time, published_at),
     KEY idx_source_available (available_at, provider_code, endpoint_type),
+    KEY idx_source_visibility (as_of_time, published_at, quality_status),
+    CONSTRAINT chk_source_observation_timeline CHECK (fetched_at >= first_seen_at),
     CONSTRAINT fk_source_observation_batch
         FOREIGN KEY (data_batch_id) REFERENCES ai_data_batch (id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;

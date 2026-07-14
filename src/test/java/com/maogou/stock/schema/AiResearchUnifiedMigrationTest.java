@@ -350,6 +350,11 @@ class AiResearchUnifiedMigrationTest {
 
         assertThat(columnNames(connection, "user_account")).contains("system_role");
         assertThat(columnNames(connection, "ai_data_batch")).doesNotContain("user_id");
+        assertThat(columnNames(connection, "ai_research_universe_item"))
+                .contains("source_type", "included", "exclude_reason", "effective_from");
+        assertThat(columnNames(connection, "ai_source_observation"))
+                .contains("event_time", "published_at", "first_seen_at", "fetched_at",
+                        "as_of_time", "source_revision", "source_fingerprint");
         assertThat(columnNames(connection, "ai_prediction"))
                 .contains("horizon_trading_days", "sample_id", "strategy_release_id")
                 .doesNotContain("user_id");
