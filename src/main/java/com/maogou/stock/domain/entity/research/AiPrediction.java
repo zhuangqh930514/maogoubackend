@@ -1,6 +1,7 @@
 package com.maogou.stock.domain.entity.research;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 
@@ -12,6 +13,7 @@ import java.time.LocalDateTime;
 public class AiPrediction {
     @TableId(type = IdType.AUTO)
     public Long id;
+    @TableField(exist = false)
     public Long userId;
     public Long sampleId;
     public Long strategyReleaseId;
@@ -21,6 +23,7 @@ public class AiPrediction {
     public String samplePhase;
     public String inferenceMode;
     public String inputFingerprint;
+    @TableField("horizon_trading_days")
     public Integer horizonDays;
     public BigDecimal expectedReturn;
     public BigDecimal expectedExcessReturn;

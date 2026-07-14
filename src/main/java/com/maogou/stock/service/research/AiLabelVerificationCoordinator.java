@@ -6,7 +6,9 @@ import java.util.List;
 
 public interface AiLabelVerificationCoordinator {
 
-    VerificationResult verifyMatured(Long userId, LocalDate tradeDate, LocalDateTime verifiedAt);
+    VerificationResult matureSampleLabels(LocalDate tradeDate, LocalDateTime verifiedAt);
+
+    VerificationResult evaluatePredictions(LocalDate tradeDate, LocalDateTime evaluatedAt);
 
     record VerificationResult(
             int processedCount,

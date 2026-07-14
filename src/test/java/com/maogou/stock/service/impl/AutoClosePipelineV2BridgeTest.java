@@ -44,8 +44,8 @@ class AutoClosePipelineV2BridgeTest {
             job.id = 88L;
             return 1;
         });
-        when(preparationService.prepare(any(), any(), any(), any())).thenReturn(
-                new AiGlobalResearchPreparationService.PreparedPipeline(11L, 91L, null, "real-input-fingerprint"));
+        when(preparationService.prepare(any(), any(), any())).thenReturn(
+                new AiGlobalResearchPreparationService.PreparedPipeline(91L, null, "real-input-fingerprint"));
 
         AiPipelineRun run = new AiPipelineRun();
         run.id = 91L;
@@ -65,8 +65,7 @@ class AutoClosePipelineV2BridgeTest {
         service.runEnabledPipelines();
 
         verify(dailyPipelineServiceV2).run(org.mockito.ArgumentMatchers.argThat(request ->
-                request.dataBatchId().equals(11L)
-                        && request.strategyReleaseId().equals(91L)
+                request.strategyReleaseId().equals(91L)
                         && request.inputFingerprint().equals("real-input-fingerprint")));
         assertThat(config.autoClosePipelineLastStatus).isEqualTo("SUCCESS");
     }
@@ -88,8 +87,8 @@ class AutoClosePipelineV2BridgeTest {
             job.id = 89L;
             return 1;
         });
-        when(preparationService.prepare(any(), any(), any(), any())).thenReturn(
-                new AiGlobalResearchPreparationService.PreparedPipeline(11L, 91L, null, "real-input-fingerprint"));
+        when(preparationService.prepare(any(), any(), any())).thenReturn(
+                new AiGlobalResearchPreparationService.PreparedPipeline(91L, null, "real-input-fingerprint"));
         when(dailyPipelineServiceV2.run(any())).thenThrow(new IllegalStateException("pipeline storage unavailable"));
         AutoClosePipelineServiceImpl service = new AutoClosePipelineServiceImpl(
                 configMapper, jobLogMapper, tradingCalendarService, dailyPipelineServiceV2, preparationService);
@@ -114,8 +113,8 @@ class AutoClosePipelineV2BridgeTest {
         config.autoClosePipelineLastMessage = "获胜实例已完成";
         when(configMapper.selectOne(any(QueryWrapper.class))).thenReturn(config);
         when(configMapper.selectById(7L)).thenReturn(config);
-        when(preparationService.prepare(any(), any(), any(), any())).thenReturn(
-                new AiGlobalResearchPreparationService.PreparedPipeline(11L, 91L, null, "real-input-fingerprint"));
+        when(preparationService.prepare(any(), any(), any())).thenReturn(
+                new AiGlobalResearchPreparationService.PreparedPipeline(91L, null, "real-input-fingerprint"));
         when(dailyPipelineServiceV2.run(any())).thenThrow(
                 new IllegalStateException("每日投研流水线正在由其他实例执行，请稍后查看结果"));
         AutoClosePipelineServiceImpl service = new AutoClosePipelineServiceImpl(

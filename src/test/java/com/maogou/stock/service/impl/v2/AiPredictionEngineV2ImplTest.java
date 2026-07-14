@@ -19,7 +19,6 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyList;
-import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -132,9 +131,9 @@ class AiPredictionEngineImplTest {
         AiPrediction conflicting = new AiPrediction();
         conflicting.id = 99L;
         conflicting.userId = 5L;
-        conflicting.idempotencyKey = "RULE_BASELINE:10:BASELINE:8:3:K3:POLICY_V2_1";
+        conflicting.idempotencyKey = "RULE_BASELINE:10:BASELINE:8:3:K3:PREDICTION/1.0.0";
         conflicting.inputFingerprint = "different";
-        when(mapper.selectByIdempotencyKeysForShare(anyLong(), anyList())).thenReturn(List.of(conflicting));
+        when(mapper.selectByIdempotencyKeysForShare(anyList())).thenReturn(List.of(conflicting));
         AiPredictionEngine engine = engine(mapper);
         AiSample sample = sample(8L, "600519", LocalDate.of(2026, 7, 10), "READY", "TRADABLE", "95");
 
@@ -207,7 +206,6 @@ class AiPredictionEngineImplTest {
         stubPersistence(mapper);
         AiModelInferenceService inferenceService = mock(AiModelInferenceService.class);
         when(inferenceService.infer(
-                org.mockito.ArgumentMatchers.eq(5L),
                 org.mockito.ArgumentMatchers.eq(101L),
                 org.mockito.ArgumentMatchers.any(AiSample.class),
                 anyList())).thenReturn(new AiModelInferenceService.ModelInference(
@@ -229,7 +227,6 @@ class AiPredictionEngineImplTest {
         stubPersistence(mapper);
         AiModelInferenceService inferenceService = mock(AiModelInferenceService.class);
         when(inferenceService.infer(
-                org.mockito.ArgumentMatchers.eq(5L),
                 org.mockito.ArgumentMatchers.eq(101L),
                 org.mockito.ArgumentMatchers.any(AiSample.class),
                 anyList())).thenThrow(new IllegalStateException("ONNX artifact missing"));
@@ -335,6 +332,7 @@ class AiPredictionEngineImplTest {
     ) {
         AiFactorValue factor = new AiFactorValue();
         factor.id = sampleId * 10;
+        factor.factorDefinitionId = Math.abs((long) code.hashCode()) + 1L;
         factor.userId = 5L;
         factor.sampleId = sampleId;
         factor.stockCode = stockCode;
@@ -364,8 +362,7 @@ class AiPredictionEngineImplTest {
             List<AiPrediction> batch = invocation.getArgument(0);
             for (AiPrediction candidate : batch) {
                 AiPrediction existing = database.stream()
-                        .filter(item -> item.userId.equals(candidate.userId)
-                                && item.idempotencyKey.equals(candidate.idempotencyKey))
+                        .filter(item -> item.idempotencyKey.equals(candidate.idempotencyKey))
                         .findFirst()
                         .orElse(null);
                 if (existing == null) {
@@ -375,11 +372,10 @@ class AiPredictionEngineImplTest {
             }
             return batch.size();
         });
-        when(mapper.selectByIdempotencyKeysForShare(anyLong(), anyList())).thenAnswer(invocation -> {
-            Long userId = invocation.getArgument(0);
-            List<String> keys = invocation.getArgument(1);
+        when(mapper.selectByIdempotencyKeysForShare(anyList())).thenAnswer(invocation -> {
+            List<String> keys = invocation.getArgument(0);
             return database.stream()
-                    .filter(item -> userId.equals(item.userId) && keys.contains(item.idempotencyKey))
+                    .filter(item -> keys.contains(item.idempotencyKey))
                     .toList();
         });
     }

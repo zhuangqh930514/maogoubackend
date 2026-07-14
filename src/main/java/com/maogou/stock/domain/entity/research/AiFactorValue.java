@@ -12,19 +12,28 @@ import java.time.LocalDateTime;
 public class AiFactorValue {
     @TableId(type = IdType.AUTO)
     public Long id;
+    @TableField(exist = false)
     public Long userId;
     public Long sampleId;
+    public Long factorDefinitionId;
+    @TableField(exist = false)
     public String stockCode;
+    @TableField(exist = false)
     public String factorCode;
+    @TableField(exist = false)
     public String factorVersion;
+    @TableField(exist = false)
     public String factorGroup;
+    @TableField(exist = false)
     public String direction;
     public BigDecimal rawValue;
     public BigDecimal normalizedValue;
     public Integer hit;
     public Integer missing;
     public String missingReason;
+    @TableField(exist = false)
     public String evidence;
+    public String evidenceJson;
     public String inputFingerprint;
     public LocalDateTime calculatedAt;
     public LocalDateTime createdAt;

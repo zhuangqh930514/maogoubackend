@@ -11,7 +11,7 @@ import java.util.List;
 public interface AiSampleSnapshotService {
 
     AiDataBatch startOrGetBatch(
-            Long userId,
+            Long universeSnapshotId,
             LocalDate tradeDate,
             String samplePhase,
             LocalDateTime asOfTime,
@@ -22,14 +22,12 @@ public interface AiSampleSnapshotService {
 
     AiDataBatch completeBatch(Long batchId, BatchCompletion completion);
 
-    List<AiSample> findBatchSnapshots(Long userId, Long batchId, LocalDate tradeDate);
+    List<AiSample> findBatchSnapshots(Long batchId, LocalDate tradeDate);
 
     record SnapshotCommand(
-            Long userId,
             Long dataBatchId,
+            Long universeItemId,
             LocalDate tradeDate,
-            String universeCode,
-            String universeVersion,
             String samplePhase,
             LocalDateTime asOfTime,
             String marketRegime,

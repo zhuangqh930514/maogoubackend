@@ -32,7 +32,7 @@ import java.util.Objects;
 @Service
 public class AiPredictionEngineImpl implements AiPredictionEngine {
 
-    static final String POLICY_VERSION = "POLICY_V2_1";
+    static final String POLICY_VERSION = "PREDICTION/1.0.0";
     private static final int BATCH_SIZE = 200;
     private static final int EXPECTED_FACTOR_COUNT = 16;
     private static final BigDecimal ONE = BigDecimal.ONE.setScale(6, RoundingMode.HALF_UP);
@@ -58,7 +58,6 @@ public class AiPredictionEngineImpl implements AiPredictionEngine {
     @Transactional
     public List<AiPrediction> predictAndStore(PredictionBatch batch) {
         validateBatch(batch);
-        Long userId = batch.inputs().get(0).sample().userId;
         String universeFingerprint = universeFingerprint(batch);
         List<Candidate> candidates = batch.inputs().stream()
                 .map(input -> buildCandidate(input, batch, universeFingerprint))
@@ -92,7 +91,7 @@ public class AiPredictionEngineImpl implements AiPredictionEngine {
             prediction.reasonJson = reasonJson(candidate, decision);
         }
 
-        return persistImmutable(userId, candidates.stream().map(Candidate::prediction).toList());
+        return persistImmutable(candidates.stream().map(Candidate::prediction).toList());
     }
 
     private Candidate buildCandidate(
@@ -145,8 +144,7 @@ public class AiPredictionEngineImpl implements AiPredictionEngine {
         String modelError = null;
         if (batch.modelVersionId() != null) {
             try {
-                modelInference = modelInferenceService.infer(
-                        sample.userId, batch.modelVersionId(), sample, factors);
+                modelInference = modelInferenceService.infer(batch.modelVersionId(), sample, factors);
                 probabilityUpValue = clamp(modelInference.probabilityUp(), 0d, 1d);
                 scoreValue = probabilityUpValue * 100d;
                 confidenceValue = Math.max(probabilityUpValue, 1d - probabilityUpValue) * 100d;
@@ -164,7 +162,6 @@ public class AiPredictionEngineImpl implements AiPredictionEngine {
         }
 
         AiPrediction prediction = new AiPrediction();
-        prediction.userId = sample.userId;
         prediction.sampleId = sample.id;
         prediction.strategyReleaseId = batch.strategyReleaseId();
         prediction.modelVersionId = batch.modelVersionId();
@@ -201,11 +198,9 @@ public class AiPredictionEngineImpl implements AiPredictionEngine {
             }
             AiSample sample = candidate.sample();
             String key = String.join("|",
-                    String.valueOf(sample.userId),
                     String.valueOf(sample.tradeDate),
                     String.valueOf(sample.samplePhase),
-                    String.valueOf(sample.universeCode),
-                    String.valueOf(sample.universeVersion),
+                    String.valueOf(sample.dataBatchId),
                     normalize(batch.inferenceMode()),
                     String.valueOf(batch.strategyReleaseId()),
                     String.valueOf(batch.horizonDays()));
@@ -234,7 +229,7 @@ public class AiPredictionEngineImpl implements AiPredictionEngine {
                 && candidate.prediction().calibratedConfidence.compareTo(new BigDecimal("60")) >= 0;
     }
 
-    private List<AiPrediction> persistImmutable(Long userId, List<AiPrediction> predictions) {
+    private List<AiPrediction> persistImmutable(List<AiPrediction> predictions) {
         List<AiPrediction> sorted = predictions.stream()
                 .sorted(Comparator.comparing(item -> item.idempotencyKey))
                 .toList();
@@ -245,7 +240,7 @@ public class AiPredictionEngineImpl implements AiPredictionEngine {
             ensureUniqueKeys(batch);
             predictionMapper.insertBatchImmutable(batch);
             List<String> keys = batch.stream().map(item -> item.idempotencyKey).toList();
-            List<AiPrediction> persisted = predictionMapper.selectByIdempotencyKeysForShare(userId, keys);
+            List<AiPrediction> persisted = predictionMapper.selectByIdempotencyKeysForShare(keys);
             Map<String, AiPrediction> persistedByKey = new HashMap<>();
             persisted.forEach(item -> persistedByKey.put(item.idempotencyKey, item));
             for (AiPrediction expected : batch) {
@@ -381,19 +376,13 @@ public class AiPredictionEngineImpl implements AiPredictionEngine {
                 && (batch.modelVersionId() == null || batch.modelVersionId() <= 0)) {
             throw new IllegalArgumentException("模型推理的 modelVersionId 必须是有效外键");
         }
-        Long userId = null;
         String rankingScope = null;
         LinkedHashSet<Long> sampleIds = new LinkedHashSet<>();
         for (PredictionInput input : batch.inputs()) {
             if (input == null || input.sample() == null || input.sample().id == null
-                    || input.sample().userId == null || input.sample().tradeDate == null
+                    || input.sample().dataBatchId == null || input.sample().tradeDate == null
                     || input.sample().samplePhase == null || input.sample().sourceFingerprint == null) {
                 throw new IllegalArgumentException("预测输入缺少不可变样本字段");
-            }
-            if (userId == null) {
-                userId = input.sample().userId;
-            } else if (!userId.equals(input.sample().userId)) {
-                throw new IllegalArgumentException("一个预测批次只能包含同一用户");
             }
             if (!sampleIds.add(input.sample().id)) {
                 throw new IllegalArgumentException("预测批次包含重复样本：" + input.sample().id);
@@ -401,8 +390,7 @@ public class AiPredictionEngineImpl implements AiPredictionEngine {
             String inputScope = String.join("|",
                     String.valueOf(input.sample().tradeDate),
                     String.valueOf(input.sample().samplePhase),
-                    String.valueOf(input.sample().universeCode),
-                    String.valueOf(input.sample().universeVersion));
+                    String.valueOf(input.sample().dataBatchId));
             if (rankingScope == null) {
                 rankingScope = inputScope;
             } else if (!rankingScope.equals(inputScope)) {
@@ -417,9 +405,8 @@ public class AiPredictionEngineImpl implements AiPredictionEngine {
         List<AiFactorValue> factors = input.factors() == null ? List.of() : input.factors();
         for (AiFactorValue factor : factors) {
             if (factor == null
-                    || !Objects.equals(factor.userId, input.sample().userId)
                     || !Objects.equals(factor.sampleId, input.sample().id)
-                    || !Objects.equals(factor.stockCode, input.sample().stockCode)
+                    || factor.factorDefinitionId == null
                     || factor.factorCode == null
                     || factor.factorVersion == null
                     || factor.inputFingerprint == null) {

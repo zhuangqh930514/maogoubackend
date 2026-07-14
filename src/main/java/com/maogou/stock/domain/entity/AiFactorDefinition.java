@@ -1,6 +1,7 @@
 package com.maogou.stock.domain.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 
@@ -19,7 +20,9 @@ public class AiFactorDefinition {
     public String requiredFieldsJson;
     public BigDecimal defaultWeight;
     public Integer enabled;
+    @TableField("factor_version")
     public String versionNo;
+    public String seedVersion;
     public LocalDateTime createdAt;
     public LocalDateTime updatedAt;
 }

@@ -2,557 +2,527 @@ package com.maogou.stock.service.impl.research;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.maogou.stock.domain.entity.WatchStock;
 import com.maogou.stock.domain.entity.research.AiDataBatch;
 import com.maogou.stock.domain.entity.research.AiFactorValue;
 import com.maogou.stock.domain.entity.research.AiPrediction;
+import com.maogou.stock.domain.entity.research.AiResearchUniverseItem;
+import com.maogou.stock.domain.entity.research.AiResearchUniverseSnapshot;
 import com.maogou.stock.domain.entity.research.AiSample;
-import com.maogou.stock.domain.entity.research.AiStrategyRelease;
-import com.maogou.stock.dto.ai.AiAnalysisReportResponse;
-import com.maogou.stock.dto.ai.AiDailyInsightPayloads;
-import com.maogou.stock.dto.market.StockDetailResponse;
-import com.maogou.stock.dto.market.KlineSeriesSnapshot;
-import com.maogou.stock.dto.market.FinanceSnapshotResponse;
-import com.maogou.stock.dto.market.IntradayPointResponse;
+import com.maogou.stock.domain.entity.research.AiSourceObservation;
 import com.maogou.stock.dto.market.KlinePointResponse;
+import com.maogou.stock.dto.market.KlineSeriesSnapshot;
+import com.maogou.stock.dto.market.StockDetailResponse;
 import com.maogou.stock.dto.market.StockQuoteResponse;
-import com.maogou.stock.mapper.WatchStockMapper;
-import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
-import com.maogou.stock.service.AiAnalysisService;
-import com.maogou.stock.service.AiConditionalTradeStrategyService;
-import com.maogou.stock.service.AiDailyInsightService;
-import com.maogou.stock.service.AiResearchDailyReportService;
+import com.maogou.stock.mapper.research.AiDataBatchMapper;
+import com.maogou.stock.mapper.research.AiResearchUniverseItemMapper;
+import com.maogou.stock.mapper.research.AiResearchUniverseSnapshotMapper;
+import com.maogou.stock.mapper.research.AiSampleMapper;
+import com.maogou.stock.mapper.research.AiSourceObservationMapper;
 import com.maogou.stock.service.MarketDataService;
-import com.maogou.stock.service.research.AiGlobalDailyResearchExecutor;
 import com.maogou.stock.service.research.AiFactorEngine;
+import com.maogou.stock.service.research.AiGlobalDailyResearchExecutor;
 import com.maogou.stock.service.research.AiLabelVerificationCoordinator;
 import com.maogou.stock.service.research.AiPredictionEngine;
+import com.maogou.stock.service.research.AiResearchUniverseService;
+import com.maogou.stock.service.research.AiResearchContract;
 import com.maogou.stock.service.research.AiSampleSnapshotService;
-import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
-import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.util.HashMap;
+import java.time.LocalTime;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
+import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Service
 public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecutor {
 
-    private static final ObjectMapper SNAPSHOT_MAPPER = new ObjectMapper().findAndRegisterModules();
+    private static final List<Integer> PREDICTION_HORIZONS = List.of(1, 2, 3, 5);
 
-    private final WatchStockMapper watchStockMapper;
-    private final MarketDataService marketDataService;
+    private final AiResearchUniverseService universeService;
+    private final AiResearchUniverseSnapshotMapper universeSnapshotMapper;
+    private final AiResearchUniverseItemMapper universeItemMapper;
+    private final AiDataBatchMapper dataBatchMapper;
+    private final AiSourceObservationMapper observationMapper;
+    private final AiSampleMapper sampleMapper;
     private final AiSampleSnapshotService sampleSnapshotService;
+    private final MarketDataService marketDataService;
     private final AiFactorEngine factorEngine;
     private final AiPredictionEngine predictionEngine;
-    private final AiStrategyReleaseMapper strategyReleaseMapper;
-    private final AiAnalysisService aiAnalysisService;
-    private final AiDailyInsightService aiDailyInsightService;
-    private final AiLabelVerificationCoordinator labelVerificationCoordinator;
-    private final AiConditionalTradeStrategyService conditionalTradeStrategyService;
-    private final AiResearchDailyReportService researchDailyReportService;
-    private final ConcurrentMap<Long, DataFlowState> states = new ConcurrentHashMap<>();
+    private final AiLabelVerificationCoordinator labelCoordinator;
+    private final ObjectMapper objectMapper;
 
-    @Autowired
     public GlobalDailyResearchExecutor(
-            WatchStockMapper watchStockMapper,
-            MarketDataService marketDataService,
+            AiResearchUniverseService universeService,
+            AiResearchUniverseSnapshotMapper universeSnapshotMapper,
+            AiResearchUniverseItemMapper universeItemMapper,
+            AiDataBatchMapper dataBatchMapper,
+            AiSourceObservationMapper observationMapper,
+            AiSampleMapper sampleMapper,
             AiSampleSnapshotService sampleSnapshotService,
+            MarketDataService marketDataService,
             AiFactorEngine factorEngine,
             AiPredictionEngine predictionEngine,
-            AiStrategyReleaseMapper strategyReleaseMapper,
-            AiAnalysisService aiAnalysisService,
-            AiDailyInsightService aiDailyInsightService,
-            AiLabelVerificationCoordinator labelVerificationCoordinator,
-            AiConditionalTradeStrategyService conditionalTradeStrategyService,
-            AiResearchDailyReportService researchDailyReportService
+            AiLabelVerificationCoordinator labelCoordinator,
+            ObjectMapper objectMapper
     ) {
-        this.watchStockMapper = watchStockMapper;
-        this.marketDataService = marketDataService;
+        this.universeService = universeService;
+        this.universeSnapshotMapper = universeSnapshotMapper;
+        this.universeItemMapper = universeItemMapper;
+        this.dataBatchMapper = dataBatchMapper;
+        this.observationMapper = observationMapper;
+        this.sampleMapper = sampleMapper;
         this.sampleSnapshotService = sampleSnapshotService;
+        this.marketDataService = marketDataService;
         this.factorEngine = factorEngine;
         this.predictionEngine = predictionEngine;
-        this.strategyReleaseMapper = strategyReleaseMapper;
-        this.aiAnalysisService = aiAnalysisService;
-        this.aiDailyInsightService = aiDailyInsightService;
-        this.labelVerificationCoordinator = labelVerificationCoordinator;
-        this.conditionalTradeStrategyService = conditionalTradeStrategyService;
-        this.researchDailyReportService = researchDailyReportService;
-    }
-
-    GlobalDailyResearchExecutor(
-            WatchStockMapper watchStockMapper,
-            MarketDataService marketDataService,
-            AiSampleSnapshotService sampleSnapshotService,
-            AiFactorEngine factorEngine,
-            AiPredictionEngine predictionEngine,
-            AiStrategyReleaseMapper strategyReleaseMapper,
-            AiAnalysisService aiAnalysisService,
-            AiDailyInsightService aiDailyInsightService,
-            AiLabelVerificationCoordinator labelVerificationCoordinator,
-            AiResearchDailyReportService researchDailyReportService
-    ) {
-        this(watchStockMapper, marketDataService, sampleSnapshotService, factorEngine,
-                predictionEngine, strategyReleaseMapper, aiAnalysisService, aiDailyInsightService,
-                labelVerificationCoordinator, null, researchDailyReportService);
-    }
-
-    GlobalDailyResearchExecutor(
-            WatchStockMapper watchStockMapper,
-            MarketDataService marketDataService,
-            AiSampleSnapshotService sampleSnapshotService,
-            AiFactorEngine factorEngine,
-            AiPredictionEngine predictionEngine,
-            AiAnalysisService aiAnalysisService,
-            AiDailyInsightService aiDailyInsightService,
-            AiLabelVerificationCoordinator labelVerificationCoordinator,
-            AiResearchDailyReportService researchDailyReportService
-    ) {
-        this(watchStockMapper, marketDataService, sampleSnapshotService, factorEngine,
-                predictionEngine, null, aiAnalysisService, aiDailyInsightService,
-                labelVerificationCoordinator, null, researchDailyReportService);
+        this.labelCoordinator = labelCoordinator;
+        this.objectMapper = objectMapper;
     }
 
     @Override
     public StepOutcome execute(String stepKey, PipelineContext context) {
-        return switch (stepKey) {
-            case "FETCH_DATA", "CHECK_DATA_QUALITY", "BUILD_SAMPLES", "COMPUTE_FACTORS", "GENERATE_PREDICTIONS" ->
-                    executeDataFlow(context, stepKey);
-            case "VERIFY_LABELS" -> executeVerifyLabels(context);
-            case "GENERATE_REPORTS" -> executeReports(context);
-            case "BUILD_DAILY_INSIGHT" -> buildDailyInsight(context, "SUCCESS", null);
-            case "BUILD_RESEARCH_DAILY_REPORT" -> buildResearchDailyReport(context, "SUCCESS", null);
-            default -> throw new IllegalArgumentException("未知 V2 日流水线步骤：" + stepKey);
+        context.checkpointLease();
+        StepOutcome outcome = switch (stepKey) {
+            case "SNAPSHOT_UNIVERSE" -> snapshotUniverse(context);
+            case "FETCH_SOURCE_DATA" -> fetchSourceData(context);
+            case "WAIT_DATA_READY" -> waitDataReady(context);
+            case "BUILD_SAMPLES" -> buildSamples(context);
+            case "MATURE_SAMPLE_LABELS" -> matureSampleLabels(context);
+            case "COMPUTE_FACTORS" -> computeFactors(context);
+            case "GENERATE_PREDICTIONS" -> generatePredictions(context);
+            case "EVALUATE_PREDICTIONS" -> evaluatePredictions(context);
+            default -> throw new IllegalArgumentException("未知全局日研究步骤：" + stepKey);
         };
+        context.checkpointLease();
+        return outcome;
     }
 
-    @Override
-    public StepOutcome buildResearchDailyReport(
-            PipelineContext context,
-            String pipelineStatus,
-            String pipelineMessage
-    ) {
-        context.checkpointLease();
-        AiResearchDailyReportService.ReportView report = researchDailyReportService.generate(
-                new AiResearchDailyReportService.GenerationRequest(
-                        context.userId(),
-                        context.tradeDate(),
-                        context.pipelineRunId(),
-                        context.strategyReleaseId(),
-                        context.modelVersionId(),
-                        "REPORT:" + context.idempotencyKey() + ":" + pipelineStatus,
-                        pipelineStatus,
-                        null,
-                        pipelineMessage,
-                        LocalDateTime.now()));
-        context.checkpointLease();
-        if (report == null || report.id() == null) {
-            throw new IllegalStateException("投研日报生成后未返回有效报告 ID");
+    private StepOutcome snapshotUniverse(PipelineContext context) {
+        AiResearchUniverseService.SnapshotResult result = universeService.createSystemCoreSnapshot(
+                new AiResearchUniverseService.SnapshotRequest(
+                        context.tradeDate(), context.startedAt(), AiResearchContract.CALENDAR_VERSION, List.of()));
+        if (result.snapshot() == null || result.snapshot().id == null || result.universe() == null) {
+            throw new IllegalStateException("全局研究股票池未生成有效快照");
         }
-        states.remove(context.pipelineRunId());
-        String checkpoint = "{\"reportId\":" + report.id() + ",\"reportVersion\":"
-                + report.reportVersion() + "}";
-        return new StepOutcome(1, 1, 0, checkpoint,
-                fingerprint("BUILD_RESEARCH_DAILY_REPORT", context.idempotencyKey(),
-                        String.valueOf(report.id()), String.valueOf(report.reportVersion())),
-                List.of());
+        int included = (int) result.items().stream().filter(item -> Integer.valueOf(1).equals(item.included)).count();
+        Map<String, Object> checkpoint = new LinkedHashMap<>();
+        checkpoint.put("researchUniverseId", result.universe().id);
+        checkpoint.put("universeSnapshotId", result.snapshot().id);
+        checkpoint.put("universeVersion", result.snapshot().universeVersion);
+        checkpoint.put("includedCount", included);
+        checkpoint.put("qualityStatus", result.snapshot().qualityStatus);
+        return success("SNAPSHOT_UNIVERSE", result.items().size(), included,
+                result.items().size() - included, checkpoint, null,
+                included == 0 ? List.of("研究股票池没有可用股票") : List.of());
     }
 
-    private StepOutcome executeVerifyLabels(PipelineContext context) {
-        context.checkpointLease();
-        AiLabelVerificationCoordinator.VerificationResult result = labelVerificationCoordinator.verifyMatured(
-                context.userId(), context.tradeDate(), context.startedAt());
-        AiConditionalTradeStrategyService.ReviewRunResult tradeReviews = conditionalTradeStrategyService == null
-                ? new AiConditionalTradeStrategyService.ReviewRunResult(0, 0, 0, 0, 0, List.of())
-                : conditionalTradeStrategyService.verifyMatured(context.userId(), context.tradeDate());
-        context.checkpointLease();
-        List<String> errors = new java.util.ArrayList<>(result.errors());
-        errors.addAll(tradeReviews.errors());
-        int reviewSuccess = tradeReviews.verifiedCount() + tradeReviews.noTriggerCount();
-        return new StepOutcome(
-                result.processedCount() + tradeReviews.processedCount(),
-                result.successCount() + reviewSuccess,
-                result.failedCount() + tradeReviews.failedCount(),
-                "{\"predictionLabels\":" + result.successCount()
-                        + ",\"conditionalReviews\":" + tradeReviews.verifiedCount()
-                        + ",\"conditionalNoTrigger\":" + tradeReviews.noTriggerCount()
-                        + ",\"failed\":" + (result.failedCount() + tradeReviews.failedCount()) + "}",
-                fingerprint(result.outputFingerprint(), String.valueOf(tradeReviews.verifiedCount()),
-                        String.valueOf(tradeReviews.noTriggerCount())),
-                errors);
-    }
-
-    @Override
-    public StepOutcome buildDailyInsight(
-            PipelineContext context,
-            String pipelineStatus,
-            String pipelineMessage
-    ) {
-        context.checkpointLease();
-        AiDailyInsightPayloads.DailyInsightResponse response = aiDailyInsightService.rebuildForPipeline(
-                context.userId(),
-                context.tradeDate(),
-                context.pipelineRunId(),
-                pipelineStatus,
-                pipelineMessage == null || pipelineMessage.isBlank()
-                        ? "自动收盘流水线已完成每日投研聚合"
-                        : pipelineMessage);
-        context.checkpointLease();
-        int itemCount = response == null || response.summary() == null || response.summary().itemCount() == null
-                ? 0
-                : response.summary().itemCount();
-        String checkpoint = "{\"snapshotReady\":" + (response != null && response.snapshotReady())
-                + ",\"itemCount\":" + itemCount + "}";
-        return new StepOutcome(
-                itemCount,
-                itemCount,
-                0,
-                checkpoint,
-                fingerprint("BUILD_DAILY_INSIGHT", context.idempotencyKey(), String.valueOf(itemCount), checkpoint),
-                List.of()
-        );
-    }
-
-    private StepOutcome executeReports(PipelineContext context) {
-        List<WatchStock> watchlist = loadWatchlist(context.userId());
-        if (watchlist.isEmpty()) {
-            return simple("GENERATE_REPORTS", 0, 0, 0, "自选股为空");
-        }
-        int success = 0;
-        List<String> errors = new java.util.ArrayList<>();
-        List<Long> reportIds = new java.util.ArrayList<>();
-        for (WatchStock stock : watchlist) {
-            context.checkpointLease();
-            try {
-                AiAnalysisReportResponse report = aiAnalysisService.analyzeStockForTradeDate(
-                        stock.stockCode, false, null, null, context.tradeDate());
-                if (report != null && report.id() != null) {
-                    reportIds.add(report.id());
-                }
-                if (report == null || !"SUCCESS".equalsIgnoreCase(report.status())) {
-                    String message = report == null
-                            ? "分析服务未返回报告"
-                            : report.errorMessage() == null || report.errorMessage().isBlank()
-                            ? "分析报告状态为 " + report.status()
-                            : report.errorMessage();
-                    errors.add(stock.stockCode + ": " + message);
-                    continue;
-                }
-                success++;
-            } catch (RuntimeException exception) {
-                String message = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
-                errors.add(stock.stockCode + ": " + message);
-            }
-            context.checkpointLease();
-        }
-        int failed = watchlist.size() - success;
-        String checkpoint = "{\"reportIds\":" + reportIds + ",\"success\":" + success + ",\"failed\":" + failed + "}";
-        return new StepOutcome(
-                watchlist.size(),
-                success,
-                failed,
-                checkpoint,
-                fingerprint("GENERATE_REPORTS", context.idempotencyKey(), String.valueOf(success), String.valueOf(failed), reportIds.toString()),
-                errors);
-    }
-
-    private StepOutcome executeDataFlow(PipelineContext context, String stepKey) {
-        DataFlowState state = states.computeIfAbsent(context.pipelineRunId(), ignored ->
-                recoverableStep(stepKey) ? rehydrateOrInitialize(context, stepKey) : initializeState(context));
-        List<WatchStock> watchlist = state.watchlist;
-        if (watchlist.isEmpty()) {
-            if ("CHECK_DATA_QUALITY".equals(stepKey) && !state.batchCompleted) {
-                sampleSnapshotService.completeBatch(state.batch.id, new AiSampleSnapshotService.BatchCompletion(
-                        "UNAVAILABLE",
-                        BigDecimal.ZERO,
-                        "UNAVAILABLE",
-                        0,
-                        0,
-                        0,
-                        null,
-                        LocalDateTime.now()));
-                state.batchCompleted = true;
-            }
-            return simple(stepKey, 0, 0, 0, "自选股为空");
-        }
-        if ("FETCH_DATA".equals(stepKey)) {
-            return outcome(stepKey, watchlist.size(), state.details.size(),
-                    watchlist.size() - state.details.size(),
-                    "{\"batchId\":" + state.batch.id + ",\"detailCount\":" + state.details.size() + "}",
-                    state.errors);
-        }
-        if ("CHECK_DATA_QUALITY".equals(stepKey) || "BUILD_SAMPLES".equals(stepKey)) {
-            long readyCount = state.samples.stream().filter(sample -> "READY".equals(sample.qualityStatus)).count();
-            long usableCount = state.samples.stream()
-                    .filter(sample -> "READY".equals(sample.qualityStatus) || "PARTIAL".equals(sample.qualityStatus))
-                    .count();
-            if ("CHECK_DATA_QUALITY".equals(stepKey) && !state.batchCompleted) {
-                BigDecimal qualityScore = state.samples.stream()
-                        .map(sample -> sample.dataQualityScore == null ? BigDecimal.ZERO : sample.dataQualityScore)
-                        .reduce(BigDecimal.ZERO, BigDecimal::add)
-                        .divide(BigDecimal.valueOf(Math.max(1, state.samples.size())), 2, java.math.RoundingMode.HALF_UP);
-                int failedCount = watchlist.size() - (int) usableCount;
-                sampleSnapshotService.completeBatch(state.batch.id, new AiSampleSnapshotService.BatchCompletion(
-                        state.errors.isEmpty() ? "REALTIME" : usableCount == 0 ? "UNAVAILABLE" : "PARTIAL",
-                        qualityScore,
-                        usableCount == state.samples.size() && state.errors.isEmpty() ? "READY"
-                                : usableCount == 0 ? "UNAVAILABLE" : "PARTIAL",
-                        watchlist.size(),
-                        (int) usableCount,
-                        failedCount,
-                        state.errors.isEmpty() ? null : String.join("；", state.errors),
-                        LocalDateTime.now()));
-                state.batchCompleted = true;
-            }
-            int successCount = "CHECK_DATA_QUALITY".equals(stepKey) ? (int) usableCount : state.samples.size();
-            return outcome(stepKey, watchlist.size(), successCount,
-                    watchlist.size() - successCount,
-                    "{\"ready\":" + readyCount + ",\"batchId\":" + state.batch.id + "}",
-                    state.errors);
-        }
-
-        context.checkpointLease();
-        List<AiFactorValue> factors = factors(state);
-        context.checkpointLease();
-        if ("COMPUTE_FACTORS".equals(stepKey)) {
-            return new StepOutcome(
-                    state.samples.size(),
-                    state.samples.size(),
-                    0,
-                    "{\"sampleCount\":" + state.samples.size() + ",\"factorCount\":" + factors.size() + "}",
-                    fingerprint(stepKey, context.idempotencyKey(), String.valueOf(state.samples.size()), String.valueOf(factors.size())),
-                    List.of());
-        }
-
-        List<AiPrediction> predictions = predictions(state, context);
-        int expectedPredictionCount = state.expectedPredictionCount;
-        return new StepOutcome(
-                expectedPredictionCount,
-                predictions.size(),
-                Math.max(0, expectedPredictionCount - predictions.size()),
-                "{\"sampleCount\":" + state.samples.size() + ",\"factorCount\":" + factors.size()
-                        + ",\"predictionCount\":" + predictions.size() + "}",
-                fingerprint(stepKey, context.idempotencyKey(), String.valueOf(state.samples.size()),
-                        String.valueOf(factors.size()), String.valueOf(predictions.size())),
-                state.predictionErrors == null ? List.of() : state.predictionErrors);
-    }
-
-    private DataFlowState initializeState(PipelineContext context) {
-        List<WatchStock> watchlist = loadWatchlist(context.userId());
-        LocalDateTime marketDataAsOf = AiGlobalResearchPreparationServiceImpl.marketDataAsOf(context.tradeDate());
+    private StepOutcome fetchSourceData(PipelineContext context) {
+        Long snapshotId = requiredCheckpointId(context, "SNAPSHOT_UNIVERSE", "universeSnapshotId");
+        AiResearchUniverseSnapshot snapshot = requiredSnapshot(snapshotId);
+        List<AiResearchUniverseItem> items = includedItems(snapshotId);
+        LocalDateTime fetchStartedAt = LocalDateTime.now();
         AiDataBatch batch = sampleSnapshotService.startOrGetBatch(
-                context.userId(), context.tradeDate(), "AFTER_CLOSE", marketDataAsOf,
+                snapshotId, context.tradeDate(), "AFTER_CLOSE", fetchStartedAt,
                 context.idempotencyKey() + ":BATCH");
-        if (context.dataBatchId() != null && !Objects.equals(context.dataBatchId(), batch.id)) {
-            throw new IllegalStateException("流水线数据批次与样本批次不一致");
-        }
-        List<DetailEnvelope> details = new java.util.ArrayList<>();
-        List<AiSample> samples = new java.util.ArrayList<>();
-        List<String> errors = new java.util.ArrayList<>();
-        for (WatchStock stock : watchlist) {
+
+        int success = 0;
+        List<String> errors = new ArrayList<>();
+        Set<String> seenCodes = new LinkedHashSet<>();
+        for (AiResearchUniverseItem item : items) {
+            if (!seenCodes.add(item.stockCode)) {
+                continue;
+            }
             context.checkpointLease();
             try {
-                StockDetailResponse detail = withStockName(
-                        marketDataService.stockDetailAt(stock.stockCode, marketDataAsOf), stock.stockName);
-                if (detail == null || detail.quote() == null) {
-                    errors.add(stock.stockCode + ": 行情详情为空");
-                    continue;
+                StockDetailResponse detail = marketDataService.stockDetailAt(item.stockCode, fetchStartedAt);
+                AiSourceObservation observation = observation(
+                        batch, item.stockCode, detail, context.tradeDate(), fetchStartedAt, null);
+                storeObservation(observation);
+                if ("READY".equals(observation.qualityStatus)) {
+                    success++;
+                } else {
+                    errors.add(item.stockCode + ": " + observation.missingReason);
                 }
-                KlineSeriesSnapshot stockSeries = marketDataService.klineAt(
-                        stock.stockCode, "day", 60, marketDataAsOf);
-                details.add(new DetailEnvelope(stock, detail, stockSeries));
-                samples.add(sampleSnapshotService.createOrGetSnapshot(new AiSampleSnapshotService.SnapshotCommand(
-                        context.userId(), batch.id, context.tradeDate(), "WATCHLIST", "DAILY_CLOSE", "AFTER_CLOSE",
-                        marketDataAsOf, "UNKNOWN", stock.market, stock.groupName, detail)));
             } catch (RuntimeException exception) {
-                errors.add(stock.stockCode + ": " + rootMessage(exception));
+                String message = rootMessage(exception);
+                storeObservation(observation(
+                        batch, item.stockCode, null, context.tradeDate(), fetchStartedAt, message));
+                errors.add(item.stockCode + ": " + message);
             }
-            context.checkpointLease();
         }
-        return new DataFlowState(batch, List.copyOf(watchlist), List.copyOf(details), List.copyOf(samples), errors);
+
+        batch.itemCount = seenCodes.size();
+        batch.successCount = success;
+        batch.failedCount = Math.max(0, seenCodes.size() - success);
+        batch.sourceStatus = success == seenCodes.size() ? "REALTIME" : success == 0 ? "UNAVAILABLE" : "PARTIAL";
+        batch.qualityStatus = success == seenCodes.size() ? "READY" : success == 0 ? "UNAVAILABLE" : "PARTIAL";
+        batch.status = "FETCHED";
+        batch.errorMessage = errors.isEmpty() ? null : String.join("；", errors);
+        dataBatchMapper.updateById(batch);
+
+        Map<String, Object> checkpoint = new LinkedHashMap<>();
+        checkpoint.put("universeSnapshotId", snapshotId);
+        checkpoint.put("dataBatchId", batch.id);
+        checkpoint.put("expectedCount", seenCodes.size());
+        checkpoint.put("readyCount", success);
+        checkpoint.put("fetchedAt", fetchStartedAt);
+        return success("FETCH_SOURCE_DATA", seenCodes.size(), success,
+                Math.max(0, seenCodes.size() - success), checkpoint, batch.id, errors);
     }
 
-    private DataFlowState rehydrateOrInitialize(PipelineContext context, String stepKey) {
-        List<AiSample> persisted = sampleSnapshotService.findBatchSnapshots(
-                context.userId(), context.dataBatchId(), context.tradeDate());
-        if (persisted == null || persisted.isEmpty()) {
-            return initializeState(context);
-        }
-        AiDataBatch batch = new AiDataBatch();
-        batch.id = context.dataBatchId();
-        batch.userId = context.userId();
-        batch.tradeDate = context.tradeDate();
-        batch.samplePhase = "AFTER_CLOSE";
-        batch.asOfTime = AiGlobalResearchPreparationServiceImpl.marketDataAsOf(context.tradeDate());
-        List<WatchStock> watchlist = loadWatchlist(context.userId());
-        Map<String, WatchStock> watchlistByCode = watchlist.stream()
-                .collect(Collectors.toMap(item -> item.stockCode, item -> item, (left, right) -> left));
-        List<DetailEnvelope> details = persisted.stream()
-                .map(sample -> detailFromSnapshot(sample, watchlistByCode.get(sample.stockCode)))
+    private StepOutcome waitDataReady(PipelineContext context) {
+        Long batchId = requiredCheckpointId(context, "FETCH_SOURCE_DATA", "dataBatchId");
+        AiDataBatch batch = requiredBatch(batchId);
+        int expected = includedItems(batch.universeSnapshotId).size();
+        Map<String, AiSourceObservation> latest = latestObservations(batchId);
+        int ready = (int) latest.values().stream()
+                .filter(observation -> "READY".equals(observation.qualityStatus)).count();
+        List<String> missing = includedItems(batch.universeSnapshotId).stream()
+                .map(item -> item.stockCode)
+                .filter(code -> latest.get(code) == null || !"READY".equals(latest.get(code).qualityStatus))
+                .distinct()
+                .sorted()
                 .toList();
-        List<WatchStock> recoveredWatchlist = details.stream().map(DetailEnvelope::stock).toList();
-        DataFlowState state = new DataFlowState(
-                batch, recoveredWatchlist, details, List.copyOf(persisted), List.of());
-        state.batchCompleted = true;
-        if ("GENERATE_PREDICTIONS".equals(stepKey)) {
-            state.factors = List.copyOf(factorEngine.findStoredForSamples(
-                    persisted.stream().map(item -> item.id).filter(Objects::nonNull).toList()));
-            if (state.factors.isEmpty()) {
-                throw new IllegalStateException("恢复预测步骤时未找到已固化因子，拒绝使用当前行情重算");
+
+        Map<String, Object> checkpoint = new LinkedHashMap<>();
+        checkpoint.put("universeSnapshotId", batch.universeSnapshotId);
+        checkpoint.put("dataBatchId", batchId);
+        checkpoint.put("expectedCount", expected);
+        checkpoint.put("readyCount", ready);
+        checkpoint.put("missingStockCodes", missing);
+        if (expected == 0 || ready < expected) {
+            LocalDateTime retryAt = LocalDateTime.now().plusMinutes(10);
+            batch.status = "WAITING_SOURCE";
+            batch.sourceStatus = ready == 0 ? "UNAVAILABLE" : "PARTIAL";
+            batch.qualityStatus = ready == 0 ? "UNAVAILABLE" : "PARTIAL";
+            batch.successCount = ready;
+            batch.failedCount = Math.max(0, expected - ready);
+            batch.errorMessage = expected == 0 ? "研究股票池为空" : "等待完整收盘数据：" + missing;
+            dataBatchMapper.updateById(batch);
+            return new StepOutcome(
+                    "WAITING_SOURCE", expected, ready, 0, json(checkpoint),
+                    fingerprint("WAIT_DATA_READY", batchId, expected, ready, missing),
+                    List.of(batch.errorMessage), batchId, retryAt);
+        }
+
+        LocalDateTime latestFetchedAt = latest.values().stream().map(value -> value.fetchedAt)
+                .filter(Objects::nonNull).max(Comparator.naturalOrder()).orElse(batch.asOfTime);
+        batch.asOfTime = latestFetchedAt;
+        batch.klineAsOf = context.tradeDate();
+        batch.sourceStatus = "REALTIME";
+        batch.qualityStatus = "READY";
+        batch.status = "READY";
+        batch.successCount = ready;
+        batch.failedCount = 0;
+        batch.errorMessage = null;
+        dataBatchMapper.updateById(batch);
+        return success("WAIT_DATA_READY", expected, ready, 0, checkpoint, batchId, List.of());
+    }
+
+    private StepOutcome buildSamples(PipelineContext context) {
+        Long batchId = requiredCheckpointId(context, "FETCH_SOURCE_DATA", "dataBatchId");
+        AiDataBatch batch = requiredBatch(batchId);
+        if (!"READY".equals(batch.qualityStatus)) {
+            throw new IllegalStateException("数据批次未通过完整收盘数据门");
+        }
+        Map<String, AiSourceObservation> observations = latestObservations(batchId);
+        List<AiResearchUniverseItem> items = includedItems(batch.universeSnapshotId);
+        List<AiSample> samples = new ArrayList<>();
+        List<String> errors = new ArrayList<>();
+        for (AiResearchUniverseItem item : items) {
+            AiSourceObservation observation = observations.get(item.stockCode);
+            if (observation == null || !"READY".equals(observation.qualityStatus)) {
+                errors.add(item.stockCode + ": 缺少 READY 来源快照");
+                continue;
+            }
+            try {
+                StockDetailResponse detail = objectMapper.readValue(
+                        observation.payloadJson, StockDetailResponse.class);
+                samples.add(sampleSnapshotService.createOrGetSnapshot(
+                        new AiSampleSnapshotService.SnapshotCommand(
+                                batchId, item.id, context.tradeDate(), "AFTER_CLOSE", batch.asOfTime,
+                                "UNCLASSIFIED", item.sectorCode, item.sectorName, detail)));
+            } catch (JsonProcessingException exception) {
+                errors.add(item.stockCode + ": 来源快照无法反序列化");
             }
         }
-        return state;
+        Map<String, Object> checkpoint = new LinkedHashMap<>();
+        checkpoint.put("universeSnapshotId", batch.universeSnapshotId);
+        checkpoint.put("dataBatchId", batchId);
+        checkpoint.put("sampleIds", samples.stream().map(sample -> sample.id).toList());
+        return success("BUILD_SAMPLES", items.size(), samples.size(),
+                Math.max(0, items.size() - samples.size()), checkpoint, batchId, errors);
     }
 
-    private static boolean recoverableStep(String stepKey) {
-        return "COMPUTE_FACTORS".equals(stepKey) || "GENERATE_PREDICTIONS".equals(stepKey);
+    private StepOutcome matureSampleLabels(PipelineContext context) {
+        AiLabelVerificationCoordinator.VerificationResult result =
+                labelCoordinator.matureSampleLabels(context.tradeDate(), LocalDateTime.now());
+        Map<String, Object> checkpoint = Map.of(
+                "maturedCount", result.successCount(),
+                "failedCount", result.failedCount(),
+                "labelFingerprint", result.outputFingerprint());
+        return success("MATURE_SAMPLE_LABELS", result.processedCount(), result.successCount(),
+                result.failedCount(), checkpoint, null, result.errors());
     }
 
-    private DetailEnvelope detailFromSnapshot(AiSample sample, WatchStock watchStock) {
+    private StepOutcome computeFactors(PipelineContext context) {
+        Long batchId = requiredCheckpointId(context, "FETCH_SOURCE_DATA", "dataBatchId");
+        List<AiSample> samples = samples(batchId, context.tradeDate());
+        List<AiFactorEngine.FactorContext> factorContexts = new ArrayList<>();
+        for (AiSample sample : samples) {
+            StockDetailResponse detail = readFeatureSnapshot(sample);
+            StockQuoteResponse quote = detail.quote();
+            String source = quote == null ? "UNKNOWN" : quote.source();
+            KlineSeriesSnapshot stockSeries = KlineSeriesSnapshot.create(
+                    sample.stockCode, "day", "NONE", source, sample.asOfTime,
+                    sample.createdAt == null ? sample.asOfTime : sample.createdAt,
+                    detail.kline() == null ? List.of() : detail.kline());
+            factorContexts.add(new AiFactorEngine.FactorContext(
+                    sample, detail, List.of(), List.of(), null, null,
+                    stockSeries, null, null));
+        }
+        List<AiFactorValue> factors = factorEngine.computeAndStoreCrossSection(factorContexts);
+        Map<String, Object> checkpoint = Map.of(
+                "dataBatchId", batchId,
+                "sampleCount", samples.size(),
+                "factorCount", factors.size());
+        return success("COMPUTE_FACTORS", samples.size(), samples.size(), 0,
+                checkpoint, batchId, List.of());
+    }
+
+    private StepOutcome generatePredictions(PipelineContext context) {
+        Long batchId = requiredCheckpointId(context, "FETCH_SOURCE_DATA", "dataBatchId");
+        List<AiSample> samples = samples(batchId, context.tradeDate());
+        List<AiFactorValue> factors = factorEngine.findStoredForSamples(
+                samples.stream().map(sample -> sample.id).toList());
+        Map<Long, List<AiFactorValue>> bySample = factors.stream()
+                .collect(Collectors.groupingBy(value -> value.sampleId, LinkedHashMap::new, Collectors.toList()));
+        List<AiPredictionEngine.PredictionInput> inputs = samples.stream()
+                .map(sample -> new AiPredictionEngine.PredictionInput(
+                        sample, bySample.getOrDefault(sample.id, List.of())))
+                .toList();
+        List<AiPrediction> predictions = new ArrayList<>();
+        for (Integer horizon : PREDICTION_HORIZONS) {
+            context.checkpointLease();
+            predictions.addAll(predictionEngine.predictAndStore(new AiPredictionEngine.PredictionBatch(
+                    inputs, context.strategyReleaseId(), context.modelVersionId(), horizon,
+                    Math.max(3, Math.min(10, samples.size())),
+                    context.modelVersionId() == null ? "RULE_BASELINE" : "CHAMPION",
+                    LocalDateTime.now())));
+        }
+        Map<String, Object> checkpoint = Map.of(
+                "dataBatchId", batchId,
+                "sampleCount", samples.size(),
+                "predictionCount", predictions.size(),
+                "horizons", PREDICTION_HORIZONS);
+        return success("GENERATE_PREDICTIONS", samples.size() * PREDICTION_HORIZONS.size(),
+                predictions.size(), Math.max(0, samples.size() * PREDICTION_HORIZONS.size() - predictions.size()),
+                checkpoint, batchId, List.of());
+    }
+
+    private StepOutcome evaluatePredictions(PipelineContext context) {
+        AiLabelVerificationCoordinator.VerificationResult result =
+                labelCoordinator.evaluatePredictions(context.tradeDate(), LocalDateTime.now());
+        Map<String, Object> checkpoint = Map.of(
+                "evaluationCount", result.successCount(),
+                "failedCount", result.failedCount(),
+                "evaluationFingerprint", result.outputFingerprint());
+        return success("EVALUATE_PREDICTIONS", result.processedCount(), result.successCount(),
+                result.failedCount(), checkpoint, null, result.errors());
+    }
+
+    private AiSourceObservation observation(
+            AiDataBatch batch,
+            String stockCode,
+            StockDetailResponse detail,
+            LocalDate tradeDate,
+            LocalDateTime fetchedAt,
+            String error
+    ) {
+        StockQuoteResponse quote = detail == null ? null : detail.quote();
+        LocalDate latestKline = detail == null || detail.kline() == null ? null
+                : detail.kline().stream().map(KlinePointResponse::tradeDate).filter(Objects::nonNull)
+                .max(Comparator.naturalOrder()).orElse(null);
+        boolean ready = error == null && quote != null && quote.price() != null
+                && quote.price().signum() > 0 && realSource(quote.source())
+                && tradeDate.equals(latestKline);
+        String payload = detail == null ? null : json(detail);
+        String payloadChecksum = fingerprint(payload == null ? "" : payload);
+        AiSourceObservation observation = new AiSourceObservation();
+        observation.dataBatchId = batch.id;
+        observation.stockCode = stockCode;
+        observation.sourceType = "STOCK_DAILY_SNAPSHOT";
+        observation.providerCode = quote == null ? "UNAVAILABLE" : normalize(quote.source(), "UNKNOWN");
+        observation.endpointType = "STOCK_DETAIL";
+        observation.eventTime = latestKline == null ? null : latestKline.atTime(LocalTime.of(15, 0));
+        observation.firstSeenAt = fetchedAt;
+        observation.fetchedAt = fetchedAt;
+        observation.asOfTime = fetchedAt;
+        observation.availableAt = fetchedAt;
+        observation.observedAt = fetchedAt;
+        observation.sourceRevision = latestKline == null ? "UNKNOWN" : latestKline.toString();
+        observation.payloadJson = payload;
+        observation.payloadChecksum = payloadChecksum;
+        observation.sourceFingerprint = fingerprint(batch.id, stockCode, payloadChecksum, error);
+        observation.freshnessStatus = ready ? "REALTIME" : "UNAVAILABLE";
+        observation.qualityStatus = ready ? "READY" : "UNAVAILABLE";
+        observation.missingReason = ready ? null : error != null ? error
+                : latestKline == null ? "K线为空"
+                : !tradeDate.equals(latestKline) ? "最近K线日期为 " + latestKline + "，等待 " + tradeDate
+                : "行情来源或价格不可用";
+        observation.createdAt = fetchedAt;
+        return observation;
+    }
+
+    private void storeObservation(AiSourceObservation observation) {
+        try {
+            observationMapper.insert(observation);
+        } catch (DuplicateKeyException ignored) {
+            // The same source fingerprint is immutable and already persisted by this or another worker.
+        }
+    }
+
+    private AiResearchUniverseSnapshot requiredSnapshot(Long snapshotId) {
+        AiResearchUniverseSnapshot snapshot = universeSnapshotMapper.selectById(snapshotId);
+        if (snapshot == null) {
+            throw new IllegalStateException("研究股票池快照不存在：" + snapshotId);
+        }
+        return snapshot;
+    }
+
+    private AiDataBatch requiredBatch(Long batchId) {
+        AiDataBatch batch = dataBatchMapper.selectById(batchId);
+        if (batch == null) {
+            throw new IllegalStateException("研究数据批次不存在：" + batchId);
+        }
+        return batch;
+    }
+
+    private List<AiResearchUniverseItem> includedItems(Long snapshotId) {
+        return List.copyOf(universeItemMapper.selectList(new QueryWrapper<AiResearchUniverseItem>()
+                .eq("universe_snapshot_id", snapshotId)
+                .eq("included", 1)
+                .orderByAsc("stock_code")));
+    }
+
+    private Map<String, AiSourceObservation> latestObservations(Long batchId) {
+        List<AiSourceObservation> observations = observationMapper.selectList(
+                new QueryWrapper<AiSourceObservation>()
+                        .eq("data_batch_id", batchId)
+                        .eq("source_type", "STOCK_DAILY_SNAPSHOT")
+                        .orderByDesc("fetched_at")
+                        .orderByDesc("id"));
+        Map<String, AiSourceObservation> latest = new LinkedHashMap<>();
+        for (AiSourceObservation observation : observations) {
+            latest.putIfAbsent(observation.stockCode, observation);
+        }
+        return latest;
+    }
+
+    private List<AiSample> samples(Long batchId, LocalDate tradeDate) {
+        return List.copyOf(sampleMapper.selectList(new QueryWrapper<AiSample>()
+                .eq("data_batch_id", batchId)
+                .eq("trade_date", tradeDate)
+                .orderByAsc("stock_code")));
+    }
+
+    private StockDetailResponse readFeatureSnapshot(AiSample sample) {
         if (sample.featureSnapshot == null || sample.featureSnapshot.isBlank()) {
-            throw new IllegalStateException("持久化样本缺少特征快照：" + sample.id);
+            throw new IllegalStateException("样本缺少不可变特征快照：" + sample.id);
         }
         try {
-            PersistedFeatureSnapshot snapshot = SNAPSHOT_MAPPER.readValue(
-                    sample.featureSnapshot, PersistedFeatureSnapshot.class);
-            StockDetailResponse detail = new StockDetailResponse(
-                    snapshot.quote(), snapshot.finance(), safe(snapshot.intraday()), safe(snapshot.kline()), null, null);
-            WatchStock stock = watchStock == null ? watchStock(sample, snapshot.quote()) : watchStock;
-            KlineSeriesSnapshot series = KlineSeriesSnapshot.create(
-                    sample.stockCode,
-                    "day",
-                    "NONE",
-                    "PERSISTED_SAMPLE",
-                    sample.asOfTime,
-                    sample.createdAt == null ? sample.asOfTime : sample.createdAt,
-                    safe(snapshot.kline()));
-            return new DetailEnvelope(stock, detail, series);
+            JsonNode root = objectMapper.readTree(sample.featureSnapshot);
+            return new StockDetailResponse(
+                    objectMapper.treeToValue(root.path("quote"), StockQuoteResponse.class),
+                    root.path("finance").isMissingNode() || root.path("finance").isNull()
+                            ? null : objectMapper.treeToValue(root.path("finance"),
+                            com.maogou.stock.dto.market.FinanceSnapshotResponse.class),
+                    treeList(root.path("intraday"), com.maogou.stock.dto.market.IntradayPointResponse.class),
+                    treeList(root.path("kline"), KlinePointResponse.class),
+                    null,
+                    null);
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("无法恢复不可变样本特征：" + sample.id, exception);
         }
     }
 
-    private static WatchStock watchStock(AiSample sample, StockQuoteResponse quote) {
-        WatchStock stock = new WatchStock();
-        stock.userId = sample.userId;
-        stock.stockCode = sample.stockCode;
-        stock.stockName = sample.stockName == null && quote != null ? quote.name() : sample.stockName;
-        stock.groupName = sample.universeCode;
-        return stock;
-    }
-
-    private static <T> List<T> safe(List<T> values) {
-        return values == null ? List.of() : List.copyOf(values);
-    }
-
-    private static StockDetailResponse withStockName(StockDetailResponse detail, String stockName) {
-        if (detail == null || detail.quote() == null || stockName == null || stockName.isBlank()
-                || Objects.equals(stockName, detail.quote().name())) {
-            return detail;
+    private <T> List<T> treeList(JsonNode node, Class<T> type) throws JsonProcessingException {
+        if (node == null || !node.isArray()) {
+            return List.of();
         }
-        StockQuoteResponse quote = detail.quote();
-        return new StockDetailResponse(
-                new StockQuoteResponse(
-                        quote.code(), stockName, quote.price(), quote.change(), quote.percent(), quote.volumeRatio(),
-                        quote.market(), quote.source(), quote.fetchedAt()),
-                detail.finance(), detail.intraday(), detail.kline(), detail.aiAdvice(), detail.aiScore());
-    }
-
-    private List<AiFactorValue> factors(DataFlowState state) {
-        if (state.factors == null) {
-            List<AiFactorEngine.FactorContext> contexts = state.samples.stream()
-                    .map(sample -> {
-                        DetailEnvelope detail = state.details.stream()
-                                .filter(item -> Objects.equals(item.stock().stockCode, sample.stockCode))
-                                .findFirst().orElse(null);
-                        return new AiFactorEngine.FactorContext(
-                                sample,
-                                detail == null ? null : detail.detail(),
-                                List.of(), List.of(), null, null,
-                                detail == null ? null : detail.stockSeries(), null, null);
-                    })
-                    .toList();
-            state.factors = List.copyOf(factorEngine.computeAndStoreCrossSection(contexts));
+        List<T> values = new ArrayList<>();
+        for (JsonNode item : node) {
+            values.add(objectMapper.treeToValue(item, type));
         }
-        return state.factors;
+        return List.copyOf(values);
     }
 
-    private List<AiPrediction> predictions(DataFlowState state, PipelineContext context) {
-        if (state.predictions == null) {
-            Map<Long, List<AiFactorValue>> factorsBySample = factors(state).stream()
-                    .collect(Collectors.groupingBy(item -> item.sampleId, LinkedHashMap::new, Collectors.toList()));
-            List<AiPredictionEngine.PredictionInput> inputs = state.samples.stream()
-                    .map(sample -> new AiPredictionEngine.PredictionInput(
-                            sample, factorsBySample.getOrDefault(sample.id, List.of())))
-                    .toList();
-            List<AiPrediction> predictions = new java.util.ArrayList<>();
-            List<String> errors = new java.util.ArrayList<>();
-            for (int horizonDays : List.of(1, 3, 5)) {
-                context.checkpointLease();
-                predictions.addAll(predictionEngine.predictAndStore(new AiPredictionEngine.PredictionBatch(
-                        inputs,
-                        context.strategyReleaseId(), context.modelVersionId(), horizonDays,
-                        Math.max(3, Math.min(10, state.samples.size())),
-                        context.modelVersionId() == null ? "RULE_BASELINE" : "CHAMPION",
-                        LocalDateTime.now())));
-                context.checkpointLease();
+    private Long requiredCheckpointId(PipelineContext context, String stepKey, String field) {
+        String checkpoint = context.checkpoint(stepKey);
+        if (checkpoint == null || checkpoint.isBlank()) {
+            throw new IllegalStateException("恢复步骤缺少数据库 checkpoint：" + stepKey);
+        }
+        try {
+            JsonNode value = objectMapper.readTree(checkpoint).path(field);
+            if (!value.canConvertToLong()) {
+                throw new IllegalStateException("checkpoint 缺少字段 " + field + "：" + stepKey);
             }
-            List<AiStrategyRelease> challengers = strategyReleaseMapper == null
-                    ? List.of() : strategyReleaseMapper.selectShadowChallengers(context.userId());
-            challengers = challengers == null ? List.of() : challengers;
-            state.expectedPredictionCount = state.samples.size() * 3 * (1 + challengers.size());
-            for (AiStrategyRelease challenger : challengers) {
-                if (challenger == null || challenger.id == null || challenger.modelVersionId == null) {
-                    errors.add("SHADOW Challenger 缺少策略或模型版本，已跳过");
-                    continue;
-                }
-                for (int horizonDays : List.of(1, 3, 5)) {
-                    context.checkpointLease();
-                    try {
-                        predictions.addAll(predictionEngine.predictAndStore(
-                                new AiPredictionEngine.PredictionBatch(
-                                        inputs,
-                                        challenger.id,
-                                        challenger.modelVersionId,
-                                        horizonDays,
-                                        Math.max(3, Math.min(10, state.samples.size())),
-                                        "CHALLENGER_SHADOW",
-                                        LocalDateTime.now())));
-                    } catch (RuntimeException exception) {
-                        errors.add("Challenger " + challenger.id + " T+" + horizonDays + "："
-                                + rootMessage(exception));
-                    }
-                    context.checkpointLease();
-                }
-            }
-            state.predictions = List.copyOf(predictions);
-            state.predictionErrors = List.copyOf(errors);
+            return value.longValue();
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("checkpoint 无法解析：" + stepKey, exception);
         }
-        return state.predictions;
     }
 
-    private StepOutcome outcome(
+    private StepOutcome success(
             String stepKey,
             int processed,
-            int success,
+            int succeeded,
             int failed,
-            String checkpoint,
+            Object checkpoint,
+            Long dataBatchId,
             List<String> errors
     ) {
-        return new StepOutcome(processed, success, failed, checkpoint,
-                fingerprint(stepKey, checkpoint, String.valueOf(processed), String.valueOf(success)), errors);
+        String checkpointJson = checkpoint instanceof String text ? text : json(checkpoint);
+        String status = failed > 0 || errors != null && !errors.isEmpty()
+                ? "SUCCESS_WITH_WARNINGS" : "SUCCESS";
+        return new StepOutcome(status, processed, succeeded, failed, checkpointJson,
+                fingerprint(stepKey, checkpointJson, processed, succeeded, failed),
+                errors, dataBatchId, null);
+    }
+
+    private String json(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("无法序列化研究流水线证据", exception);
+        }
+    }
+
+    private static boolean realSource(String source) {
+        String normalized = normalize(source, "");
+        return !normalized.isBlank() && !normalized.contains("MOCK")
+                && !normalized.contains("FALLBACK") && !normalized.contains("FIXTURE");
+    }
+
+    private static String normalize(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value.trim().toUpperCase(Locale.ROOT);
     }
 
     private static String rootMessage(Throwable throwable) {
@@ -563,75 +533,16 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         return current.getMessage() == null ? current.getClass().getSimpleName() : current.getMessage();
     }
 
-    private List<WatchStock> loadWatchlist(Long userId) {
-        return watchStockMapper.selectList(new QueryWrapper<WatchStock>()
-                .eq("user_id", userId)
-                .eq("deleted", 0)
-                .orderByDesc("priority")
-                .orderByAsc("stock_code"));
-    }
-
-    private StepOutcome simple(String stepKey, int processed, int success, int failed, String message) {
-        return new StepOutcome(
-                processed,
-                success,
-                failed,
-                "{\"step\":\"" + stepKey + "\",\"message\":\"" + message + "\"}",
-                fingerprint(stepKey, String.valueOf(processed), String.valueOf(success), message),
-                failed > 0 ? List.of(message) : List.of());
-    }
-
-    private static String fingerprint(String... values) {
+    private static String fingerprint(Object... values) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            for (String value : values) {
-                digest.update((value == null ? "null" : value).getBytes(StandardCharsets.UTF_8));
+            for (Object value : values) {
+                digest.update(String.valueOf(value).getBytes(StandardCharsets.UTF_8));
+                digest.update((byte) '|');
             }
             return HexFormat.of().formatHex(digest.digest());
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("SHA-256 不可用", exception);
-        }
-    }
-
-    private record DetailEnvelope(
-            WatchStock stock,
-            StockDetailResponse detail,
-            KlineSeriesSnapshot stockSeries
-    ) {
-    }
-
-    private record PersistedFeatureSnapshot(
-            StockQuoteResponse quote,
-            FinanceSnapshotResponse finance,
-            List<IntradayPointResponse> intraday,
-            List<KlinePointResponse> kline
-    ) {
-    }
-
-    private static final class DataFlowState {
-        private final AiDataBatch batch;
-        private final List<WatchStock> watchlist;
-        private final List<DetailEnvelope> details;
-        private final List<AiSample> samples;
-        private final List<String> errors;
-        private List<AiFactorValue> factors;
-        private List<AiPrediction> predictions;
-        private List<String> predictionErrors;
-        private int expectedPredictionCount;
-        private boolean batchCompleted;
-
-        private DataFlowState(
-                AiDataBatch batch,
-                List<WatchStock> watchlist,
-                List<DetailEnvelope> details,
-                List<AiSample> samples,
-                List<String> errors
-        ) {
-            this.batch = batch;
-            this.watchlist = watchlist;
-            this.details = details;
-            this.samples = samples;
-            this.errors = List.copyOf(errors);
         }
     }
 }

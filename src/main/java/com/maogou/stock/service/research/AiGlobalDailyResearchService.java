@@ -12,9 +12,7 @@ public interface AiGlobalDailyResearchService {
     PipelineResult run(PipelineRequest request);
 
     record PipelineRequest(
-            Long userId,
             LocalDate tradeDate,
-            Long dataBatchId,
             Long strategyReleaseId,
             Long modelVersionId,
             String idempotencyKey,

@@ -33,7 +33,7 @@ import java.util.Objects;
 @Service
 public class AiSampleSnapshotServiceImpl implements AiSampleSnapshotService {
 
-    private static final String FEATURE_VERSION = "POINT_IN_TIME_V2.1";
+    private static final String FEATURE_VERSION = "POINT_IN_TIME/1.0.0";
     private static final Duration MAX_QUOTE_AGE = Duration.ofMinutes(2);
 
     private final AiSampleMapper sampleMapper;
@@ -52,23 +52,23 @@ public class AiSampleSnapshotServiceImpl implements AiSampleSnapshotService {
 
     @Override
     public AiDataBatch startOrGetBatch(
-            Long userId,
+            Long universeSnapshotId,
             LocalDate tradeDate,
             String samplePhase,
             LocalDateTime asOfTime,
             String idempotencyKey
     ) {
-        require(userId, "userId");
+        require(universeSnapshotId, "universeSnapshotId");
         require(tradeDate, "tradeDate");
         require(asOfTime, "asOfTime");
         String normalizedKey = requireText(idempotencyKey, "idempotencyKey");
-        AiDataBatch existing = findBatch(userId, normalizedKey);
+        AiDataBatch existing = findBatch(normalizedKey);
         if (existing != null) {
             return existing;
         }
 
         AiDataBatch batch = new AiDataBatch();
-        batch.userId = userId;
+        batch.universeSnapshotId = universeSnapshotId;
         batch.tradeDate = tradeDate;
         batch.samplePhase = normalize(samplePhase, "AFTER_CLOSE");
         batch.asOfTime = asOfTime;
@@ -86,7 +86,7 @@ public class AiSampleSnapshotServiceImpl implements AiSampleSnapshotService {
             batchMapper.insert(batch);
             return batch;
         } catch (DuplicateKeyException ex) {
-            AiDataBatch concurrent = findBatch(userId, normalizedKey);
+            AiDataBatch concurrent = findBatch(normalizedKey);
             if (concurrent != null) {
                 return concurrent;
             }
@@ -97,34 +97,29 @@ public class AiSampleSnapshotServiceImpl implements AiSampleSnapshotService {
     @Override
     public AiSample createOrGetSnapshot(SnapshotCommand command) {
         Objects.requireNonNull(command, "command");
-        require(command.userId(), "userId");
         require(command.dataBatchId(), "dataBatchId");
+        require(command.universeItemId(), "universeItemId");
         Objects.requireNonNull(command.tradeDate(), "tradeDate");
         require(command.asOfTime(), "asOfTime");
         StockDetailResponse detail = Objects.requireNonNull(command.detail(), "detail");
         StockQuoteResponse quote = Objects.requireNonNull(detail.quote(), "detail.quote");
         String stockCode = requireText(quote.code(), "stockCode");
         String samplePhase = normalize(command.samplePhase(), "AFTER_CLOSE");
-        String universeCode = normalize(command.universeCode(), "WATCHLIST");
-        String universeVersion = requireText(command.universeVersion(), "universeVersion");
-
-        AiSample existing = findSample(command.userId(), stockCode, command.asOfTime(), samplePhase, universeVersion);
+        Quality quality = assessQuality(detail, command.asOfTime(), command.sectorCode());
+        String snapshot = featureSnapshot(command, quality);
+        String sourceFingerprint = sha256(snapshot);
+        AiSample existing = findSample(stockCode, command.asOfTime(), samplePhase, sourceFingerprint);
         if (existing != null) {
             return existing;
         }
-
-        Quality quality = assessQuality(detail, command.asOfTime(), command.sectorCode());
-        String snapshot = featureSnapshot(command, quality);
         AiSample sample = new AiSample();
-        sample.userId = command.userId();
         sample.dataBatchId = command.dataBatchId();
+        sample.universeItemId = command.universeItemId();
         sample.stockCode = stockCode;
         sample.stockName = quote.name();
         sample.tradeDate = command.tradeDate();
         sample.samplePhase = samplePhase;
         sample.asOfTime = command.asOfTime();
-        sample.universeCode = universeCode;
-        sample.universeVersion = universeVersion;
         sample.marketRegime = normalize(command.marketRegime(), "UNKNOWN");
         sample.sectorCode = command.sectorCode();
         sample.sectorName = command.sectorName();
@@ -134,13 +129,13 @@ public class AiSampleSnapshotServiceImpl implements AiSampleSnapshotService {
         sample.excludeReason = excludeReason(quote, quality);
         sample.featureVersion = FEATURE_VERSION;
         sample.featureSnapshot = snapshot;
-        sample.sourceFingerprint = sha256(snapshot);
+        sample.sourceFingerprint = sourceFingerprint;
         sample.createdAt = LocalDateTime.now();
         try {
             sampleMapper.insert(sample);
             return sample;
         } catch (DuplicateKeyException ex) {
-            AiSample concurrent = findSample(command.userId(), stockCode, command.asOfTime(), samplePhase, universeVersion);
+            AiSample concurrent = findSample(stockCode, command.asOfTime(), samplePhase, sourceFingerprint);
             if (concurrent != null) {
                 return concurrent;
             }
@@ -172,31 +167,33 @@ public class AiSampleSnapshotServiceImpl implements AiSampleSnapshotService {
     }
 
     @Override
-    public List<AiSample> findBatchSnapshots(Long userId, Long batchId, LocalDate tradeDate) {
-        require(userId, "userId");
+    public List<AiSample> findBatchSnapshots(Long batchId, LocalDate tradeDate) {
         require(batchId, "batchId");
         Objects.requireNonNull(tradeDate, "tradeDate");
         return List.copyOf(sampleMapper.selectList(new QueryWrapper<AiSample>()
-                .eq("user_id", userId)
                 .eq("data_batch_id", batchId)
                 .eq("trade_date", tradeDate)
                 .orderByAsc("stock_code")));
     }
 
-    private AiDataBatch findBatch(Long userId, String idempotencyKey) {
+    private AiDataBatch findBatch(String idempotencyKey) {
         return batchMapper.selectOne(new QueryWrapper<AiDataBatch>()
-                .eq("user_id", userId)
                 .eq("idempotency_key", idempotencyKey)
                 .last("LIMIT 1"));
     }
 
-    private AiSample findSample(Long userId, String stockCode, LocalDateTime asOfTime, String samplePhase, String universeVersion) {
+    private AiSample findSample(
+            String stockCode,
+            LocalDateTime asOfTime,
+            String samplePhase,
+            String sourceFingerprint
+    ) {
         return sampleMapper.selectOne(new QueryWrapper<AiSample>()
-                .eq("user_id", userId)
                 .eq("stock_code", stockCode)
                 .eq("as_of_time", asOfTime)
                 .eq("sample_phase", samplePhase)
-                .eq("universe_version", universeVersion)
+                .eq("feature_version", FEATURE_VERSION)
+                .eq("source_fingerprint", sourceFingerprint)
                 .last("LIMIT 1"));
     }
 
@@ -261,7 +258,7 @@ public class AiSampleSnapshotServiceImpl implements AiSampleSnapshotService {
         try {
             return objectMapper.writeValueAsString(snapshot);
         } catch (JsonProcessingException ex) {
-            throw new IllegalStateException("无法序列化 V2 样本快照", ex);
+            throw new IllegalStateException("无法序列化正式样本快照", ex);
         }
     }
 

@@ -1,6 +1,7 @@
 package com.maogou.stock.domain.entity.research;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 
@@ -11,8 +12,10 @@ import java.time.LocalDateTime;
 public class AiModelVersion {
     @TableId(type = IdType.AUTO)
     public Long id;
+    @TableField(exist = false)
     public Long userId;
     public Long trainingDatasetId;
+    public String modelFamily;
     public String modelKey;
     public String versionNo;
     public String modelType;

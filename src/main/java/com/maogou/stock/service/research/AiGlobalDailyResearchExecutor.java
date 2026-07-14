@@ -3,14 +3,11 @@ package com.maogou.stock.service.research;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 public interface AiGlobalDailyResearchExecutor {
 
     StepOutcome execute(String stepKey, PipelineContext context);
-
-    StepOutcome buildResearchDailyReport(PipelineContext context, String pipelineStatus, String pipelineMessage);
-
-    StepOutcome buildDailyInsight(PipelineContext context, String pipelineStatus, String pipelineMessage);
 
     default void onPipelineFailure(
             PipelineContext context,
@@ -21,33 +18,35 @@ public interface AiGlobalDailyResearchExecutor {
 
     record PipelineContext(
             Long pipelineRunId,
-            Long userId,
             LocalDate tradeDate,
-            Long dataBatchId,
             Long strategyReleaseId,
             Long modelVersionId,
             String idempotencyKey,
             String inputFingerprint,
             LocalDateTime startedAt,
+            Map<String, String> checkpoints,
             LeaseGuard leaseGuard
     ) {
         public PipelineContext(
                 Long pipelineRunId,
-                Long userId,
                 LocalDate tradeDate,
-                Long dataBatchId,
                 Long strategyReleaseId,
                 Long modelVersionId,
                 String idempotencyKey,
                 String inputFingerprint,
                 LocalDateTime startedAt
         ) {
-            this(pipelineRunId, userId, tradeDate, dataBatchId, strategyReleaseId, modelVersionId,
-                    idempotencyKey, inputFingerprint, startedAt, LeaseGuard.NOOP);
+            this(pipelineRunId, tradeDate, strategyReleaseId, modelVersionId,
+                    idempotencyKey, inputFingerprint, startedAt, Map.of(), LeaseGuard.NOOP);
         }
 
         public PipelineContext {
+            checkpoints = checkpoints == null ? Map.of() : Map.copyOf(checkpoints);
             leaseGuard = leaseGuard == null ? LeaseGuard.NOOP : leaseGuard;
+        }
+
+        public String checkpoint(String stepKey) {
+            return checkpoints.get(stepKey);
         }
 
         public void checkpointLease() {
@@ -64,14 +63,18 @@ public interface AiGlobalDailyResearchExecutor {
     }
 
     record StepOutcome(
+            String status,
             int processedCount,
             int successCount,
             int failedCount,
             String checkpointJson,
             String outputFingerprint,
-            List<String> errors
+            List<String> errors,
+            Long dataBatchId,
+            LocalDateTime nextRetryAt
     ) {
         public StepOutcome {
+            status = status == null || status.isBlank() ? "SUCCESS" : status;
             errors = errors == null ? List.of() : List.copyOf(errors);
         }
     }

@@ -24,7 +24,7 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
 
     private static final Logger log = LoggerFactory.getLogger(AutoClosePipelineServiceImpl.class);
     private static final String JOB_TYPE = "AUTO_CLOSE_PIPELINE";
-    private static final int DAILY_STEP_COUNT = 9;
+    private static final int DAILY_STEP_COUNT = 8;
 
     private final AiModelConfigMapper configMapper;
     private final AiLearningJobLogMapper jobLogMapper;
@@ -103,14 +103,12 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
             try {
                 LocalDateTime startedAt = LocalDateTime.now();
                 LocalDate tradeDate = tradingCalendarService.latestExpectedKlineDate(startedAt);
-                String idempotencyKey = "AUTO_CLOSE:" + tradeDate + ":USER:" + userId;
+                String idempotencyKey = "GLOBAL_DAILY:" + tradeDate;
                 AiGlobalResearchPreparationService.PreparedPipeline prepared = preparationService.prepare(
-                        userId, tradeDate, startedAt, idempotencyKey);
+                        tradeDate, startedAt, idempotencyKey);
                 AiGlobalDailyResearchService.PipelineResult result = dailyPipelineServiceV2.run(
                         new AiGlobalDailyResearchService.PipelineRequest(
-                                userId,
                                 tradeDate,
-                                prepared.dataBatchId(),
                                 prepared.strategyReleaseId(),
                                 prepared.modelVersionId(),
                                 idempotencyKey,

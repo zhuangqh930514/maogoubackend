@@ -107,8 +107,6 @@ class AiSampleSnapshotServiceImplTest {
                 5L,
                 9L,
                 LocalDate.of(2026, 7, 10),
-                "WATCHLIST",
-                "WATCHLIST-20260710",
                 "AFTER_CLOSE",
                 asOf,
                 "RANGE",

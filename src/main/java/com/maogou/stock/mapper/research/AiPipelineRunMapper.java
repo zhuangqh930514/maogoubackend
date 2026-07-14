@@ -13,14 +13,17 @@ public interface AiPipelineRunMapper extends BaseMapper<AiPipelineRun> {
 
     @Insert("""
             INSERT INTO ai_pipeline_run (
-                user_id, data_batch_id, strategy_release_id, model_version_id, trade_date,
-                pipeline_type, idempotency_key, input_fingerprint, status, current_step,
+                scope_type, owner_user_id, parent_run_id, data_batch_id, strategy_release_id,
+                model_version_id, trade_date, pipeline_type, idempotency_key, input_fingerprint,
+                status, execution_owner, lease_until, next_retry_at, current_step, retry_count,
                 processed_count, success_count, failed_count, error_message, started_at,
                 finished_at, created_at, updated_at
             ) VALUES (
-                #{item.userId}, #{item.dataBatchId}, #{item.strategyReleaseId}, #{item.modelVersionId},
-                #{item.tradeDate}, #{item.pipelineType}, #{item.idempotencyKey},
-                #{item.inputFingerprint}, #{item.status}, #{item.currentStep},
+                #{item.scopeType}, #{item.ownerUserId}, #{item.parentRunId}, #{item.dataBatchId},
+                #{item.strategyReleaseId}, #{item.modelVersionId}, #{item.tradeDate},
+                #{item.pipelineType}, #{item.idempotencyKey}, #{item.inputFingerprint},
+                #{item.status}, #{item.executionOwner}, #{item.leaseUntil}, #{item.nextRetryAt},
+                #{item.currentStep}, #{item.retryCount},
                 #{item.processedCount}, #{item.successCount}, #{item.failedCount},
                 #{item.errorMessage}, #{item.startedAt}, #{item.finishedAt},
                 #{item.createdAt}, #{item.updatedAt}
@@ -30,13 +33,10 @@ public interface AiPipelineRunMapper extends BaseMapper<AiPipelineRun> {
 
     @Select("""
             SELECT * FROM ai_pipeline_run
-            WHERE user_id = #{userId} AND idempotency_key = #{idempotencyKey}
+            WHERE idempotency_key = #{idempotencyKey}
             FOR UPDATE
             """)
-    AiPipelineRun selectByIdempotencyForUpdate(
-            @Param("userId") Long userId,
-            @Param("idempotencyKey") String idempotencyKey
-    );
+    AiPipelineRun selectByIdempotencyForUpdate(@Param("idempotencyKey") String idempotencyKey);
 
     @Update("""
             UPDATE ai_pipeline_run
@@ -70,7 +70,9 @@ public interface AiPipelineRunMapper extends BaseMapper<AiPipelineRun> {
 
     @Update("""
             UPDATE ai_pipeline_run
-            SET status = #{item.status}, current_step = #{item.currentStep},
+            SET data_batch_id = #{item.dataBatchId}, status = #{item.status},
+                next_retry_at = #{item.nextRetryAt}, current_step = #{item.currentStep},
+                retry_count = #{item.retryCount},
                 processed_count = #{item.processedCount}, success_count = #{item.successCount},
                 failed_count = #{item.failedCount}, error_message = #{item.errorMessage},
                 started_at = #{item.startedAt}, finished_at = #{item.finishedAt}, updated_at = #{now}

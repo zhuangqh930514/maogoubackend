@@ -8,7 +8,6 @@ import java.util.List;
 public interface AiModelInferenceService {
 
     ModelInference infer(
-            Long userId,
             Long modelVersionId,
             AiSample sample,
             List<AiFactorValue> factors

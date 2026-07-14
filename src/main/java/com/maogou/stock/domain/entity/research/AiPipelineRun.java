@@ -11,7 +11,9 @@ import java.time.LocalDateTime;
 public class AiPipelineRun {
     @TableId(type = IdType.AUTO)
     public Long id;
-    public Long userId;
+    public String scopeType;
+    public Long ownerUserId;
+    public Long parentRunId;
     public Long dataBatchId;
     public Long strategyReleaseId;
     public Long modelVersionId;
@@ -22,7 +24,9 @@ public class AiPipelineRun {
     public String status;
     public String executionOwner;
     public LocalDateTime leaseUntil;
+    public LocalDateTime nextRetryAt;
     public String currentStep;
+    public Integer retryCount;
     public Integer processedCount;
     public Integer successCount;
     public Integer failedCount;

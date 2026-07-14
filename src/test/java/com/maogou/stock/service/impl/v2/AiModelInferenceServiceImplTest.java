@@ -45,7 +45,7 @@ class AiModelInferenceServiceImplTest {
                         },
                         null));
 
-        var result = service.infer(7L, 11L, sample(), List.of(factor()));
+        var result = service.infer(11L, sample(), List.of(factor()));
 
         assertThat(received.get()).containsExactly(10.5f, 1.25f);
         assertThat(result.probabilityUp()).isCloseTo(0.880797f, org.assertj.core.data.Offset.offset(0.00001f));
@@ -67,7 +67,7 @@ class AiModelInferenceServiceImplTest {
                     throw new AssertionError("runtime must not be opened");
                 });
 
-        assertThatThrownBy(() -> service.infer(7L, 11L, sample(), List.of(factor())))
+        assertThatThrownBy(() -> service.infer(11L, sample(), List.of(factor())))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("VALIDATED");
     }
@@ -84,7 +84,7 @@ class AiModelInferenceServiceImplTest {
                         (modelKey, features) -> new OnnxPredictionClient.InferenceResult(
                                 Map.of("score", List.of(0.0f))), null));
 
-        assertThatThrownBy(() -> service.infer(7L, 11L, sample(), List.of(factor())))
+        assertThatThrownBy(() -> service.infer(11L, sample(), List.of(factor())))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("特征覆盖不足");
         service.close();
@@ -104,7 +104,7 @@ class AiModelInferenceServiceImplTest {
                 "calibration", Map.of("method", "sigmoid", "coefficient", 2.0, "intercept", 0.0)));
         AiModelVersion model = new AiModelVersion();
         model.id = 11L;
-        model.userId = 7L;
+        model.modelFamily = "A_SHARE_MULTI_HORIZON";
         model.modelKey = "ranker";
         model.versionNo = "v1";
         model.status = "VALIDATED";
@@ -120,7 +120,6 @@ class AiModelInferenceServiceImplTest {
     private static AiSample sample() {
         AiSample sample = new AiSample();
         sample.id = 21L;
-        sample.userId = 7L;
         sample.stockCode = "600519";
         sample.tradeDate = LocalDate.of(2026, 7, 10);
         sample.featureSnapshot = "{\"quote\":{\"price\":10.5},\"ignored\":[1,2]}";
@@ -129,7 +128,6 @@ class AiModelInferenceServiceImplTest {
 
     private static AiFactorValue factor() {
         AiFactorValue factor = new AiFactorValue();
-        factor.userId = 7L;
         factor.sampleId = 21L;
         factor.stockCode = "600519";
         factor.factorCode = "MOMENTUM_RETURN_3D";

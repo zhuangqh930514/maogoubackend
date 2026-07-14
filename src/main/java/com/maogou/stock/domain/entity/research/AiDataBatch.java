@@ -1,6 +1,7 @@
 package com.maogou.stock.domain.entity.research;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 
@@ -12,6 +13,8 @@ import java.time.LocalDateTime;
 public class AiDataBatch {
     @TableId(type = IdType.AUTO)
     public Long id;
+    public Long universeSnapshotId;
+    @TableField(exist = false)
     public Long userId;
     public LocalDate tradeDate;
     public String samplePhase;
@@ -20,7 +23,8 @@ public class AiDataBatch {
     public String sourceStatus;
     public LocalDateTime quoteAsOf;
     public LocalDate klineAsOf;
-    public LocalDate financeAsOf;
+    public LocalDate benchmarkAsOf;
+    public LocalDateTime financeAsOf;
     public LocalDateTime sectorAsOf;
     public LocalDateTime newsAsOf;
     public BigDecimal qualityScore;

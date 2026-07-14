@@ -14,15 +14,15 @@ public interface AiPredictionMapper extends BaseMapper<AiPrediction> {
     @Insert("""
             <script>
             INSERT INTO ai_prediction (
-                user_id, sample_id, strategy_release_id, model_version_id, stock_code, trade_date,
-                sample_phase, inference_mode, input_fingerprint, horizon_days, expected_return,
+                sample_id, strategy_release_id, model_version_id, stock_code, trade_date,
+                sample_phase, inference_mode, input_fingerprint, horizon_trading_days, expected_return,
                 expected_excess_return, probability_up, probability_down, calibrated_confidence,
                 score, risk_score, rank_no, action, action_bucket, target_direction, abstain_reason,
                 reason_json, idempotency_key, predicted_at, created_at
             ) VALUES
             <foreach collection="items" item="item" separator=",">
                 (
-                    #{item.userId}, #{item.sampleId}, #{item.strategyReleaseId}, #{item.modelVersionId},
+                    #{item.sampleId}, #{item.strategyReleaseId}, #{item.modelVersionId},
                     #{item.stockCode}, #{item.tradeDate}, #{item.samplePhase}, #{item.inferenceMode},
                     #{item.inputFingerprint}, #{item.horizonDays}, #{item.expectedReturn},
                     #{item.expectedExcessReturn}, #{item.probabilityUp}, #{item.probabilityDown},
@@ -40,8 +40,7 @@ public interface AiPredictionMapper extends BaseMapper<AiPrediction> {
             <script>
             SELECT *
             FROM ai_prediction
-            WHERE user_id = #{userId}
-              AND idempotency_key IN
+            WHERE idempotency_key IN
               <foreach collection="keys" item="key" open="(" separator="," close=")">
                   #{key}
               </foreach>
@@ -49,29 +48,24 @@ public interface AiPredictionMapper extends BaseMapper<AiPrediction> {
             </script>
             """)
     List<AiPrediction> selectByIdempotencyKeysForShare(
-            @Param("userId") Long userId,
             @Param("keys") List<String> keys
     );
 
     @Select("""
             SELECT p.*
             FROM ai_prediction p
-            LEFT JOIN ai_sample_label l
-              ON l.user_id = p.user_id
-             AND l.prediction_id = p.id
-             AND l.horizon_days = p.horizon_days
-             AND l.label_version = #{labelVersion}
-            WHERE p.user_id = #{userId}
-              AND p.trade_date < #{tradeDate}
-              AND p.horizon_days IN (1, 3, 5)
-              AND l.id IS NULL
-            ORDER BY p.trade_date, p.sample_phase, p.horizon_days, p.id
+            LEFT JOIN ai_prediction_evaluation e
+              ON e.prediction_id = p.id
+             AND e.evaluation_version = #{evaluationVersion}
+            WHERE p.trade_date < #{tradeDate}
+              AND p.horizon_trading_days IN (1, 2, 3, 5)
+              AND e.id IS NULL
+            ORDER BY p.trade_date, p.sample_phase, p.horizon_trading_days, p.id
             LIMIT #{limit}
             """)
-    List<AiPrediction> selectUnverifiedCandidates(
-            @Param("userId") Long userId,
+    List<AiPrediction> selectUnevaluatedCandidates(
             @Param("tradeDate") LocalDate tradeDate,
-            @Param("labelVersion") String labelVersion,
+            @Param("evaluationVersion") String evaluationVersion,
             @Param("limit") int limit
     );
 }

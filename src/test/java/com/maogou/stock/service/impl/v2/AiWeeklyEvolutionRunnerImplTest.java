@@ -25,6 +25,7 @@ import com.maogou.stock.service.MarketDataService;
 import com.maogou.stock.service.research.AiEvolutionAutomationService;
 import com.maogou.stock.service.research.AiFactorPerformanceService;
 import com.maogou.stock.service.research.AiPortfolioBacktestService;
+import com.maogou.stock.service.research.AiResearchContract;
 import com.maogou.stock.service.research.AiShadowEvaluationService;
 import com.maogou.stock.service.research.AiWalkForwardService;
 import org.junit.jupiter.api.Test;
@@ -208,7 +209,7 @@ class AiWeeklyEvolutionRunnerImplTest {
         ArgumentCaptor<AiFactorPerformanceService.PerformanceBatch> factorBatch =
                 ArgumentCaptor.forClass(AiFactorPerformanceService.PerformanceBatch.class);
         verify(fixture.factorPerformanceService).evaluateAndStore(factorBatch.capture());
-        assertThat(factorBatch.getValue().factorVersion()).isEqualTo("2.0.0");
+        assertThat(factorBatch.getValue().factorVersion()).isEqualTo(AiResearchContract.FACTOR_VERSION);
         assertThat(factorBatch.getValue().horizonDays()).isEqualTo(3);
         assertThat(factorBatch.getValue().observations()).hasSize(35);
         assertThat(factorBatch.getValue().baselineObservations()).isEmpty();

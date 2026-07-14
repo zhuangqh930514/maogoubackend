@@ -11,7 +11,10 @@ import java.time.LocalDateTime;
 public class AiStrategyRelease {
     @TableId(type = IdType.AUTO)
     public Long id;
+    @TableField(exist = false)
     public Long userId;
+    public Long researchUniverseId;
+    public String modelFamily;
     public String versionNo;
     public String title;
     public Long modelVersionId;
@@ -24,6 +27,7 @@ public class AiStrategyRelease {
     public String validationMetricsJson;
     public String promotionReason;
     public String rollbackReason;
+    public String seedVersion;
     public LocalDateTime shadowStartedAt;
     public LocalDateTime shadowEndedAt;
     public LocalDateTime activatedAt;

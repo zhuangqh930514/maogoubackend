@@ -2,6 +2,7 @@ package com.maogou.stock.service.impl.research;
 
 import com.maogou.stock.domain.entity.research.AiFactorValue;
 import com.maogou.stock.domain.entity.research.AiSample;
+import com.maogou.stock.domain.entity.AiFactorDefinition;
 import com.maogou.stock.dto.market.FinanceSnapshotResponse;
 import com.maogou.stock.dto.market.KlinePointResponse;
 import com.maogou.stock.dto.market.KlineSeriesSnapshot;
@@ -259,10 +260,12 @@ class AiFactorEngineImplTest {
     void rejectsAnIdempotencyCollisionWithDifferentImmutableContent() {
         AiFactorValueMapper mapper = mock(AiFactorValueMapper.class);
         when(mapper.insertBatchImmutable(anyList())).thenReturn(1);
+        stubDefinitions(mapper);
         AiFactorValue persisted = value("000001", "MOMENTUM_RETURN_3D", "999");
         persisted.id = 99L;
         persisted.sampleId = 11L;
         persisted.factorVersion = AiFactorEngineImpl.FACTOR_VERSION;
+        persisted.factorDefinitionId = definitionId("MOMENTUM_RETURN_3D");
         persisted.inputFingerprint = "different";
         when(mapper.selectBySamplesForShare(anyList(), anyString())).thenReturn(List.of(persisted));
         AiFactorEngine engine = new AiFactorEngineImpl(mapper);
@@ -411,6 +414,7 @@ class AiFactorEngineImplTest {
     }
 
     private static void stubBatchPersistence(AiFactorValueMapper mapper) {
+        stubDefinitions(mapper);
         List<AiFactorValue> database = new ArrayList<>();
         AtomicLong ids = new AtomicLong(100);
         when(mapper.insertBatchImmutable(anyList())).thenAnswer(invocation -> {
@@ -428,6 +432,32 @@ class AiFactorEngineImplTest {
                     .filter(value -> sampleIds.contains(value.sampleId) && version.equals(value.factorVersion))
                     .toList();
         });
+    }
+
+    private static void stubDefinitions(AiFactorValueMapper mapper) {
+        List<String> codes = List.of(
+                "MOMENTUM_RETURN_3D", "MOMENTUM_RETURN_5D", "TREND_MA5_DISTANCE",
+                "TREND_MA20_DISTANCE", "VOLUME_RATIO_5D", "VOLATILITY_10D",
+                "LIQUIDITY_AVG_AMOUNT_5D", "FUNDAMENTAL_PE", "FUNDAMENTAL_PB",
+                "FUNDAMENTAL_ROE", "FUNDAMENTAL_REVENUE_GROWTH", "FUNDAMENTAL_PROFIT_GROWTH",
+                "FUNDAMENTAL_DEBT_RATIO", "MARKET_RELATIVE_STRENGTH",
+                "SECTOR_RELATIVE_STRENGTH", "NEWS_SENTIMENT");
+        List<AiFactorDefinition> definitions = codes.stream().map(code -> {
+            AiFactorDefinition definition = new AiFactorDefinition();
+            definition.id = definitionId(code);
+            definition.factorCode = code;
+            definition.versionNo = AiFactorEngineImpl.FACTOR_VERSION;
+            definition.factorGroup = code.contains("FUNDAMENTAL") ? "FUNDAMENTAL" : "TECHNICAL";
+            definition.direction = code.contains("VOLATILITY") || code.contains("DEBT_RATIO")
+                    || code.contains("FUNDAMENTAL_PE") || code.contains("FUNDAMENTAL_PB")
+                    ? "NEGATIVE" : "POSITIVE";
+            return definition;
+        }).toList();
+        when(mapper.selectEnabledDefinitions(anyString())).thenReturn(definitions);
+    }
+
+    private static long definitionId(String code) {
+        return Math.abs((long) code.hashCode()) + 1L;
     }
 
     private static AiSample sample(LocalDate tradeDate) {

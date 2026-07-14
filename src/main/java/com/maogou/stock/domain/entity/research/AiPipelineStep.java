@@ -15,6 +15,8 @@ public class AiPipelineStep {
     public Integer stepOrder;
     public String status;
     public Integer retryCount;
+    public LocalDateTime nextRetryAt;
+    public LocalDateTime leaseUntil;
     public Integer inputCount;
     public Integer outputCount;
     public String checkpointJson;

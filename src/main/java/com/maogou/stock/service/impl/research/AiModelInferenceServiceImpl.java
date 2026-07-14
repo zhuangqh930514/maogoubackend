@@ -60,14 +60,13 @@ public class AiModelInferenceServiceImpl implements AiModelInferenceService {
 
     @Override
     public ModelInference infer(
-            Long userId,
             Long modelVersionId,
             AiSample sample,
             List<AiFactorValue> factors
     ) {
-        validateRequest(userId, modelVersionId, sample);
+        validateRequest(modelVersionId, sample);
         AiModelVersion version = modelMapper.selectById(modelVersionId);
-        validateVersion(userId, version);
+        validateVersion(version);
         LoadedModel loaded = cache.compute(modelVersionId, (ignored, existing) -> {
             if (existing != null && Objects.equals(existing.artifactChecksum(), version.artifactChecksum)
                     && Objects.equals(existing.manifestChecksum(), version.featureManifestChecksum)) {
@@ -235,16 +234,15 @@ public class AiModelInferenceServiceImpl implements AiModelInferenceService {
         }
     }
 
-    private static void validateRequest(Long userId, Long modelVersionId, AiSample sample) {
-        if (userId == null || userId <= 0 || modelVersionId == null || modelVersionId <= 0
-                || sample == null || sample.id == null || !Objects.equals(userId, sample.userId)) {
-            throw new IllegalArgumentException("模型推理缺少用户、模型版本或不可变样本血缘");
+    private static void validateRequest(Long modelVersionId, AiSample sample) {
+        if (modelVersionId == null || modelVersionId <= 0 || sample == null || sample.id == null) {
+            throw new IllegalArgumentException("模型推理缺少模型版本或不可变样本血缘");
         }
     }
 
-    private static void validateVersion(Long userId, AiModelVersion version) {
-        if (version == null || version.id == null || !Objects.equals(userId, version.userId)) {
-            throw new IllegalArgumentException("模型版本不存在或不属于当前用户");
+    private static void validateVersion(AiModelVersion version) {
+        if (version == null || version.id == null) {
+            throw new IllegalArgumentException("模型版本不存在");
         }
         if (!"VALIDATED".equals(version.status)) {
             throw new IllegalStateException("只有 VALIDATED 模型可以进入生产或影子推理");

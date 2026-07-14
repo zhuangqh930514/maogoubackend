@@ -14,12 +14,13 @@ public interface AiPipelineStepMapper extends BaseMapper<AiPipelineStep> {
 
     @Insert("""
             INSERT INTO ai_pipeline_step (
-                pipeline_run_id, step_key, step_order, status, retry_count,
+                pipeline_run_id, step_key, step_order, status, retry_count, next_retry_at, lease_until,
                 input_count, output_count, checkpoint_json, output_fingerprint,
                 error_message, started_at, finished_at, created_at, updated_at
             ) VALUES (
                 #{item.pipelineRunId}, #{item.stepKey}, #{item.stepOrder}, #{item.status},
-                #{item.retryCount}, #{item.inputCount}, #{item.outputCount},
+                #{item.retryCount}, #{item.nextRetryAt}, #{item.leaseUntil},
+                #{item.inputCount}, #{item.outputCount},
                 #{item.checkpointJson}, #{item.outputFingerprint}, #{item.errorMessage},
                 #{item.startedAt}, #{item.finishedAt}, #{item.createdAt}, #{item.updatedAt}
             ) ON DUPLICATE KEY UPDATE id = id
@@ -38,6 +39,7 @@ public interface AiPipelineStepMapper extends BaseMapper<AiPipelineStep> {
             UPDATE ai_pipeline_step s
             INNER JOIN ai_pipeline_run r ON r.id = s.pipeline_run_id
             SET s.status = #{item.status}, s.retry_count = #{item.retryCount},
+                s.next_retry_at = #{item.nextRetryAt}, s.lease_until = #{item.leaseUntil},
                 s.input_count = #{item.inputCount}, s.output_count = #{item.outputCount},
                 s.checkpoint_json = #{item.checkpointJson},
                 s.output_fingerprint = #{item.outputFingerprint},

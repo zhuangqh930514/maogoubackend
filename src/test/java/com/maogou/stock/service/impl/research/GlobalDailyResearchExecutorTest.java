@@ -1,0 +1,260 @@
+package com.maogou.stock.service.impl.research;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.maogou.stock.domain.entity.research.AiDataBatch;
+import com.maogou.stock.domain.entity.research.AiResearchUniverseItem;
+import com.maogou.stock.domain.entity.research.AiResearchUniverseSnapshot;
+import com.maogou.stock.domain.entity.research.AiSample;
+import com.maogou.stock.domain.entity.research.AiSourceObservation;
+import com.maogou.stock.dto.market.FinanceSnapshotResponse;
+import com.maogou.stock.dto.market.KlinePointResponse;
+import com.maogou.stock.dto.market.StockDetailResponse;
+import com.maogou.stock.dto.market.StockQuoteResponse;
+import com.maogou.stock.mapper.research.AiDataBatchMapper;
+import com.maogou.stock.mapper.research.AiResearchUniverseItemMapper;
+import com.maogou.stock.mapper.research.AiResearchUniverseSnapshotMapper;
+import com.maogou.stock.mapper.research.AiSampleMapper;
+import com.maogou.stock.mapper.research.AiSourceObservationMapper;
+import com.maogou.stock.service.MarketDataService;
+import com.maogou.stock.service.research.AiFactorEngine;
+import com.maogou.stock.service.research.AiGlobalDailyResearchExecutor;
+import com.maogou.stock.service.research.AiLabelVerificationCoordinator;
+import com.maogou.stock.service.research.AiPredictionEngine;
+import com.maogou.stock.service.research.AiResearchUniverseService;
+import com.maogou.stock.service.research.AiSampleSnapshotService;
+import org.junit.jupiter.api.Test;
+
+import java.lang.reflect.Modifier;
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentMap;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+class GlobalDailyResearchExecutorTest {
+
+    private static final LocalDate TRADE_DATE = LocalDate.of(2026, 7, 14);
+    private static final LocalDateTime STARTED_AT = TRADE_DATE.atTime(16, 0);
+
+    @Test
+    void fetchesEachGlobalStockOnceEvenWhenUniverseEvidenceContainsMultipleUsers() {
+        Fixture fixture = fixture();
+        when(fixture.snapshotMapper.selectById(91L)).thenReturn(snapshot());
+        when(fixture.itemMapper.selectList(any())).thenReturn(List.of(
+                item(1L, "600519", "WATCHLIST:USER:5"),
+                item(2L, "600519", "POSITION:USER:6"),
+                item(3L, "000001", "WATCHLIST:USER:6")));
+        when(fixture.snapshotService.startOrGetBatch(any(), any(), anyString(), any(), anyString()))
+                .thenReturn(batch());
+        when(fixture.marketDataService.stockDetailAt(anyString(), any()))
+                .thenAnswer(invocation -> detail(invocation.getArgument(0), invocation.getArgument(1)));
+
+        AiGlobalDailyResearchExecutor.StepOutcome outcome = fixture.executor.execute(
+                "FETCH_SOURCE_DATA", context(Map.of(
+                        "SNAPSHOT_UNIVERSE", "{\"universeSnapshotId\":91}")));
+
+        assertThat(outcome.processedCount()).isEqualTo(2);
+        assertThat(outcome.successCount()).isEqualTo(2);
+        assertThat(outcome.dataBatchId()).isEqualTo(55L);
+        verify(fixture.marketDataService, times(1)).stockDetailAt(
+                org.mockito.ArgumentMatchers.eq("600519"), any());
+        verify(fixture.marketDataService, times(1)).stockDetailAt(
+                org.mockito.ArgumentMatchers.eq("000001"), any());
+        verify(fixture.marketDataService, times(2)).stockDetailAt(anyString(), any());
+    }
+
+    @Test
+    void waitingSourceRecoversWithTheSamePersistedBatchAfterExecutorRestart() {
+        Fixture fixture = fixture();
+        AiDataBatch batch = batch();
+        when(fixture.dataBatchMapper.selectById(55L)).thenReturn(batch);
+        when(fixture.itemMapper.selectList(any())).thenReturn(List.of(
+                item(1L, "600519", "WATCHLIST:USER:5"),
+                item(2L, "000001", "WATCHLIST:USER:6")));
+        when(fixture.observationMapper.selectList(any())).thenReturn(List.of(
+                observation("600519", "READY"),
+                observation("000001", "UNAVAILABLE")));
+
+        AiGlobalDailyResearchExecutor.StepOutcome waiting = fixture.executor.execute(
+                "WAIT_DATA_READY", context(Map.of(
+                        "FETCH_SOURCE_DATA", "{\"universeSnapshotId\":91,\"dataBatchId\":55}")));
+
+        assertThat(waiting.status()).isEqualTo("WAITING_SOURCE");
+        assertThat(waiting.dataBatchId()).isEqualTo(55L);
+        assertThat(waiting.nextRetryAt()).isNotNull();
+
+        when(fixture.observationMapper.selectList(any())).thenReturn(List.of(
+                observation("600519", "READY"),
+                observation("000001", "READY")));
+        GlobalDailyResearchExecutor restarted = fixture.newExecutor();
+        AiGlobalDailyResearchExecutor.StepOutcome recovered = restarted.execute(
+                "WAIT_DATA_READY", context(Map.of(
+                        "FETCH_SOURCE_DATA", "{\"universeSnapshotId\":91,\"dataBatchId\":55}")));
+
+        assertThat(recovered.status()).isEqualTo("SUCCESS");
+        assertThat(recovered.dataBatchId()).isEqualTo(55L);
+        assertThat(batch.status).isEqualTo("READY");
+    }
+
+    @Test
+    void rebuildsSamplesFromDatabaseCheckpointsWithoutJvmBusinessState() throws Exception {
+        Fixture fixture = fixture();
+        AiDataBatch batch = batch();
+        batch.qualityStatus = "READY";
+        when(fixture.dataBatchMapper.selectById(55L)).thenReturn(batch);
+        AiResearchUniverseItem item = item(1L, "600519", "WATCHLIST:USER:5");
+        when(fixture.itemMapper.selectList(any())).thenReturn(List.of(item));
+        AiSourceObservation observation = observation("600519", "READY");
+        observation.payloadJson = fixture.objectMapper.writeValueAsString(detail("600519", STARTED_AT));
+        when(fixture.observationMapper.selectList(any())).thenReturn(List.of(observation));
+        AiSample sample = new AiSample();
+        sample.id = 801L;
+        sample.dataBatchId = 55L;
+        sample.universeItemId = 1L;
+        sample.stockCode = "600519";
+        when(fixture.snapshotService.createOrGetSnapshot(any())).thenReturn(sample);
+
+        GlobalDailyResearchExecutor restarted = fixture.newExecutor();
+        AiGlobalDailyResearchExecutor.StepOutcome outcome = restarted.execute(
+                "BUILD_SAMPLES", context(Map.of(
+                        "FETCH_SOURCE_DATA", "{\"universeSnapshotId\":91,\"dataBatchId\":55}")));
+
+        assertThat(outcome.status()).isEqualTo("SUCCESS");
+        assertThat(outcome.checkpointJson()).contains("\"sampleIds\":[801]");
+        assertThat(GlobalDailyResearchExecutor.class.getDeclaredFields())
+                .filteredOn(field -> !Modifier.isStatic(field.getModifiers()))
+                .noneMatch(field -> Map.class.isAssignableFrom(field.getType())
+                        || ConcurrentMap.class.isAssignableFrom(field.getType()));
+    }
+
+    private static Fixture fixture() {
+        return new Fixture(
+                mock(AiResearchUniverseService.class),
+                mock(AiResearchUniverseSnapshotMapper.class),
+                mock(AiResearchUniverseItemMapper.class),
+                mock(AiDataBatchMapper.class),
+                mock(AiSourceObservationMapper.class),
+                mock(AiSampleMapper.class),
+                mock(AiSampleSnapshotService.class),
+                mock(MarketDataService.class),
+                mock(AiFactorEngine.class),
+                mock(AiPredictionEngine.class),
+                mock(AiLabelVerificationCoordinator.class),
+                new ObjectMapper().findAndRegisterModules());
+    }
+
+    private static AiGlobalDailyResearchExecutor.PipelineContext context(Map<String, String> checkpoints) {
+        return new AiGlobalDailyResearchExecutor.PipelineContext(
+                4001L, TRADE_DATE, 1L, null,
+                "GLOBAL_DAILY:2026-07-14", "input-fingerprint", STARTED_AT,
+                checkpoints, () -> { });
+    }
+
+    private static AiResearchUniverseSnapshot snapshot() {
+        AiResearchUniverseSnapshot snapshot = new AiResearchUniverseSnapshot();
+        snapshot.id = 91L;
+        snapshot.researchUniverseId = 1L;
+        snapshot.tradeDate = TRADE_DATE;
+        snapshot.universeVersion = "CN_A_SYSTEM_CORE/2026-07-14/R0001";
+        snapshot.qualityStatus = "READY";
+        return snapshot;
+    }
+
+    private static AiDataBatch batch() {
+        AiDataBatch batch = new AiDataBatch();
+        batch.id = 55L;
+        batch.universeSnapshotId = 91L;
+        batch.tradeDate = TRADE_DATE;
+        batch.asOfTime = STARTED_AT;
+        batch.qualityStatus = "UNAVAILABLE";
+        return batch;
+    }
+
+    private static AiResearchUniverseItem item(Long id, String code, String reason) {
+        AiResearchUniverseItem item = new AiResearchUniverseItem();
+        item.id = id;
+        item.universeSnapshotId = 91L;
+        item.stockCode = code;
+        item.stockName = code;
+        item.sourceType = "USER_UNION";
+        item.inclusionReason = reason;
+        item.included = 1;
+        return item;
+    }
+
+    private static AiSourceObservation observation(String code, String status) {
+        AiSourceObservation observation = new AiSourceObservation();
+        observation.id = Math.abs((long) code.hashCode());
+        observation.dataBatchId = 55L;
+        observation.stockCode = code;
+        observation.sourceType = "STOCK_DAILY_SNAPSHOT";
+        observation.qualityStatus = status;
+        observation.fetchedAt = STARTED_AT;
+        observation.missingReason = "READY".equals(status) ? null : "收盘数据未就绪";
+        return observation;
+    }
+
+    private static StockDetailResponse detail(String code, LocalDateTime fetchedAt) {
+        StockQuoteResponse quote = new StockQuoteResponse(
+                code, code, new BigDecimal("10.00"), BigDecimal.ZERO, BigDecimal.ZERO,
+                BigDecimal.ONE, "CN_A", "EASTMONEY", fetchedAt);
+        KlinePointResponse kline = new KlinePointResponse(
+                TRADE_DATE, BigDecimal.TEN, BigDecimal.TEN, BigDecimal.TEN,
+                BigDecimal.TEN, 1000L, new BigDecimal("10000"));
+        return new StockDetailResponse(quote, FinanceSnapshotResponse.empty(), List.of(), List.of(kline), null, null);
+    }
+
+    private record Fixture(
+            AiResearchUniverseService universeService,
+            AiResearchUniverseSnapshotMapper snapshotMapper,
+            AiResearchUniverseItemMapper itemMapper,
+            AiDataBatchMapper dataBatchMapper,
+            AiSourceObservationMapper observationMapper,
+            AiSampleMapper sampleMapper,
+            AiSampleSnapshotService snapshotService,
+            MarketDataService marketDataService,
+            AiFactorEngine factorEngine,
+            AiPredictionEngine predictionEngine,
+            AiLabelVerificationCoordinator labelCoordinator,
+            ObjectMapper objectMapper,
+            GlobalDailyResearchExecutor executor
+    ) {
+        private Fixture(
+                AiResearchUniverseService universeService,
+                AiResearchUniverseSnapshotMapper snapshotMapper,
+                AiResearchUniverseItemMapper itemMapper,
+                AiDataBatchMapper dataBatchMapper,
+                AiSourceObservationMapper observationMapper,
+                AiSampleMapper sampleMapper,
+                AiSampleSnapshotService snapshotService,
+                MarketDataService marketDataService,
+                AiFactorEngine factorEngine,
+                AiPredictionEngine predictionEngine,
+                AiLabelVerificationCoordinator labelCoordinator,
+                ObjectMapper objectMapper
+        ) {
+            this(universeService, snapshotMapper, itemMapper, dataBatchMapper, observationMapper,
+                    sampleMapper, snapshotService, marketDataService, factorEngine, predictionEngine,
+                    labelCoordinator, objectMapper, new GlobalDailyResearchExecutor(
+                            universeService, snapshotMapper, itemMapper, dataBatchMapper, observationMapper,
+                            sampleMapper, snapshotService, marketDataService, factorEngine, predictionEngine,
+                            labelCoordinator, objectMapper));
+        }
+
+        private GlobalDailyResearchExecutor newExecutor() {
+            return new GlobalDailyResearchExecutor(
+                    universeService, snapshotMapper, itemMapper, dataBatchMapper, observationMapper,
+                    sampleMapper, snapshotService, marketDataService, factorEngine, predictionEngine,
+                    labelCoordinator, objectMapper);
+        }
+    }
+}

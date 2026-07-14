@@ -1,6 +1,6 @@
 package com.maogou.stock.service.impl.research;
 
-import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.maogou.stock.domain.entity.AiFactorDefinition;
 import com.maogou.stock.domain.entity.research.AiFactorValue;
 import com.maogou.stock.domain.entity.research.AiSample;
 import com.maogou.stock.dto.market.FinanceSnapshotResponse;
@@ -57,11 +57,7 @@ public class AiFactorEngineImpl implements AiFactorEngine {
         if (sampleIds == null || sampleIds.isEmpty()) {
             return List.of();
         }
-        return List.copyOf(factorMapper.selectList(new QueryWrapper<AiFactorValue>()
-                .in("sample_id", sampleIds)
-                .eq("factor_version", FACTOR_VERSION)
-                .orderByAsc("sample_id")
-                .orderByAsc("factor_code")));
+        return List.copyOf(factorMapper.selectBySamples(sampleIds, FACTOR_VERSION));
     }
 
     @Override
@@ -140,7 +136,6 @@ public class AiFactorEngineImpl implements AiFactorEngine {
         for (AiFactorValue value : values) {
             String key = value.factorCode
                     + "@" + (value.factorVersion == null ? FACTOR_VERSION : value.factorVersion)
-                    + "@" + (value.userId == null ? "UNKNOWN_USER" : value.userId)
                     + "@" + (value.crossSectionKey == null ? "UNKNOWN_SECTION" : value.crossSectionKey)
                     + "@" + (value.calculatedAt == null ? "UNKNOWN_TIME" : value.calculatedAt);
             groups.computeIfAbsent(key, ignored -> new ArrayList<>()).add(value);
@@ -189,7 +184,9 @@ public class AiFactorEngineImpl implements AiFactorEngine {
     @Transactional
     public List<AiFactorValue> normalizeAndStoreCrossSection(List<AiFactorValue> values) {
         List<AiFactorValue> normalized = normalizeCrossSection(values);
+        Map<String, AiFactorDefinition> definitions = enabledDefinitions();
         for (AiFactorValue value : normalized) {
+            bindDefinition(value, definitions);
             prepareImmutableValue(value);
         }
         return persistInBatches(normalized);
@@ -244,7 +241,7 @@ public class AiFactorEngineImpl implements AiFactorEngine {
     }
 
     private static void prepareImmutableValue(AiFactorValue value) {
-        if (value.userId == null || value.sampleId == null || value.stockCode == null
+        if (value.sampleId == null || value.factorDefinitionId == null
                 || value.factorCode == null || value.factorGroup == null || value.calculatedAt == null) {
             throw new IllegalArgumentException("因子缺少不可变写入必需字段");
         }
@@ -254,9 +251,10 @@ public class AiFactorEngineImpl implements AiFactorEngine {
         if (value.createdAt == null) {
             value.createdAt = LocalDateTime.now();
         }
+        value.evidenceJson = evidenceJson(value.evidence);
         value.inputFingerprint = sha256(String.join("|",
-                String.valueOf(value.userId),
                 String.valueOf(value.sampleId),
+                String.valueOf(value.factorDefinitionId),
                 value.stockCode,
                 value.factorCode,
                 value.factorVersion,
@@ -266,7 +264,7 @@ public class AiFactorEngineImpl implements AiFactorEngine {
                 decimalText(value.normalizedValue),
                 String.valueOf(value.missing),
                 String.valueOf(value.missingReason),
-                String.valueOf(value.evidence),
+                String.valueOf(value.evidenceJson),
                 String.valueOf(value.sourceEvidenceFingerprint),
                 String.valueOf(value.calculatedAt)));
     }
@@ -281,7 +279,47 @@ public class AiFactorEngineImpl implements AiFactorEngine {
     }
 
     private static String businessKey(AiFactorValue value) {
-        return value.sampleId + "|" + value.factorCode + "|" + value.factorVersion;
+        return value.sampleId + "|" + value.factorDefinitionId;
+    }
+
+    private Map<String, AiFactorDefinition> enabledDefinitions() {
+        List<AiFactorDefinition> definitions = factorMapper.selectEnabledDefinitions(FACTOR_VERSION);
+        Map<String, AiFactorDefinition> byCode = new LinkedHashMap<>();
+        for (AiFactorDefinition definition : definitions) {
+            if (definition == null || definition.id == null || definition.factorCode == null) {
+                throw new IllegalStateException("正式因子定义存在无效记录");
+            }
+            AiFactorDefinition previous = byCode.put(definition.factorCode, definition);
+            if (previous != null) {
+                throw new IllegalStateException("正式因子定义重复：" + definition.factorCode);
+            }
+        }
+        return byCode;
+    }
+
+    private static void bindDefinition(
+            AiFactorValue value,
+            Map<String, AiFactorDefinition> definitions
+    ) {
+        AiFactorDefinition definition = definitions.get(value.factorCode);
+        if (definition == null || !FACTOR_VERSION.equals(definition.versionNo)) {
+            throw new IllegalStateException("未注册或版本不匹配的正式因子：" + value.factorCode);
+        }
+        value.factorDefinitionId = definition.id;
+        value.factorVersion = definition.versionNo;
+        value.factorGroup = definition.factorGroup;
+        value.direction = definition.direction;
+    }
+
+    private static String evidenceJson(String evidence) {
+        if (evidence == null) {
+            return null;
+        }
+        return "{\"summary\":\"" + evidence
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r") + "\"}";
     }
 
     private static String decimalText(BigDecimal value) {
@@ -649,7 +687,6 @@ public class AiFactorEngineImpl implements AiFactorEngine {
 
     private static AiFactorValue base(AiSample sample, String code, String group) {
         AiFactorValue value = new AiFactorValue();
-        value.userId = sample.userId;
         value.sampleId = sample.id;
         value.stockCode = sample.stockCode;
         value.factorCode = code;
@@ -659,10 +696,7 @@ public class AiFactorEngineImpl implements AiFactorEngine {
         value.calculatedAt = sample.asOfTime == null ? LocalDateTime.now() : sample.asOfTime;
         value.createdAt = LocalDateTime.now();
         value.crossSectionKey = String.join(":",
-                String.valueOf(sample.userId),
                 String.valueOf(sample.dataBatchId),
-                String.valueOf(sample.universeCode),
-                String.valueOf(sample.universeVersion),
                 String.valueOf(sample.samplePhase),
                 String.valueOf(sample.asOfTime));
         return value;

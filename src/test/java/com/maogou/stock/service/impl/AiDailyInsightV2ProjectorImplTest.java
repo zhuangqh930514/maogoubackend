@@ -16,6 +16,7 @@ import com.maogou.stock.mapper.research.AiSampleLabelMapper;
 import com.maogou.stock.mapper.research.AiPredictionMapper;
 import com.maogou.stock.mapper.research.AiSampleMapper;
 import com.maogou.stock.service.research.AiDailyDecisionProjector;
+import com.maogou.stock.service.research.AiResearchContract;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -117,12 +118,12 @@ class AiDailyDecisionProjectorImplTest {
         AiFactorValue oldFactor = new AiFactorValue();
         oldFactor.sampleId = 21L;
         oldFactor.factorCode = "MOMENTUM_RETURN_5D";
-        oldFactor.factorVersion = "1.0.0";
+        oldFactor.factorVersion = "0.9.0";
         oldFactor.evidence = "OLD_FACTOR_EVIDENCE";
         AiFactorValue currentFactor = new AiFactorValue();
         currentFactor.sampleId = 21L;
         currentFactor.factorCode = "MOMENTUM_RETURN_5D";
-        currentFactor.factorVersion = "2.0.0";
+        currentFactor.factorVersion = AiResearchContract.FACTOR_VERSION;
         currentFactor.evidence = "CURRENT_FACTOR_EVIDENCE";
         when(factorMapper.selectList(any())).thenReturn(List.of(oldFactor, currentFactor));
         when(performanceMapper.selectList(any())).thenReturn(List.of());
