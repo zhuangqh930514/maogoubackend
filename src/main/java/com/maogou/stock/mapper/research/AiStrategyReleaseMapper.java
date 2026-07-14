@@ -29,6 +29,21 @@ public interface AiStrategyReleaseMapper extends BaseMapper<AiStrategyRelease> {
     );
 
     @Select("""
+            SELECT r.*
+            FROM ai_strategy_release r
+            INNER JOIN ai_research_universe u ON u.id = r.research_universe_id
+            WHERE u.universe_code = #{universeCode}
+              AND r.model_family = #{modelFamily}
+              AND r.release_role = 'CHAMPION'
+              AND r.status = 'ACTIVE'
+            LIMIT 1
+            """)
+    AiStrategyRelease selectGlobalActiveChampion(
+            @Param("universeCode") String universeCode,
+            @Param("modelFamily") String modelFamily
+    );
+
+    @Select("""
             SELECT * FROM ai_strategy_release
             WHERE user_id = #{userId} AND release_role = 'CHAMPION' AND status = 'ACTIVE'
             FOR UPDATE

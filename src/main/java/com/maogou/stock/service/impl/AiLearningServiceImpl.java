@@ -1367,18 +1367,8 @@ public class AiLearningServiceImpl implements AiLearningService {
     }
 
     private List<AiPredictionLabel> labelsForReports(Long userId, List<AiAnalysisReport> reports) {
-        List<Long> predictionIds = reports == null ? List.of() : reports.stream()
-                .map(item -> item.predictionId)
-                .filter(Objects::nonNull)
-                .distinct()
-                .toList();
-        if (predictionIds.isEmpty()) {
-            return List.of();
-        }
-        return labelMapper.selectList(new QueryWrapper<AiPredictionLabel>()
-                .eq("user_id", userId)
-                .in("prediction_id", predictionIds)
-                .orderByDesc("evaluated_at"));
+        // The deprecated model-evaluation page no longer owns formal report lineage.
+        return List.of();
     }
 
     private AiLearningPayloads.ModelEvalItem modelEvalItem(AiModelEvalRun item) {

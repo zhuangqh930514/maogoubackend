@@ -11,11 +11,12 @@ public class AiTradeRuleConfig {
     @TableId(type = IdType.AUTO)
     public Long id;
     public Long userId;
+    public Long strategyReleaseId;
     public String versionNo;
     public String name;
     public String status;
     public String configJson;
-    public Long sourceStrategyReleaseId;
+    public String seedVersion;
     public LocalDateTime createdAt;
     public LocalDateTime updatedAt;
 }

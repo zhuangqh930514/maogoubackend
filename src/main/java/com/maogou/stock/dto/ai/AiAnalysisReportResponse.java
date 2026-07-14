@@ -23,8 +23,9 @@ public record AiAnalysisReportResponse(
         String status,
         String errorMessage,
         Long sampleId,
-        Long predictionId,
-        Long strategyVersionId,
+        Long strategyReleaseId,
+        Integer reportVersion,
+        Long supersedesReportId,
         BigDecimal dataQualityScore,
         BigDecimal calibratedConfidence
 ) {
@@ -44,7 +45,7 @@ public record AiAnalysisReportResponse(
                 entity.id,
                 stockName,
                 entity.stockCode,
-                entity.score,
+                entity.systemScore == null ? null : entity.systemScore.intValue(),
                 entity.advice,
                 entity.generatedAt,
                 entity.technicalAnalysis,
@@ -57,8 +58,9 @@ public record AiAnalysisReportResponse(
                 entity.status == null ? null : entity.status.name(),
                 entity.errorMessage,
                 entity.sampleId,
-                entity.predictionId,
-                entity.strategyVersionId,
+                entity.strategyReleaseId,
+                entity.reportVersion,
+                entity.supersedesReportId,
                 entity.dataQualityScore,
                 entity.calibratedConfidence
         );

@@ -1114,6 +1114,7 @@ CREATE TABLE IF NOT EXISTS ai_analysis_report (
     stock_name VARCHAR(64) NULL,
     report_date DATE NOT NULL,
     report_version INT NOT NULL DEFAULT 1,
+    supersedes_report_id BIGINT NULL,
     idempotency_key VARCHAR(192) NOT NULL,
     status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
     system_score DECIMAL(10, 4) NULL,
@@ -1149,7 +1150,10 @@ CREATE TABLE IF NOT EXISTS ai_analysis_report (
     CONSTRAINT fk_analysis_report_release
         FOREIGN KEY (strategy_release_id) REFERENCES ai_strategy_release (id),
     CONSTRAINT fk_analysis_report_prompt
-        FOREIGN KEY (prompt_template_id) REFERENCES ai_prompt_template (id)
+        FOREIGN KEY (prompt_template_id) REFERENCES ai_prompt_template (id),
+    CONSTRAINT fk_analysis_report_supersedes
+        FOREIGN KEY (user_id, supersedes_report_id)
+        REFERENCES ai_analysis_report (user_id, id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 
 CREATE TABLE IF NOT EXISTS ai_analysis_report_prediction (
@@ -1195,6 +1199,7 @@ CREATE TABLE IF NOT EXISTS ai_trade_plan_review (
     report_id BIGINT NOT NULL,
     prediction_id BIGINT NULL,
     sample_label_id BIGINT NULL,
+    prediction_evaluation_id BIGINT NULL,
     trade_rule_config_id BIGINT NOT NULL,
     stock_code VARCHAR(16) NOT NULL,
     report_date DATE NOT NULL,
@@ -1226,6 +1231,7 @@ CREATE TABLE IF NOT EXISTS ai_trade_plan_review (
     KEY idx_trade_plan_review_rule (user_id, triggered_rule_code, horizon_trading_days),
     KEY idx_trade_plan_review_prediction (prediction_id),
     KEY idx_trade_plan_review_label (sample_label_id),
+    KEY idx_trade_plan_review_evaluation (prediction_evaluation_id),
     CONSTRAINT chk_trade_plan_review_horizon
         CHECK (horizon_trading_days IN (1, 2, 3, 5)),
     CONSTRAINT fk_trade_plan_review_report
@@ -1234,6 +1240,8 @@ CREATE TABLE IF NOT EXISTS ai_trade_plan_review (
         FOREIGN KEY (prediction_id) REFERENCES ai_prediction (id),
     CONSTRAINT fk_trade_plan_review_label
         FOREIGN KEY (sample_label_id) REFERENCES ai_sample_label (id),
+    CONSTRAINT fk_trade_plan_review_evaluation
+        FOREIGN KEY (prediction_evaluation_id) REFERENCES ai_prediction_evaluation (id),
     CONSTRAINT fk_trade_plan_review_config
         FOREIGN KEY (user_id, trade_rule_config_id)
         REFERENCES ai_trade_rule_config (user_id, id)

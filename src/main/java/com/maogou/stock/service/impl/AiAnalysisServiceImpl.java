@@ -4,10 +4,11 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.maogou.stock.domain.entity.AiAnalysisDecision;
 import com.maogou.stock.domain.entity.AiAnalysisReport;
 import com.maogou.stock.domain.entity.AiModelConfig;
-import com.maogou.stock.domain.entity.AiStrategyVersion;
+import com.maogou.stock.domain.entity.research.AiPrediction;
+import com.maogou.stock.domain.entity.research.AiSample;
+import com.maogou.stock.domain.entity.research.AiStrategyRelease;
 import com.maogou.stock.domain.enums.AnalysisStatus;
 import com.maogou.stock.dto.ai.AiAnalysisReportResponse;
 import com.maogou.stock.dto.ai.AiAnalysisReportPageResponse;
@@ -20,24 +21,23 @@ import com.maogou.stock.dto.market.NewsFlashResponse;
 import com.maogou.stock.dto.market.StockDetailResponse;
 import com.maogou.stock.dto.watchlist.WatchStockResponse;
 import com.maogou.stock.infrastructure.ai.LocalAiClient;
-import com.maogou.stock.mapper.AiAnalysisDecisionMapper;
 import com.maogou.stock.mapper.AiAnalysisReportMapper;
-import com.maogou.stock.mapper.AiStrategyVersionMapper;
 import com.maogou.stock.mapper.WatchStockMapper;
+import com.maogou.stock.mapper.research.AiPredictionMapper;
+import com.maogou.stock.mapper.research.AiSampleMapper;
+import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
 import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.AiAnalysisService;
 import com.maogou.stock.service.AiConditionalTradeStrategyService;
-import com.maogou.stock.service.AiLearningService;
 import com.maogou.stock.service.MarketDataService;
 import com.maogou.stock.service.ModelConfigService;
 import com.maogou.stock.service.PromptTemplateService;
 import com.maogou.stock.service.TradingCalendarService;
 import com.maogou.stock.service.WatchlistService;
+import com.maogou.stock.service.research.AiResearchContract;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClientResponseException;
 
@@ -48,6 +48,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -70,12 +71,13 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
     private static final Pattern FENCED_BLOCK = Pattern.compile("(?is)```(?:json)?\\s*([\\s\\S]*?)\\s*```");
 
     private final AiAnalysisReportMapper reportMapper;
-    private final AiAnalysisDecisionMapper decisionMapper;
-    private final AiStrategyVersionMapper strategyVersionMapper;
+    private final AiAnalysisReportLineageWriter reportLineageWriter;
     private final WatchStockMapper watchStockMapper;
+    private final AiSampleMapper sampleMapper;
+    private final AiPredictionMapper predictionMapper;
+    private final AiStrategyReleaseMapper strategyReleaseMapper;
     private final MarketDataService marketDataService;
     private final WatchlistService watchlistService;
-    private final AiLearningService aiLearningService;
     private final AiConditionalTradeStrategyService conditionalTradeStrategyService;
     private final ModelConfigService modelConfigService;
     private final PromptTemplateService promptTemplateService;
@@ -85,12 +87,13 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
 
     public AiAnalysisServiceImpl(
             AiAnalysisReportMapper reportMapper,
-            AiAnalysisDecisionMapper decisionMapper,
-            AiStrategyVersionMapper strategyVersionMapper,
+            AiAnalysisReportLineageWriter reportLineageWriter,
             WatchStockMapper watchStockMapper,
+            AiSampleMapper sampleMapper,
+            AiPredictionMapper predictionMapper,
+            AiStrategyReleaseMapper strategyReleaseMapper,
             MarketDataService marketDataService,
             WatchlistService watchlistService,
-            AiLearningService aiLearningService,
             AiConditionalTradeStrategyService conditionalTradeStrategyService,
             ModelConfigService modelConfigService,
             PromptTemplateService promptTemplateService,
@@ -99,12 +102,13 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             ObjectMapper objectMapper
     ) {
         this.reportMapper = reportMapper;
-        this.decisionMapper = decisionMapper;
-        this.strategyVersionMapper = strategyVersionMapper;
+        this.reportLineageWriter = reportLineageWriter;
         this.watchStockMapper = watchStockMapper;
+        this.sampleMapper = sampleMapper;
+        this.predictionMapper = predictionMapper;
+        this.strategyReleaseMapper = strategyReleaseMapper;
         this.marketDataService = marketDataService;
         this.watchlistService = watchlistService;
-        this.aiLearningService = aiLearningService;
         this.conditionalTradeStrategyService = conditionalTradeStrategyService;
         this.modelConfigService = modelConfigService;
         this.promptTemplateService = promptTemplateService;
@@ -185,15 +189,9 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             query.eq("stock_code", code.trim());
         }
         switch (filter == null ? "ALL" : filter.trim().toUpperCase(Locale.ROOT)) {
-            case "HIGH_RISK" -> query.lt("score", 60);
-            case "BUY" -> query.and(nested -> nested
-                    .like("advice", "买入")
-                    .or().like("advice", "突破")
-                    .or().like("advice", "持有"));
-            case "REDUCE" -> query.and(nested -> nested
-                    .like("advice", "减仓")
-                    .or().like("advice", "控制")
-                    .or().like("advice", "风险"));
+            case "HIGH_RISK" -> query.ge("risk_score", 60);
+            case "BUY" -> query.in("final_action", "BUY", "HOLD");
+            case "REDUCE" -> query.in("final_action", "REDUCE", "SELL");
             default -> {
             }
         }
@@ -242,7 +240,6 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
     }
 
     @Override
-    @Transactional
     public void removeReports(List<Long> ids) {
         List<Long> normalizedIds = ids == null ? List.of() : ids.stream()
                 .filter(id -> id != null && id > 0)
@@ -251,9 +248,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         if (normalizedIds.isEmpty()) {
             return;
         }
-        reportMapper.delete(new QueryWrapper<AiAnalysisReport>()
-                .eq("user_id", AuthContext.currentUserIdOrDefault())
-                .in("id", normalizedIds));
+        throw new UnsupportedOperationException("正式个股报告为不可变研究证据，不支持删除");
     }
 
     @Override
@@ -283,14 +278,14 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
     ) {
         Long userId = AuthContext.currentUserIdOrDefault();
         Long normalizedPromptTemplateId = normalizePromptTemplateId(promptTemplateId);
+        validateTargetReport(userId, targetReportId, code);
         LocalDateTime marketDataAsOf = tradeDate.atTime(16, 0);
         StockDetailResponse detail = pointInTime
                 ? marketDataService.stockDetailAt(code, marketDataAsOf)
                 : marketDataService.stockDetailForAnalysis(code);
         AnalysisFreshness freshness = validateAnalysisFreshness(detail);
-        AiLearningPayloads.AnalysisLearningContext learningContext = pointInTime && !tradeDate.equals(LocalDate.now())
-                ? AiLearningPayloads.AnalysisLearningContext.empty()
-                : aiLearningService.prepareAnalysisContext(detail, normalizedPromptTemplateId);
+        FormalAnalysisContext formalContext = loadFormalContext(detail.quote().code(), tradeDate);
+        AiLearningPayloads.AnalysisLearningContext learningContext = formalContext.conditionalContext();
         List<NewsFlashResponse> realtimeNews = pointInTime
                 ? marketDataService.latestNewsForAnalysisAt(8, marketDataAsOf)
                 : marketDataService.latestNewsForAnalysis(8);
@@ -299,11 +294,12 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         String conditionalStrategyJson = writeRequiredJson(conditionalStrategy);
         AiModelConfig config = normalizeAnalysisConfig(modelConfigService.currentEntity());
         String selectedTemplate = promptTemplateService.resolveContent(promptTemplateId, null);
-        String prompt = buildPrompt(detail, config, selectedTemplate, activeStrategyPrompt(userId),
-                learningContext.promptContext(), conditionalStrategyJson, freshness, realtimeNews);
+        String prompt = buildPrompt(detail, config, selectedTemplate, activeStrategyPrompt(formalContext.release()),
+                formalContext.promptContext(), conditionalStrategyJson, freshness, realtimeNews);
         LocalDateTime now = LocalDateTime.now();
         LocalDate reportDate = tradeDate;
-        AiAnalysisReport report = resolveTargetReport(targetReportId, detail.quote().code(), config.modelName, reportDate, now);
+        FormalDecision formalDecision = formalContext.decision();
+        AiAnalysisReport report = new AiAnalysisReport();
         report.userId = userId;
         report.stockCode = detail.quote().code();
         report.stockName = resolveStockName(userId, report.stockCode, detail.quote().name());
@@ -312,21 +308,23 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         report.promptTemplateId = normalizedPromptTemplateId;
         report.reportDate = reportDate;
         report.generatedAt = now;
-        report.sampleId = learningContext.sampleId();
-        report.predictionId = learningContext.predictionId();
-        report.strategyVersionId = learningContext.strategyVersionId();
-        report.dataQualityScore = learningContext.dataQualityScore();
-        report.calibratedConfidence = learningContext.calibratedConfidence();
+        report.sampleId = formalContext.sample().id;
+        report.strategyReleaseId = formalContext.release().id;
+        report.dataQualityScore = formalContext.sample().dataQualityScore == null
+                ? BigDecimal.ZERO : formalContext.sample().dataQualityScore;
+        report.calibratedConfidence = formalDecision.calibratedConfidence();
         report.updatedAt = now;
-        report.deleted = 0;
         report.status = AnalysisStatus.PENDING;
-        report.score = detail.aiScore();
-        report.advice = detail.aiAdvice();
+        report.systemScore = formalDecision.systemScore();
+        report.finalAction = formalDecision.finalAction();
+        report.targetDirection = formalDecision.targetDirection();
+        report.riskScore = formalDecision.riskScore();
+        report.riskLevel = formalDecision.riskLevel();
+        report.advice = adviceFor(formalDecision);
         report.promptSummary = buildFallbackPromptSummary(detail);
         report.conditionalStrategy = conditionalStrategyJson;
-        if (report.id == null) {
-            report.createdAt = now;
-        }
+        report.buySellPoints = deterministicTradePlanSummary(formalDecision, conditionalStrategy);
+        report.createdAt = now;
 
         AiAnalysisResultPayload parsedPayload = null;
         try {
@@ -338,12 +336,11 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             applyPayload(report, parsedPayload);
             report.status = AnalysisStatus.SUCCESS;
             report.errorMessage = null;
-            log.info("AI stock analysis success userId={} code={} reportId={} reportScore={} responseChars={}",
-                    report.userId, report.stockCode, report.id, report.score, safeLength(report.rawResponse));
+            log.info("AI stock analysis success userId={} code={} reportScore={} responseChars={}",
+                    report.userId, report.stockCode, report.systemScore, safeLength(report.rawResponse));
         } catch (Exception ex) {
             report.technicalAnalysis = "AI 分析调用失败，已保存失败报告供排查。";
             report.riskWarning = buildRiskWarningFailureMessage(ex);
-            report.buySellPoints = "本次报告未获得有效买卖点建议，请重新生成。";
             report.promptSummary = buildFallbackPromptSummary(detail);
             report.rawResponse = ex instanceof AnalysisAttemptException attemptException ? attemptException.rawResponse() : report.rawResponse;
             report.errorMessage = ex.getMessage();
@@ -351,11 +348,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             log.error("AI stock analysis failed userId={} code={} model={} promptTemplateId={} targetReportId={} message={} rawResponsePreview={}",
                     report.userId, report.stockCode, config.modelName, normalizedPromptTemplateId, targetReportId, ex.getMessage(), preview(report.rawResponse), ex);
         }
-        saveOrUpdateReport(report);
-        aiLearningService.linkReport(learningContext.predictionId(), report.id);
-        if (report.status == AnalysisStatus.SUCCESS && parsedPayload != null) {
-            saveDecision(report, parsedPayload);
-        }
+        reportLineageWriter.persistVersion(report, formalContext.linkedPredictions());
         try {
             conditionalTradeStrategyService.initializeReviews(report, conditionalStrategy);
         } catch (RuntimeException exception) {
@@ -372,106 +365,201 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
     }
 
     private Long normalizePromptTemplateId(Long promptTemplateId) {
-        return promptTemplateId == null ? 0L : promptTemplateId;
+        return promptTemplateId == null || promptTemplateId <= 0 ? null : promptTemplateId;
     }
 
-    private AiAnalysisReport resolveTargetReport(
-            Long targetReportId,
-            String stockCode,
-            String sourceModel,
-            LocalDate reportDate,
-            LocalDateTime now
+    private void validateTargetReport(Long userId, Long targetReportId, String stockCode) {
+        if (targetReportId == null || targetReportId <= 0) {
+            return;
+        }
+        AiAnalysisReport target = reportMapper.selectOwned(targetReportId, userId);
+        if (target == null) {
+            throw new IllegalArgumentException("待重新分析的报告不存在或不属于当前用户");
+        }
+        if (stockCode != null && target.stockCode != null
+                && stockCode.matches("\\d{6}") && !stockCode.equals(target.stockCode)) {
+            throw new IllegalArgumentException("待重新分析报告与股票代码不一致");
+        }
+    }
+
+    private FormalAnalysisContext loadFormalContext(String stockCode, LocalDate tradeDate) {
+        AiSample sample = sampleMapper.selectLatestForAnalysis(stockCode, tradeDate);
+        if (sample == null || sample.id == null) {
+            throw new IllegalStateException("该股票尚无正式收盘研究样本，请先完成全局研究流水线");
+        }
+        AiStrategyRelease release = strategyReleaseMapper.selectGlobalActiveChampion(
+                AiResearchContract.SYSTEM_UNIVERSE_CODE, AiResearchContract.MODEL_FAMILY);
+        if (release == null || release.id == null) {
+            throw new IllegalStateException("正式 Champion 策略不可用，无法生成可追溯报告");
+        }
+        List<AiPrediction> allPredictions = predictionMapper.selectForAnalysis(sample.id);
+        List<AiPrediction> selected = selectCurrentReleasePredictions(allPredictions, release.id);
+        Map<Integer, AiPrediction> byHorizon = new LinkedHashMap<>();
+        selected.stream()
+                .filter(item -> item.horizonDays != null)
+                .forEach(item -> byHorizon.putIfAbsent(item.horizonDays, item));
+
+        FormalDecision decision = deriveFormalDecision(sample, byHorizon);
+        String promptContext = formalPromptContext(sample, release, byHorizon, decision);
+        return new FormalAnalysisContext(
+                sample,
+                release,
+                Map.copyOf(byHorizon),
+                List.copyOf(byHorizon.values()),
+                decision,
+                promptContext);
+    }
+
+    static List<AiPrediction> selectCurrentReleasePredictions(
+            List<AiPrediction> predictions,
+            Long strategyReleaseId
     ) {
-        Long userId = AuthContext.currentUserIdOrDefault();
-        if (targetReportId != null && targetReportId > 0) {
-            AiAnalysisReport existing = reportMapper.selectOne(new QueryWrapper<AiAnalysisReport>()
-                    .eq("id", targetReportId)
-                    .eq("user_id", userId)
-                    .last("LIMIT 1"));
-            if (existing != null) {
-                existing.updatedAt = now;
-                return existing;
-            }
+        if (predictions == null || predictions.isEmpty()) {
+            return List.of();
         }
-        AiAnalysisReport existing = reportMapper.selectOne(new QueryWrapper<AiAnalysisReport>()
-                .eq("user_id", userId)
-                .eq("stock_code", stockCode)
-                .eq("report_date", reportDate)
-                .eq("source_model", sourceModel)
-                .eq("deleted", 0)
-                .orderByDesc("generated_at")
-                .last("LIMIT 1"));
-        if (existing != null) {
-            existing.updatedAt = now;
-            return existing;
-        }
-        return new AiAnalysisReport();
+        return predictions.stream()
+                .filter(Objects::nonNull)
+                .filter(item -> Objects.equals(item.strategyReleaseId, strategyReleaseId))
+                .sorted(Comparator.comparing((AiPrediction item) -> item.predictedAt,
+                                Comparator.nullsLast(Comparator.reverseOrder()))
+                        .thenComparing(item -> item.id, Comparator.nullsLast(Comparator.reverseOrder())))
+                .toList();
     }
 
-    private void saveOrUpdateReport(AiAnalysisReport report) {
-        try {
-            if (report.id == null) {
-                reportMapper.insert(report);
-            } else {
-                reportMapper.updateById(report);
-            }
-        } catch (DuplicateKeyException ex) {
-            AiAnalysisReport existing = reportMapper.selectOne(new QueryWrapper<AiAnalysisReport>()
-                    .eq("user_id", report.userId)
-                    .eq("stock_code", report.stockCode)
-                    .eq("report_date", report.reportDate)
-                    .eq("source_model", report.sourceModel)
-                    .eq("deleted", 0)
-                    .orderByDesc("generated_at")
-                    .last("LIMIT 1"));
-            if (existing == null) {
-                throw ex;
-            }
-            report.id = existing.id;
-            report.createdAt = existing.createdAt;
-            report.updatedAt = LocalDateTime.now();
-            reportMapper.updateById(report);
+    static FormalDecision deriveFormalDecision(AiSample sample, Map<Integer, AiPrediction> predictions) {
+        if (sample == null) {
+            return FormalDecision.unavailable("MISSING_FORMAL_SAMPLE");
         }
+        if (sample.qualityStatus != null && !"READY".equals(sample.qualityStatus)) {
+            return FormalDecision.unavailable("SAMPLE_QUALITY_" + sample.qualityStatus);
+        }
+        if (sample.tradableStatus != null && !"TRADABLE".equals(sample.tradableStatus)) {
+            return FormalDecision.unavailable("SAMPLE_TRADABLE_" + sample.tradableStatus);
+        }
+        if (sample.dataQualityScore == null) {
+            return FormalDecision.unavailable("MISSING_DATA_QUALITY");
+        }
+        Map<Integer, AiPrediction> values = predictions == null ? Map.of() : predictions;
+        for (Integer horizon : List.of(1, 2, 3)) {
+            AiPrediction prediction = values.get(horizon);
+            if (prediction == null) {
+                return FormalDecision.unavailable("MISSING_T" + horizon + "_PREDICTION");
+            }
+            if (prediction.score == null || prediction.riskScore == null
+                    || prediction.calibratedConfidence == null || prediction.action == null) {
+                return FormalDecision.unavailable("INVALID_T" + horizon + "_PREDICTION");
+            }
+        }
+        AiPrediction t1 = values.get(1);
+        AiPrediction t2 = values.get(2);
+        AiPrediction t3 = values.get(3);
+        BigDecimal score = t1.score.multiply(new BigDecimal("0.20"))
+                .add(t2.score.multiply(new BigDecimal("0.30")))
+                .add(t3.score.multiply(new BigDecimal("0.50")))
+                .setScale(4, RoundingMode.HALF_UP);
+        BigDecimal confidence = t1.calibratedConfidence.multiply(new BigDecimal("0.20"))
+                .add(t2.calibratedConfidence.multiply(new BigDecimal("0.30")))
+                .add(t3.calibratedConfidence.multiply(new BigDecimal("0.50")))
+                .setScale(4, RoundingMode.HALF_UP);
+        BigDecimal risk = t3.riskScore;
+        String action = normalizeFormalAction(t3.action);
+        if (risk.compareTo(new BigDecimal("70")) >= 0 && !List.of("REDUCE", "SELL").contains(action)) {
+            action = "WATCH";
+        }
+        String direction = t3.targetDirection == null || t3.targetDirection.isBlank()
+                ? "SIDEWAYS" : t3.targetDirection.trim().toUpperCase(Locale.ROOT);
+        return new FormalDecision(score, action, direction, risk, formalRiskLevel(risk), confidence, null);
     }
 
-    private void saveDecision(AiAnalysisReport report, AiAnalysisResultPayload payload) {
-        AiAnalysisResultPayload.DecisionPayload decision = payload.decision() == null
-                ? fallbackDecisionFromText(report.rawResponse, payload.buySellPoints())
-                : normalizeDecisionPayload(payload.decision(), payload.buySellPoints(), report.rawResponse);
-        LocalDateTime now = LocalDateTime.now();
-        AiAnalysisDecision entity = decisionMapper.selectOne(new QueryWrapper<AiAnalysisDecision>()
-                .eq("user_id", report.userId)
-                .eq("report_id", report.id)
-                .last("LIMIT 1"));
-        if (entity == null) {
-            entity = new AiAnalysisDecision();
-            entity.userId = report.userId;
-            entity.reportId = report.id;
-            entity.createdAt = now;
+    private String formalPromptContext(
+            AiSample sample,
+            AiStrategyRelease release,
+            Map<Integer, AiPrediction> predictions,
+            FormalDecision decision
+    ) {
+        List<Map<String, Object>> horizons = List.of(1, 2, 3, 5).stream()
+                .map(predictions::get)
+                .filter(Objects::nonNull)
+                .map(item -> {
+                    Map<String, Object> value = new LinkedHashMap<>();
+                    value.put("horizonTradingDays", item.horizonDays);
+                    value.put("predictionId", item.id);
+                    value.put("action", item.action);
+                    value.put("targetDirection", item.targetDirection);
+                    value.put("score", item.score);
+                    value.put("riskScore", item.riskScore);
+                    value.put("probabilityUp", item.probabilityUp);
+                    value.put("probabilityDown", item.probabilityDown);
+                    value.put("expectedExcessReturn", item.expectedExcessReturn);
+                    value.put("calibratedConfidence", item.calibratedConfidence);
+                    value.put("predictedAt", item.predictedAt);
+                    value.put("inputFingerprint", item.inputFingerprint);
+                    return value;
+                }).toList();
+        Map<String, Object> context = new LinkedHashMap<>();
+        context.put("sampleId", sample.id);
+        context.put("sampleTradeDate", sample.tradeDate);
+        context.put("sampleAsOfTime", sample.asOfTime);
+        context.put("samplePhase", sample.samplePhase);
+        context.put("dataQualityScore", sample.dataQualityScore);
+        context.put("qualityStatus", sample.qualityStatus);
+        context.put("marketRegime", sample.marketRegime);
+        context.put("strategyReleaseId", release.id);
+        context.put("strategyReleaseVersion", release.versionNo);
+        context.put("formalPredictions", horizons);
+        context.put("deterministicSystemScore", decision.systemScore());
+        context.put("deterministicFinalAction", decision.finalAction());
+        context.put("deterministicRiskScore", decision.riskScore());
+        context.put("deterministicRiskLevel", decision.riskLevel());
+        context.put("unavailableReason", decision.unavailableReason());
+        context.put("llmConfidenceWeight", 0);
+        return writeRequiredJson(context);
+    }
+
+    private static String adviceFor(FormalDecision decision) {
+        if (decision.unavailableReason() != null) {
+            return "谨慎观察：核心分周期预测不完整，模型仅提供解释，不生成推荐";
         }
-        entity.stockCode = report.stockCode;
-        entity.stockName = report.stockName;
-        entity.decision = decision.decision();
-        entity.confidence = decision.confidence() == null
-                ? BigDecimal.ZERO
-                : BigDecimal.valueOf(decision.confidence()).setScale(4, RoundingMode.HALF_UP);
-        entity.holdingPeriod = decision.holdingPeriod();
-        entity.targetDirection = decision.targetDirection();
-        entity.riskLevel = decision.riskLevel();
-        entity.summary = decision.summary();
-        try {
-            entity.factorsJson = writeJson(decision.factors() == null ? List.of() : decision.factors());
-            entity.rawDecisionJson = writeJson(decision);
-        } catch (JsonProcessingException ex) {
-            entity.factorsJson = "[]";
-            entity.rawDecisionJson = "{}";
+        return switch (decision.finalAction()) {
+            case "BUY" -> "满足正式策略条件后关注买入机会";
+            case "HOLD" -> "按条件计划持有并跟踪风险触发线";
+            case "REDUCE" -> "风险信号触发，按条件计划降低仓位";
+            case "SELL" -> "退出条件触发，按风险规则处理";
+            default -> "谨慎观察，等待条件触发";
+        };
+    }
+
+    private String deterministicTradePlanSummary(
+            FormalDecision decision,
+            AiConditionalStrategyPayload strategy
+    ) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("source", "SYSTEM_CONDITIONAL_RULES");
+        result.put("action", decision.finalAction());
+        result.put("systemScore", decision.systemScore());
+        result.put("riskScore", decision.riskScore());
+        result.put("riskLevel", decision.riskLevel());
+        result.put("unavailableReason", decision.unavailableReason());
+        result.put("tradingPlans", strategy == null ? List.of() : strategy.tradingPlans());
+        result.put("buyModels", strategy == null ? List.of() : strategy.buyModels());
+        result.put("sellModels", strategy == null ? List.of() : strategy.sellModels());
+        return writeRequiredJson(result);
+    }
+
+    private static String normalizeFormalAction(String action) {
+        String normalized = action == null ? "WATCH" : action.trim().toUpperCase(Locale.ROOT);
+        return List.of("BUY", "HOLD", "REDUCE", "SELL", "WATCH").contains(normalized)
+                ? normalized : "WATCH";
+    }
+
+    private static String formalRiskLevel(BigDecimal risk) {
+        if (risk.compareTo(new BigDecimal("30")) < 0) {
+            return "LOW";
         }
-        entity.updatedAt = now;
-        if (entity.id == null) {
-            decisionMapper.insert(entity);
-        } else {
-            decisionMapper.updateById(entity);
+        if (risk.compareTo(new BigDecimal("60")) < 0) {
+            return "MEDIUM";
         }
+        return "HIGH";
     }
 
     private String resolveStockName(Long userId, String stockCode, String suggestedName) {
@@ -502,7 +590,6 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         QueryWrapper<AiAnalysisReport> wrapper = new QueryWrapper<AiAnalysisReport>()
                 .select("stock_name")
                 .eq("stock_code", stockCode)
-                .eq("deleted", 0)
                 .isNotNull("stock_name")
                 .notIn("stock_name", UNKNOWN_STOCK_NAME, stockCode)
                 .orderByDesc("generated_at")
@@ -547,15 +634,10 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         throw lastException == null ? new IllegalStateException("AI 分析失败") : lastException;
     }
 
-    private void applyPayload(AiAnalysisReport report, AiAnalysisResultPayload payload) throws JsonProcessingException {
+    void applyPayload(AiAnalysisReport report, AiAnalysisResultPayload payload) throws JsonProcessingException {
         report.technicalAnalysis = writeJson(payload.technicalAnalysis());
         report.riskWarning = writeJson(payload.riskWarning());
-        report.buySellPoints = writeJson(payload.buySellPoints());
         report.promptSummary = writeJson(payload.promptSummary());
-        if (payload.score() != null) {
-            report.score = payload.score();
-        }
-        report.advice = summarizeAdvice(payload.decision(), payload.buySellPoints(), report.advice);
     }
 
     private void validatePayload(AiAnalysisResultPayload payload) {
@@ -649,34 +731,25 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         return "本次报告未获得有效风险提示，请检查模型输出格式或重新生成。";
     }
 
-    private String activeStrategyPrompt(Long userId) {
-        try {
-            AiStrategyVersion active = strategyVersionMapper.selectOne(new QueryWrapper<AiStrategyVersion>()
-                    .eq("user_id", userId)
-                    .eq("active", 1)
-                    .orderByDesc("created_at")
-                    .last("LIMIT 1"));
-            if (active == null || active.promptTemplate == null || active.promptTemplate.isBlank()) {
-                return "";
-            }
-            return """
-                    策略版本：%s / %s
-                    策略摘要：%s
-                    因子快照：
-                    %s
-                    Prompt 调权要求：
-                    %s
-                    """.formatted(
-                    active.versionNo,
-                    active.title,
-                    active.strategySummary == null ? "" : active.strategySummary,
-                    active.factorSnapshot == null ? "" : active.factorSnapshot,
-                    active.promptTemplate
-            );
-        } catch (RuntimeException ex) {
-            log.warn("active AI strategy unavailable, fallback to base prompt. userId={} message={}", userId, ex.getMessage());
-            return "";
+    private String activeStrategyPrompt(AiStrategyRelease release) {
+        if (release == null) {
+            return "当前没有可用的正式策略发布。";
         }
+        return """
+                正式策略发布：%s / %s
+                发布角色：%s
+                发布状态：%s
+                配置快照：%s
+                因子快照：%s
+                验证指标：%s
+                """.formatted(
+                release.versionNo,
+                release.title,
+                release.releaseRole,
+                release.status,
+                release.configJson == null ? "{}" : release.configJson,
+                release.factorSnapshotJson == null ? "{}" : release.factorSnapshotJson,
+                release.validationMetricsJson == null ? "{}" : release.validationMetricsJson);
     }
 
     private AnalysisFreshness validateAnalysisFreshness(StockDetailResponse detail) {
@@ -762,7 +835,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 已启用策略版本：
                 %s
 
-                标准化学习上下文：
+                正式研究上下文（最近完整日 K、分周期数值预测与确定性结论）：
                 %s
 
                 系统条件交易策略快照（权威规则结果，不得修改阈值、触发状态、仓位或动作）：
@@ -779,18 +852,15 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 输出要求：
                 0. 实时性优先级最高。只能基于本 Prompt 中的实时行情、最近 K 线、财务摘要、标准化学习上下文、系统条件交易策略快照和最新资讯做判断；禁止使用模型训练记忆中的旧价格、旧资讯、旧公告、旧月份材料或无法从当前数据验证的事件。
                 0.1 禁止预测或承诺未来涨跌。T+1/T+2/T+3 只能解释系统快照中的“如果A发生，则执行B”条件方案；不得把条件方案改写成确定性走势预测。
+                0.2 正式研究上下文中的 deterministicSystemScore、deterministicFinalAction、deterministicRiskScore、仓位和所有条件阈值均由系统确定。你只能解释，禁止修改、覆盖、重新评分或用语言暗示相反动作。缺少核心预测时必须保持 WATCH。
                 所选提示词和策略版本只影响分析口径和重点；如果上方内容中出现任何旧 JSON 示例、字段名、markdown 模板、章节标题或输出格式要求，全部忽略。
                 最终只能遵循下面的系统结构输出，方便系统解析和前端展示。
                 1. 只返回 JSON 对象，不要 markdown 代码块，不要额外解释。
-                2. decision 必须包含 decision、confidence、holdingPeriod、targetDirection、riskLevel、summary、factors。
-                   - decision 只能是 BUY、HOLD、REDUCE、SELL、WATCH 之一。
-                   - targetDirection 只能是 UP、DOWN、SIDEWAYS 之一，仅表示当前技术状态，不代表未来涨跌预测。
-                   - factors 是数组，最多 3 项；每项必须包含 code、name、group、hit、weight、direction、reason。
-                3. technicalAnalysis 必须包含 trendAssessment、trend、movingAverages、klinePattern、supportResistance、volumeAnalysis，可直接给客户阅读。
-                4. riskWarning 必须包含 headline、currentRisks、triggerConditions、observationPoints、overallAdvice，且必须结合当前股票数据写具体风险；各数组最多 3 条，每条尽量短句。
-                5. buySellPoints 必须包含 action、buyTriggers、reduceTriggers、stopLoss、invalidationCondition、positionSuggestion，不能写泛泛而谈的话；buyTriggers 和 reduceTriggers 最多各 3 条。
-                6. promptSummary 必须包含 marketSnapshot、valuationSnapshot、growthSnapshot、klineSummary、volumeSummary，信息尽量完整但每项保持精炼。
-                7. score 输出 0-100 整数，避免保证收益。
+                2. technicalAnalysis 必须包含 trendAssessment、trend、movingAverages、klinePattern、supportResistance、volumeAnalysis，可直接给客户阅读。
+                3. riskWarning 必须包含 headline、currentRisks、triggerConditions、observationPoints、overallAdvice，且必须结合当前股票数据写具体风险；各数组最多 3 条，每条尽量短句。
+                4. buySellPoints 必须包含 action、buyTriggers、reduceTriggers、stopLoss、invalidationCondition、positionSuggestion；action 必须原样复述 deterministicFinalAction，其他内容只能解释已给定条件规则。
+                5. promptSummary 必须包含 marketSnapshot、valuationSnapshot、growthSnapshot、klineSummary、volumeSummary，信息尽量完整但每项保持精炼。
+                6. decision 和 score 不是模型输出职责；即使返回也会被系统忽略。
                 """.formatted(
                 template,
                 strategyInstruction,
@@ -1686,6 +1756,41 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
     }
 
     private record AnalysisAttemptResult(String rawResponse, AiAnalysisResultPayload payload) {
+    }
+
+    private record FormalAnalysisContext(
+            AiSample sample,
+            AiStrategyRelease release,
+            Map<Integer, AiPrediction> predictionsByHorizon,
+            List<AiPrediction> linkedPredictions,
+            FormalDecision decision,
+            String promptContext
+    ) {
+        private AiLearningPayloads.AnalysisLearningContext conditionalContext() {
+            AiPrediction primary = predictionsByHorizon.get(3);
+            return new AiLearningPayloads.AnalysisLearningContext(
+                    sample.id,
+                    primary == null ? null : primary.id,
+                    release.id,
+                    sample.dataQualityScore == null ? BigDecimal.ZERO : sample.dataQualityScore,
+                    decision.calibratedConfidence() == null ? BigDecimal.ZERO : decision.calibratedConfidence(),
+                    sample.marketRegime == null ? "UNKNOWN" : sample.marketRegime,
+                    promptContext);
+        }
+    }
+
+    static record FormalDecision(
+            BigDecimal systemScore,
+            String finalAction,
+            String targetDirection,
+            BigDecimal riskScore,
+            String riskLevel,
+            BigDecimal calibratedConfidence,
+            String unavailableReason
+    ) {
+        private static FormalDecision unavailable(String reason) {
+            return new FormalDecision(null, "WATCH", "SIDEWAYS", null, "UNKNOWN", BigDecimal.ZERO, reason);
+        }
     }
 
     private record AnalysisFreshness(

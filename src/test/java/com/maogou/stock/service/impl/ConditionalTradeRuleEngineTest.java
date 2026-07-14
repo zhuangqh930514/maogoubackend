@@ -88,7 +88,7 @@ class ConditionalTradeRuleEngineTest {
                 position,
                 market,
                 new AiConditionalStrategyPayload.ResearchLineage(
-                        1L, 2L, 3L, "S1", "2.0.0", configuration.version(), "fp",
+                        1L, 2L, 3L, "S1", "2.0.0", 4L, configuration.version(), "fp",
                         new BigDecimal("90"), new BigDecimal("60")),
                 configuration,
                 Map.of(),

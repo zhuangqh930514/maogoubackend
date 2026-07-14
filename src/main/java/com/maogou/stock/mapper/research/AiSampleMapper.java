@@ -34,4 +34,15 @@ public interface AiSampleMapper extends BaseMapper<AiSample> {
             @Param("tradeDate") LocalDate tradeDate,
             @Param("stockCodes") List<String> stockCodes
     );
+
+    @Select("""
+            SELECT * FROM ai_sample
+            WHERE stock_code = #{stockCode} AND trade_date <= #{tradeDate}
+              AND sample_phase IN ('CLOSE', 'POST_CLOSE')
+            ORDER BY trade_date DESC, as_of_time DESC LIMIT 1
+            """)
+    AiSample selectLatestForAnalysis(
+            @Param("stockCode") String stockCode,
+            @Param("tradeDate") LocalDate tradeDate
+    );
 }

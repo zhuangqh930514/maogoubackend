@@ -85,4 +85,11 @@ public interface AiPredictionMapper extends BaseMapper<AiPrediction> {
             @Param("sampleIds") List<Long> sampleIds,
             @Param("strategyReleaseId") Long strategyReleaseId
     );
+
+    @Select("""
+            SELECT * FROM ai_prediction
+            WHERE sample_id = #{sampleId} AND horizon_trading_days IN (1, 2, 3, 5)
+            ORDER BY predicted_at DESC, id DESC
+            """)
+    List<AiPrediction> selectForAnalysis(@Param("sampleId") Long sampleId);
 }

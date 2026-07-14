@@ -8,15 +8,17 @@ public interface AiTradeRulePerformanceMapper extends BaseMapper<AiTradeRulePerf
 
     @Insert("""
             INSERT INTO ai_trade_rule_performance (
-                user_id, rule_code, rule_type, horizon_days, market_regime,
+                user_id, trade_rule_config_id, rule_code, rule_type,
+                horizon_trading_days, market_regime, window_start_date, window_end_date,
                 sample_count, effective_count, effectiveness_rate,
                 avg_post_trigger_return, avg_adverse_return, learned_weight,
-                confidence_level, last_evaluated_at, created_at, updated_at
+                confidence_level, input_fingerprint, last_evaluated_at, created_at, updated_at
             ) VALUES (
-                #{userId}, #{ruleCode}, #{ruleType}, #{horizonDays}, #{marketRegime},
+                #{userId}, #{tradeRuleConfigId}, #{ruleCode}, #{ruleType},
+                #{horizonDays}, #{marketRegime}, #{windowStartDate}, #{windowEndDate},
                 #{sampleCount}, #{effectiveCount}, #{effectivenessRate},
                 #{avgPostTriggerReturn}, #{avgAdverseReturn}, #{learnedWeight},
-                #{confidenceLevel}, #{lastEvaluatedAt}, #{createdAt}, #{updatedAt}
+                #{confidenceLevel}, #{inputFingerprint}, #{lastEvaluatedAt}, #{createdAt}, #{updatedAt}
             )
             ON DUPLICATE KEY UPDATE
                 sample_count = VALUES(sample_count),
@@ -26,6 +28,7 @@ public interface AiTradeRulePerformanceMapper extends BaseMapper<AiTradeRulePerf
                 avg_adverse_return = VALUES(avg_adverse_return),
                 learned_weight = VALUES(learned_weight),
                 confidence_level = VALUES(confidence_level),
+                input_fingerprint = VALUES(input_fingerprint),
                 last_evaluated_at = VALUES(last_evaluated_at),
                 updated_at = VALUES(updated_at)
             """)

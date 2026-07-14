@@ -2,7 +2,6 @@ package com.maogou.stock.domain.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
-import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.maogou.stock.domain.enums.AnalysisStatus;
 
@@ -17,7 +16,21 @@ public class AiAnalysisReport {
     public Long userId;
     public String stockCode;
     public String stockName;
-    public Integer score;
+    public Long sampleId;
+    public Long strategyReleaseId;
+    public Long promptTemplateId;
+    public LocalDate reportDate;
+    public Integer reportVersion;
+    public Long supersedesReportId;
+    public String idempotencyKey;
+    public AnalysisStatus status;
+    public BigDecimal systemScore;
+    public String finalAction;
+    public String targetDirection;
+    public BigDecimal riskScore;
+    public String riskLevel;
+    public BigDecimal calibratedConfidence;
+    public BigDecimal dataQualityScore;
     public String advice;
     public String technicalAnalysis;
     public String riskWarning;
@@ -27,18 +40,8 @@ public class AiAnalysisReport {
     public String rawPrompt;
     public String rawResponse;
     public String sourceModel;
-    public Long promptTemplateId;
-    public AnalysisStatus status;
     public String errorMessage;
-    public LocalDate reportDate;
     public LocalDateTime generatedAt;
-    public Long sampleId;
-    public Long predictionId;
-    public Long strategyVersionId;
-    public BigDecimal dataQualityScore;
-    public BigDecimal calibratedConfidence;
-    @TableLogic
-    public Integer deleted;
     public LocalDateTime createdAt;
     public LocalDateTime updatedAt;
 }

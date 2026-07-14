@@ -3,6 +3,7 @@ package com.maogou.stock.domain.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.baomidou.mybatisplus.annotation.TableField;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -14,8 +15,13 @@ public class AiTradePlanReview {
     public Long id;
     public Long userId;
     public Long reportId;
+    public Long predictionId;
+    public Long sampleLabelId;
+    public Long predictionEvaluationId;
+    public Long tradeRuleConfigId;
     public String stockCode;
     public LocalDate reportDate;
+    @TableField("horizon_trading_days")
     public Integer horizonDays;
     public LocalDate targetTradeDate;
     public LocalDate outcomeTradeDate;

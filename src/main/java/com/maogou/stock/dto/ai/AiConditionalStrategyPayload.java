@@ -26,6 +26,7 @@ public record AiConditionalStrategyPayload(
             Long strategyReleaseId,
             String strategyReleaseVersion,
             String factorVersion,
+            Long tradeRuleConfigId,
             String ruleConfigVersion,
             String configFingerprint,
             BigDecimal dataQualityScore,

@@ -65,7 +65,7 @@ class AiAnalysisReportPaginationTest {
         verify(reportMapper).selectList(listQuery.capture());
         assertThat(listQuery.getValue().getCustomSqlSegment())
                 .contains("stock_code")
-                .contains("score")
+                .contains("risk_score")
                 .contains("LIMIT 10 OFFSET 0");
     }
 
@@ -96,7 +96,7 @@ class AiAnalysisReportPaginationTest {
         report.userId = 5L;
         report.stockCode = "600519";
         report.stockName = "贵州茅台";
-        report.score = 72;
+        report.systemScore = new java.math.BigDecimal("72");
         report.advice = "谨慎观察";
         report.reportDate = LocalDate.of(2026, 7, 13);
         report.generatedAt = LocalDateTime.of(2026, 7, 13, 16, 30);
@@ -108,6 +108,7 @@ class AiAnalysisReportPaginationTest {
         when(conditionalStrategyService.reviewsByReportIds(any(), any())).thenReturn(Map.of());
         return new AiAnalysisServiceImpl(
                 reportMapper,
+                null,
                 null,
                 null,
                 null,

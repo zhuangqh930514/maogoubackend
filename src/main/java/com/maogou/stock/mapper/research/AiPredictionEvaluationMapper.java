@@ -24,4 +24,15 @@ public interface AiPredictionEvaluationMapper extends BaseMapper<AiPredictionEva
             @Param("strategyReleaseId") Long strategyReleaseId,
             @Param("tradeDate") LocalDate tradeDate
     );
+
+    @Select("""
+            SELECT * FROM ai_prediction_evaluation
+            WHERE prediction_id = #{predictionId} AND sample_label_id = #{sampleLabelId}
+              AND evaluation_status IN ('EVALUATED', 'SUCCESS', 'COMPLETED')
+            ORDER BY evaluated_at DESC, id DESC LIMIT 1
+            """)
+    AiPredictionEvaluation selectForReview(
+            @Param("predictionId") Long predictionId,
+            @Param("sampleLabelId") Long sampleLabelId
+    );
 }

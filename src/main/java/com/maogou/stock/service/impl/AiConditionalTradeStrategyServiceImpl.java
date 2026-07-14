@@ -6,16 +6,17 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.maogou.stock.domain.entity.AiAnalysisReport;
-import com.maogou.stock.domain.entity.AiFactorDefinition;
-import com.maogou.stock.domain.entity.AiFactorStat;
-import com.maogou.stock.domain.entity.AiFactorValue;
 import com.maogou.stock.domain.entity.AiTradePlanReview;
 import com.maogou.stock.domain.entity.AiTradeRuleConfig;
 import com.maogou.stock.domain.entity.AiTradeRulePerformance;
 import com.maogou.stock.domain.entity.TradeRecord;
+import com.maogou.stock.domain.entity.research.AiAnalysisReportPrediction;
 import com.maogou.stock.domain.entity.research.AiFactorPerformance;
+import com.maogou.stock.domain.entity.research.AiFactorValue;
 import com.maogou.stock.domain.entity.research.AiPrediction;
+import com.maogou.stock.domain.entity.research.AiPredictionEvaluation;
 import com.maogou.stock.domain.entity.research.AiSample;
+import com.maogou.stock.domain.entity.research.AiSampleLabel;
 import com.maogou.stock.domain.entity.research.AiStrategyRelease;
 import com.maogou.stock.domain.enums.AnalysisStatus;
 import com.maogou.stock.domain.enums.TradeSide;
@@ -26,23 +27,23 @@ import com.maogou.stock.dto.market.KlineSeriesSnapshot;
 import com.maogou.stock.dto.market.StockDetailResponse;
 import com.maogou.stock.dto.market.StockQuoteResponse;
 import com.maogou.stock.mapper.AiAnalysisReportMapper;
-import com.maogou.stock.mapper.AiFactorDefinitionMapper;
-import com.maogou.stock.mapper.AiFactorStatMapper;
-import com.maogou.stock.mapper.AiFactorValueMapper;
 import com.maogou.stock.mapper.AiTradePlanReviewMapper;
 import com.maogou.stock.mapper.AiTradeRuleConfigMapper;
 import com.maogou.stock.mapper.AiTradeRulePerformanceMapper;
 import com.maogou.stock.mapper.TradeRecordMapper;
+import com.maogou.stock.mapper.research.AiAnalysisReportPredictionMapper;
 import com.maogou.stock.mapper.research.AiFactorPerformanceMapper;
+import com.maogou.stock.mapper.research.AiFactorValueMapper;
+import com.maogou.stock.mapper.research.AiPredictionEvaluationMapper;
 import com.maogou.stock.mapper.research.AiPredictionMapper;
 import com.maogou.stock.mapper.research.AiSampleMapper;
+import com.maogou.stock.mapper.research.AiSampleLabelMapper;
 import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
 import com.maogou.stock.service.AiConditionalTradeStrategyService;
 import com.maogou.stock.service.MarketDataService;
 import com.maogou.stock.service.TradingCalendarService;
 import com.maogou.stock.service.research.AiResearchContract;
 import org.springframework.core.io.ClassPathResource;
-import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -56,14 +57,12 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Service
@@ -78,14 +77,14 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
     private final AiTradeRulePerformanceMapper rulePerformanceMapper;
     private final AiAnalysisReportMapper reportMapper;
     private final TradeRecordMapper tradeRecordMapper;
-    private final AiSampleMapper sampleV2Mapper;
-    private final com.maogou.stock.mapper.research.AiFactorValueMapper factorValueV2Mapper;
-    private final AiFactorPerformanceMapper factorPerformanceV2Mapper;
-    private final AiPredictionMapper predictionV2Mapper;
-    private final AiStrategyReleaseMapper strategyReleaseMapper;
+    private final AiSampleMapper sampleMapper;
     private final AiFactorValueMapper factorValueMapper;
-    private final AiFactorDefinitionMapper factorDefinitionMapper;
-    private final AiFactorStatMapper factorStatMapper;
+    private final AiFactorPerformanceMapper factorPerformanceMapper;
+    private final AiStrategyReleaseMapper strategyReleaseMapper;
+    private final AiAnalysisReportPredictionMapper reportPredictionMapper;
+    private final AiSampleLabelMapper sampleLabelMapper;
+    private final AiPredictionEvaluationMapper predictionEvaluationMapper;
+    private final AiPredictionMapper predictionMapper;
     private final MarketDataService marketDataService;
     private final TradingCalendarService tradingCalendarService;
     private final ConditionalTradeRuleEngine ruleEngine;
@@ -97,14 +96,14 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
             AiTradeRulePerformanceMapper rulePerformanceMapper,
             AiAnalysisReportMapper reportMapper,
             TradeRecordMapper tradeRecordMapper,
-            AiSampleMapper sampleV2Mapper,
-            com.maogou.stock.mapper.research.AiFactorValueMapper factorValueV2Mapper,
-            AiFactorPerformanceMapper factorPerformanceV2Mapper,
-            AiPredictionMapper predictionV2Mapper,
-            AiStrategyReleaseMapper strategyReleaseMapper,
+            AiSampleMapper sampleMapper,
             AiFactorValueMapper factorValueMapper,
-            AiFactorDefinitionMapper factorDefinitionMapper,
-            AiFactorStatMapper factorStatMapper,
+            AiFactorPerformanceMapper factorPerformanceMapper,
+            AiStrategyReleaseMapper strategyReleaseMapper,
+            AiAnalysisReportPredictionMapper reportPredictionMapper,
+            AiSampleLabelMapper sampleLabelMapper,
+            AiPredictionEvaluationMapper predictionEvaluationMapper,
+            AiPredictionMapper predictionMapper,
             MarketDataService marketDataService,
             TradingCalendarService tradingCalendarService,
             ConditionalTradeRuleEngine ruleEngine,
@@ -115,14 +114,14 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
         this.rulePerformanceMapper = rulePerformanceMapper;
         this.reportMapper = reportMapper;
         this.tradeRecordMapper = tradeRecordMapper;
-        this.sampleV2Mapper = sampleV2Mapper;
-        this.factorValueV2Mapper = factorValueV2Mapper;
-        this.factorPerformanceV2Mapper = factorPerformanceV2Mapper;
-        this.predictionV2Mapper = predictionV2Mapper;
-        this.strategyReleaseMapper = strategyReleaseMapper;
+        this.sampleMapper = sampleMapper;
         this.factorValueMapper = factorValueMapper;
-        this.factorDefinitionMapper = factorDefinitionMapper;
-        this.factorStatMapper = factorStatMapper;
+        this.factorPerformanceMapper = factorPerformanceMapper;
+        this.strategyReleaseMapper = strategyReleaseMapper;
+        this.reportPredictionMapper = reportPredictionMapper;
+        this.sampleLabelMapper = sampleLabelMapper;
+        this.predictionEvaluationMapper = predictionEvaluationMapper;
+        this.predictionMapper = predictionMapper;
         this.marketDataService = marketDataService;
         this.tradingCalendarService = tradingCalendarService;
         this.ruleEngine = ruleEngine;
@@ -160,15 +159,24 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
                 || payload == null || payload.tradingPlans() == null) {
             return;
         }
+        Long ruleConfigId = payload.lineage() == null ? null : payload.lineage().tradeRuleConfigId();
+        if (ruleConfigId == null) {
+            throw new IllegalStateException("条件策略快照缺少正式规则配置血缘");
+        }
+        Map<Integer, AiPrediction> predictions = reportPredictions(report.userId, report.id);
         LocalDateTime now = LocalDateTime.now();
         for (AiConditionalStrategyPayload.HorizonPlan plan : payload.tradingPlans()) {
             if (plan == null || plan.horizonDays() == null) {
                 continue;
             }
+            AiPrediction prediction = predictions.get(plan.horizonDays());
+            if (prediction == null) {
+                continue;
+            }
             AiTradePlanReview review = reviewMapper.selectOne(new QueryWrapper<AiTradePlanReview>()
                     .eq("user_id", report.userId)
                     .eq("report_id", report.id)
-                    .eq("horizon_days", plan.horizonDays())
+                    .eq("horizon_trading_days", plan.horizonDays())
                     .last("LIMIT 1"));
             if (review != null && !"PENDING".equals(review.status)) {
                 continue;
@@ -183,6 +191,8 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
                 review.status = "PENDING";
                 review.createdAt = now;
             }
+            review.tradeRuleConfigId = ruleConfigId;
+            attachReviewLineage(review, prediction);
             review.targetTradeDate = tradingDateOffset(report.reportDate, plan.horizonDays());
             review.outcomeTradeDate = tradingDateOffset(report.reportDate, plan.horizonDays() + 1);
             review.ruleType = "HORIZON_PLAN";
@@ -196,6 +206,42 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
         }
     }
 
+    private Map<Integer, AiPrediction> reportPredictions(Long userId, Long reportId) {
+        List<Long> predictionIds = reportPredictionMapper.selectByReport(userId, reportId).stream()
+                .map(item -> item.predictionId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (predictionIds.isEmpty()) {
+            return Map.of();
+        }
+        return predictionMapper.selectBatchIds(predictionIds).stream()
+                .filter(item -> item.horizonDays != null)
+                .collect(Collectors.toMap(
+                        item -> item.horizonDays,
+                        item -> item,
+                        AiConditionalTradeStrategyServiceImpl::latestPrediction,
+                        LinkedHashMap::new));
+    }
+
+    private void attachReviewLineage(AiTradePlanReview review, AiPrediction prediction) {
+        review.predictionId = prediction.id;
+        AiSampleLabel label = sampleLabelMapper.selectForReview(prediction.sampleId, prediction.horizonDays);
+        if (label != null && (!Objects.equals(label.sampleId, prediction.sampleId)
+                || !Objects.equals(label.horizonTradingDays, prediction.horizonDays))) {
+            throw new IllegalStateException("条件计划标签与预测周期不一致");
+        }
+        review.sampleLabelId = label == null ? null : label.id;
+        AiPredictionEvaluation evaluation = label == null ? null
+                : predictionEvaluationMapper.selectForReview(prediction.id, label.id);
+        if (evaluation != null
+                && ((evaluation.predictionId != null && !Objects.equals(evaluation.predictionId, prediction.id))
+                || (evaluation.sampleLabelId != null && !Objects.equals(evaluation.sampleLabelId, label.id)))) {
+            throw new IllegalStateException("条件计划预测评价血缘不一致");
+        }
+        review.predictionEvaluationId = evaluation == null ? null : evaluation.id;
+    }
+
     @Override
     public Map<Long, List<AiConditionalStrategyPayload.ReviewResult>> reviewsByReportIds(Long userId, List<Long> reportIds) {
         List<Long> ids = reportIds == null ? List.of() : reportIds.stream()
@@ -206,7 +252,7 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
         return reviewMapper.selectList(new QueryWrapper<AiTradePlanReview>()
                         .eq("user_id", userId)
                         .in("report_id", ids)
-                        .orderByAsc("horizon_days"))
+                        .orderByAsc("horizon_trading_days"))
                 .stream()
                 .collect(Collectors.groupingBy(item -> item.reportId, LinkedHashMap::new,
                         Collectors.mapping(this::reviewResult, Collectors.toList())));
@@ -234,7 +280,6 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
         List<AiAnalysisReport> reports = reportMapper.selectList(new QueryWrapper<AiAnalysisReport>()
                 .eq("user_id", userId)
                 .eq("status", AnalysisStatus.SUCCESS.name())
-                .eq("deleted", 0)
                 .isNotNull("conditional_strategy")
                 .in("id", pendingReportIds)
                 .orderByAsc("report_date")
@@ -280,6 +325,7 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
         int verified = 0;
         int noTrigger = 0;
         int pending = 0;
+        Map<Integer, AiPrediction> predictions = reportPredictions(report.userId, report.id);
         for (AiConditionalStrategyPayload.HorizonPlan originalPlan : original.tradingPlans()) {
             int horizon = originalPlan.horizonDays();
             int triggerIndex = entryIndex + horizon;
@@ -312,6 +358,15 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
                             .filter(AiConditionalStrategyPayload.ConditionalRule::matched).findFirst().orElse(null));
             if (review == null) {
                 review = pendingReview(report, horizon, original);
+            }
+            AiPrediction matchingPrediction = predictions.get(horizon);
+            if (matchingPrediction == null) {
+                throw new IllegalStateException("条件计划缺少 T+" + horizon + " 正式预测血缘");
+            }
+            attachReviewLineage(review, matchingPrediction);
+            if (review.sampleLabelId == null || review.predictionEvaluationId == null) {
+                pending++;
+                continue;
             }
             review.targetTradeDate = trigger.tradeDate();
             review.outcomeTradeDate = outcome.tradeDate();
@@ -372,38 +427,37 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
             AiLearningPayloads.AnalysisLearningContext learningContext
     ) {
         List<String> limitations = new ArrayList<>();
-        AiSample sample = sampleV2Mapper.selectOne(new QueryWrapper<AiSample>()
-                .eq("user_id", userId)
-                .eq("stock_code", stockCode)
-                .le("trade_date", tradeDate)
-                .orderByDesc("trade_date")
-                .orderByDesc("as_of_time")
-                .last("LIMIT 1"));
+        AiSample sample = sampleMapper.selectLatestForAnalysis(stockCode, tradeDate);
         if (sample != null && !tradeDate.equals(sample.tradeDate)) {
             limitations.add("研究实验室最新样本日期为 " + sample.tradeDate + "，与本次报告日期不一致，仅用于历史权重参考");
         }
-        AiStrategyRelease release = activeRelease(userId);
         AiPrediction prediction = null;
-        List<com.maogou.stock.domain.entity.research.AiFactorValue> v2Factors = List.of();
+        List<AiFactorValue> factors = List.of();
+        List<AiFactorPerformance> performances = List.of();
+        Long requestedReleaseId = learningContext == null ? null : learningContext.strategyVersionId();
         if (sample != null) {
-            v2Factors = factorValueV2Mapper.selectList(
-                    new QueryWrapper<com.maogou.stock.domain.entity.research.AiFactorValue>()
-                    .eq("user_id", userId)
-                    .eq("sample_id", sample.id)
-                    .eq("factor_version", AiResearchContract.FACTOR_VERSION));
-            prediction = predictionV2Mapper.selectOne(new QueryWrapper<AiPrediction>()
-                    .eq("user_id", userId)
-                    .eq("sample_id", sample.id)
-                    .eq("horizon_days", 3)
-                    .in("inference_mode", "RULE_BASELINE", "CHAMPION")
-                    .orderByDesc("predicted_at")
-                    .last("LIMIT 1"));
+            factors = factorValueMapper.selectBySamples(
+                    List.of(sample.id), AiResearchContract.FACTOR_VERSION);
+            performances = factorPerformanceMapper.selectForSamplesBefore(List.of(sample.id), tradeDate);
+            prediction = predictionMapper.selectForAnalysis(sample.id).stream()
+                    .filter(item -> Objects.equals(item.horizonDays, 3))
+                    .filter(item -> requestedReleaseId == null
+                            || Objects.equals(item.strategyReleaseId, requestedReleaseId))
+                    .max(Comparator.comparing((AiPrediction item) -> item.predictedAt,
+                                    Comparator.nullsFirst(Comparator.naturalOrder()))
+                            .thenComparing(item -> item.id, Comparator.nullsFirst(Comparator.naturalOrder())))
+                    .orElse(null);
         }
-        Map<String, AiConditionalStrategyPayload.FactorEvidence> evidence = v2Evidence(userId, sample, v2Factors);
-        if (evidence.isEmpty() && learningContext != null && learningContext.sampleId() != null) {
-            evidence = legacyEvidence(userId, learningContext.sampleId());
-            limitations.add("V2 因子快照不可用，条件信号强度使用兼容因子样本");
+        AiStrategyRelease release = requestedReleaseId == null
+                ? null : strategyReleaseMapper.selectById(requestedReleaseId);
+        if (release == null && prediction != null && prediction.strategyReleaseId != null) {
+            release = strategyReleaseMapper.selectById(prediction.strategyReleaseId);
         }
+        if (release == null) {
+            release = activeRelease();
+        }
+        Map<String, AiConditionalStrategyPayload.FactorEvidence> evidence =
+                formalEvidence(sample, factors, performances);
         if (evidence.isEmpty()) {
             limitations.add("未找到可关联的因子快照，规则仍可计算，但信号强度按低样本处理");
         }
@@ -415,7 +469,7 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
                 "UNKNOWN".equals(normalize(regime, "UNKNOWN")) ? "PARTIAL" : "AVAILABLE"
         );
         if (sample == null) {
-            limitations.add("研究实验室尚无该股票的 V2 时点样本");
+            limitations.add("研究实验室尚无该股票的正式时点样本");
         }
         if (release == null) {
             limitations.add("当前没有 ACTIVE Champion 策略，使用全局条件规则版本");
@@ -424,32 +478,25 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
                 learnedRuleWeights(userId, regime), limitations);
     }
 
-    private Map<String, AiConditionalStrategyPayload.FactorEvidence> v2Evidence(
-            Long userId,
+    private Map<String, AiConditionalStrategyPayload.FactorEvidence> formalEvidence(
             AiSample sample,
-            List<com.maogou.stock.domain.entity.research.AiFactorValue> factors
+            List<AiFactorValue> factors,
+            List<AiFactorPerformance> performances
     ) {
         if (factors == null || factors.isEmpty()) {
             return Map.of();
         }
-        List<AiFactorPerformance> performances = factorPerformanceV2Mapper.selectList(
-                new QueryWrapper<AiFactorPerformance>()
-                        .eq("user_id", userId)
-                        .eq("factor_version", AiResearchContract.FACTOR_VERSION)
-                        .in("factor_code", factors.stream().map(item -> item.factorCode).distinct().toList())
-                        .orderByDesc("evaluated_at")
-                        .last("LIMIT 600"));
         Map<String, AiFactorPerformance> performanceByCode = new LinkedHashMap<>();
         String regime = sample == null ? "UNKNOWN" : normalize(sample.marketRegime, "UNKNOWN");
-        performances.stream().filter(item -> regime.equals(item.marketRegime))
+        safeList(performances).stream().filter(item -> regime.equals(item.marketRegime))
                 .forEach(item -> performanceByCode.putIfAbsent(item.factorCode, item));
-        performances.forEach(item -> performanceByCode.putIfAbsent(item.factorCode, item));
+        safeList(performances).forEach(item -> performanceByCode.putIfAbsent(item.factorCode, item));
         Map<String, AiConditionalStrategyPayload.FactorEvidence> result = new LinkedHashMap<>();
-        for (com.maogou.stock.domain.entity.research.AiFactorValue factor : factors) {
+        for (AiFactorValue factor : factors) {
             AiFactorPerformance performance = performanceByCode.get(factor.factorCode);
             result.put(factor.factorCode, new AiConditionalStrategyPayload.FactorEvidence(
                     factor.factorCode,
-                    factor.factorCode,
+                    factor.factorName == null ? factor.factorCode : factor.factorName,
                     factor.factorGroup,
                     factor.hit == null ? null : factor.hit == 1,
                     factor.rawValue,
@@ -458,66 +505,39 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
                     performance == null ? null : performance.successRate,
                     performance == null ? 0 : value(performance.sampleCount),
                     performance == null ? "LOW_SAMPLE" : performance.confidenceLevel,
-                    factor.evidence,
-                    "AI_RESEARCH_V2"
-            ));
-        }
-        return result;
-    }
-
-    private Map<String, AiConditionalStrategyPayload.FactorEvidence> legacyEvidence(Long userId, Long sampleId) {
-        List<AiFactorValue> factors = factorValueMapper.selectList(new QueryWrapper<AiFactorValue>()
-                .eq("user_id", userId).eq("sample_id", sampleId));
-        if (factors.isEmpty()) {
-            return Map.of();
-        }
-        Map<String, AiFactorDefinition> definitions = factorDefinitionMapper.selectList(
-                        new QueryWrapper<AiFactorDefinition>().eq("enabled", 1).orderByDesc("version_no"))
-                .stream().collect(Collectors.toMap(item -> item.factorCode, Function.identity(), (left, right) -> left));
-        Map<String, AiFactorStat> stats = factorStatMapper.selectList(new QueryWrapper<AiFactorStat>()
-                        .eq("user_id", userId).orderByDesc("sample_count"))
-                .stream().collect(Collectors.toMap(item -> item.factorCode, Function.identity(), (left, right) -> left));
-        Map<String, AiConditionalStrategyPayload.FactorEvidence> result = new LinkedHashMap<>();
-        for (AiFactorValue factor : factors) {
-            AiFactorDefinition definition = definitions.get(factor.factorCode);
-            AiFactorStat stat = stats.get(factor.factorCode);
-            result.put(factor.factorCode, new AiConditionalStrategyPayload.FactorEvidence(
-                    factor.factorCode,
-                    definition == null ? factor.factorCode : definition.factorName,
-                    definition == null ? "UNKNOWN" : definition.factorGroup,
-                    factor.hit == null ? null : factor.hit == 1,
-                    factor.factorValue,
-                    factor.normalizedValue,
-                    stat == null ? null : stat.weightScore,
-                    stat == null ? null : stat.successRate,
-                    stat == null ? 0 : value(stat.sampleCount),
-                    stat == null || value(stat.sampleCount) < 10 ? "LOW_SAMPLE" : "MEDIUM",
-                    factor.evidence,
-                    "AI_RESEARCH_COMPAT"
+                    factor.evidenceJson,
+                    "AI_RESEARCH"
             ));
         }
         return result;
     }
 
     private ResolvedConfiguration resolveConfiguration(Long userId, AiStrategyRelease release) {
-        JsonNode base = null;
+        JsonNode base = defaultConfigurationNode();
+        AiTradeRuleConfig entity;
         String configuredVersion = null;
         try {
-            AiTradeRuleConfig entity = ruleConfigMapper.selectOne(new QueryWrapper<AiTradeRuleConfig>()
-                    .in("user_id", userId, 0L)
+            QueryWrapper<AiTradeRuleConfig> query = new QueryWrapper<AiTradeRuleConfig>()
+                    .eq("user_id", userId)
                     .eq("status", "ACTIVE")
-                    .orderByDesc("user_id")
                     .orderByDesc("updated_at")
-                    .last("LIMIT 1"));
+                    .last("LIMIT 1");
+            if (release != null && release.id != null) {
+                query.eq("strategy_release_id", release.id);
+            }
+            entity = ruleConfigMapper.selectOne(query);
             if (entity != null && entity.configJson != null && !entity.configJson.isBlank()) {
-                base = objectMapper.readTree(entity.configJson);
+                JsonNode configured = objectMapper.readTree(entity.configJson);
+                if (configured.isObject()) {
+                    deepMerge((ObjectNode) base, normalizedRuleOverrides(configured));
+                }
                 configuredVersion = entity.versionNo;
             }
-        } catch (DataAccessException | JsonProcessingException ignored) {
-            base = null;
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("用户条件策略规则配置无法解析", exception);
         }
-        if (base == null) {
-            base = defaultConfigurationNode();
+        if (entity == null || entity.id == null) {
+            throw new IllegalStateException("当前用户尚未初始化正式条件策略规则配置");
         }
         if (release != null && release.configJson != null && !release.configJson.isBlank()) {
             try {
@@ -541,7 +561,8 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
                     version, parsed.thresholds(), parsed.riskWeights(), parsed.positions(),
                     parsed.minimumConditions(), parsed.factorMappings());
             validateConfiguration(configuration);
-            return new ResolvedConfiguration(configuration, sha256(objectMapper.writeValueAsString(configuration)));
+            return new ResolvedConfiguration(
+                    entity.id, configuration, sha256(objectMapper.writeValueAsString(configuration)));
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("条件策略规则配置无法解析", exception);
         }
@@ -564,6 +585,26 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
                 target.set(entry.getKey(), entry.getValue());
             }
         });
+    }
+
+    ObjectNode normalizedRuleOverrides(JsonNode configured) {
+        ObjectNode normalized = objectMapper.createObjectNode();
+        for (String key : List.of(
+                "version", "thresholds", "riskWeights", "positions",
+                "minimumConditions", "factorMappings")) {
+            JsonNode value = configured.get(key);
+            if (value != null && !value.isNull()) {
+                normalized.set(key, value.deepCopy());
+            }
+        }
+        JsonNode riskWeights = normalized.get("riskWeights");
+        if (riskWeights instanceof ObjectNode weights && weights.has("capital")) {
+            if (!weights.has("fund")) {
+                weights.set("fund", weights.get("capital"));
+            }
+            weights.remove("capital");
+        }
+        return normalized;
     }
 
     private static void validateConfiguration(AiConditionalStrategyPayload.RuleConfiguration configuration) {
@@ -594,6 +635,7 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
                 research.release == null ? null : research.release.id,
                 research.release == null ? null : research.release.versionNo,
                 AiResearchContract.FACTOR_VERSION,
+                resolved.configId,
                 resolved.configuration.version(),
                 resolved.fingerprint,
                 quality == null ? BigDecimal.ZERO : quality,
@@ -633,25 +675,18 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
                 quantity > 0, Math.max(0, quantity), averageCost, currentPrice, profitRate);
     }
 
-    private AiStrategyRelease activeRelease(Long userId) {
-        return strategyReleaseMapper.selectOne(new QueryWrapper<AiStrategyRelease>()
-                .eq("user_id", userId)
-                .eq("release_role", "CHAMPION")
-                .eq("status", "ACTIVE")
-                .orderByDesc("activated_at")
-                .last("LIMIT 1"));
+    private AiStrategyRelease activeRelease() {
+        return strategyReleaseMapper.selectGlobalActiveChampion(
+                AiResearchContract.SYSTEM_UNIVERSE_CODE, AiResearchContract.MODEL_FAMILY);
     }
 
     private Map<String, BigDecimal> learnedRuleWeights(Long userId, String regime) {
-        List<AiTradeRulePerformance> rows;
-        try {
-            rows = rulePerformanceMapper.selectList(new QueryWrapper<AiTradeRulePerformance>()
-                    .eq("user_id", userId)
-                    .orderByDesc("sample_count")
-                    .orderByDesc("last_evaluated_at"));
-        } catch (DataAccessException exception) {
-            return Map.of();
-        }
+        List<AiTradeRulePerformance> rows = rulePerformanceMapper.selectList(
+                new QueryWrapper<AiTradeRulePerformance>()
+                        .eq("user_id", userId)
+                        .orderByDesc("window_end_date")
+                        .orderByDesc("sample_count")
+                        .orderByDesc("last_evaluated_at"));
         Map<String, BigDecimal> result = new LinkedHashMap<>();
         String normalizedRegime = normalize(regime, "UNKNOWN");
         rows.stream().filter(item -> normalizedRegime.equals(item.marketRegime))
@@ -665,10 +700,13 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
                 .eq("user_id", userId)
                 .eq("status", "VERIFIED")
                 .isNotNull("action_effective")
-                .orderByAsc("evaluated_at"));
+                .orderByAsc("evaluated_at")).stream()
+                .filter(AiConditionalTradeStrategyServiceImpl::entersActionPerformance)
+                .toList();
         Map<PerformanceKey, List<AiTradePlanReview>> groups = rows.stream()
-                .filter(item -> item.triggeredRuleCode != null)
+                .filter(item -> item.triggeredRuleCode != null && item.tradeRuleConfigId != null)
                 .collect(Collectors.groupingBy(item -> new PerformanceKey(
+                        item.tradeRuleConfigId,
                         item.triggeredRuleCode,
                         normalize(item.ruleType, "HORIZON_PLAN"),
                         item.horizonDays,
@@ -681,10 +719,16 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
             BigDecimal confidence = BigDecimal.valueOf(Math.min(1d, samples.size() / 20d));
             AiTradeRulePerformance performance = new AiTradeRulePerformance();
             performance.userId = userId;
+            performance.tradeRuleConfigId = entry.getKey().tradeRuleConfigId;
             performance.ruleCode = entry.getKey().ruleCode;
             performance.ruleType = entry.getKey().ruleType;
             performance.horizonDays = entry.getKey().horizonDays;
             performance.marketRegime = entry.getKey().marketRegime;
+            performance.windowStartDate = samples.stream().map(item -> item.reportDate)
+                    .filter(Objects::nonNull).min(Comparator.naturalOrder()).orElseThrow();
+            performance.windowEndDate = samples.stream().map(item -> item.outcomeTradeDate)
+                    .filter(Objects::nonNull).max(Comparator.naturalOrder())
+                    .orElse(performance.windowStartDate);
             performance.sampleCount = samples.size();
             performance.effectiveCount = effective;
             performance.effectivenessRate = rate;
@@ -693,62 +737,14 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
             performance.learnedWeight = clamp(new BigDecimal("50")
                     .add(rate.subtract(new BigDecimal("50")).multiply(confidence)), BigDecimal.ZERO, ONE_HUNDRED);
             performance.confidenceLevel = samples.size() < 10 ? "LOW_SAMPLE" : samples.size() < 30 ? "MEDIUM" : "HIGH";
+            performance.inputFingerprint = sha256(samples.stream()
+                    .map(item -> String.valueOf(item.id))
+                    .sorted()
+                    .collect(Collectors.joining(",", entry.getKey().toString() + ":", "")));
             performance.lastEvaluatedAt = now;
             performance.createdAt = now;
             performance.updatedAt = now;
             rulePerformanceMapper.upsert(performance);
-        }
-        refreshFactorFeedback(userId, rows, now);
-    }
-
-    private void refreshFactorFeedback(Long userId, List<AiTradePlanReview> reviews, LocalDateTime now) {
-        Map<FactorFeedbackKey, List<AiTradePlanReview>> groups = new LinkedHashMap<>();
-        Map<String, FactorDescriptor> descriptors = new HashMap<>();
-        for (AiTradePlanReview review : reviews) {
-            if (review.feedbackJson == null || review.feedbackJson.isBlank()) {
-                continue;
-            }
-            try {
-                for (JsonNode node : objectMapper.readTree(review.feedbackJson).path("factorEvidence")) {
-                    String code = node.path("factorCode").asText("");
-                    if (code.isBlank() || !node.path("hit").asBoolean(false)) {
-                        continue;
-                    }
-                    String regime = "CONDITIONAL_T" + review.horizonDays + "_" + normalize(review.marketRegime, "UNKNOWN");
-                    FactorFeedbackKey key = new FactorFeedbackKey(code, regime);
-                    groups.computeIfAbsent(key, ignored -> new ArrayList<>()).add(review);
-                    descriptors.putIfAbsent(code, new FactorDescriptor(
-                            node.path("factorName").asText(code),
-                            node.path("factorGroup").asText("CONDITIONAL")));
-                }
-            } catch (JsonProcessingException ignored) {
-                // An invalid historical feedback row is excluded rather than poisoning aggregate learning.
-            }
-        }
-        for (Map.Entry<FactorFeedbackKey, List<AiTradePlanReview>> entry : groups.entrySet()) {
-            List<AiTradePlanReview> samples = entry.getValue();
-            int success = (int) samples.stream().filter(item -> item.actionEffective != null && item.actionEffective == 1).count();
-            BigDecimal rate = percentage(success, samples.size());
-            FactorDescriptor descriptor = descriptors.get(entry.getKey().factorCode);
-            AiFactorStat stat = new AiFactorStat();
-            stat.userId = userId;
-            stat.factorCode = entry.getKey().factorCode;
-            stat.factorName = descriptor.name;
-            stat.factorGroup = descriptor.group;
-            stat.marketRegime = entry.getKey().marketRegime;
-            stat.sampleCount = samples.size();
-            stat.successCount = success;
-            stat.successRate = rate;
-            stat.avgReturn = average(samples.stream().map(item -> item.postTriggerReturn).toList());
-            stat.avgDrawdown = average(samples.stream().map(item -> item.maxAdverseReturn).toList());
-            stat.weightScore = clamp(new BigDecimal("50")
-                    .add(rate.subtract(new BigDecimal("50"))
-                            .multiply(BigDecimal.valueOf(Math.min(1d, samples.size() / 20d)))),
-                    BigDecimal.ZERO, ONE_HUNDRED);
-            stat.lastEvaluatedAt = now;
-            stat.createdAt = now;
-            stat.updatedAt = now;
-            factorStatMapper.upsert(stat);
         }
     }
 
@@ -759,6 +755,10 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
         review.stockCode = report.stockCode;
         review.reportDate = report.reportDate;
         review.horizonDays = horizon;
+        review.tradeRuleConfigId = payload.lineage() == null ? null : payload.lineage().tradeRuleConfigId();
+        if (review.tradeRuleConfigId == null) {
+            throw new IllegalStateException("历史条件策略缺少正式规则配置血缘");
+        }
         review.status = "PENDING";
         review.ruleType = "HORIZON_PLAN";
         review.marketRegime = payload.market() == null ? "UNKNOWN" : normalize(payload.market().marketRegime(), "UNKNOWN");
@@ -768,7 +768,8 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
 
     private AiTradePlanReview ownedReview(Long userId, Long reportId, int horizon) {
         return reviewMapper.selectOne(new QueryWrapper<AiTradePlanReview>()
-                .eq("user_id", userId).eq("report_id", reportId).eq("horizon_days", horizon).last("LIMIT 1"));
+                .eq("user_id", userId).eq("report_id", reportId)
+                .eq("horizon_trading_days", horizon).last("LIMIT 1"));
     }
 
     private void saveReview(AiTradePlanReview review) {
@@ -794,11 +795,23 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
         return new StockDetailResponse(quote, null, List.of(), List.copyOf(history), null, null);
     }
 
-    private static OutcomeMetrics outcomeMetrics(KlinePointResponse trigger, KlinePointResponse outcome) {
+    static OutcomeMetrics outcomeMetrics(KlinePointResponse trigger, KlinePointResponse outcome) {
+        if (trigger == null || outcome == null || trigger.tradeDate() == null || outcome.tradeDate() == null
+                || !outcome.tradeDate().isAfter(trigger.tradeDate())) {
+            throw new IllegalArgumentException("条件计划结果必须使用触发日后的下一可交易日数据");
+        }
         BigDecimal post = returnPct(trigger.close(), outcome.close());
         BigDecimal favorable = returnPct(trigger.close(), outcome.high());
         BigDecimal adverse = returnPct(trigger.close(), outcome.low());
         return new OutcomeMetrics(post, favorable, adverse);
+    }
+
+    static boolean entersActionPerformance(AiTradePlanReview review) {
+        return review != null
+                && "VERIFIED".equals(review.status)
+                && review.actionEffective != null
+                && review.triggeredRuleCode != null
+                && review.tradeRuleConfigId != null;
     }
 
     private static Boolean actionEffective(String action, BigDecimal postReturn, BigDecimal buffer) {
@@ -971,6 +984,20 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
         return current.getMessage() == null ? current.getClass().getSimpleName() : current.getMessage();
     }
 
+    private static AiPrediction latestPrediction(AiPrediction left, AiPrediction right) {
+        if (left.predictedAt == null) {
+            return right;
+        }
+        if (right.predictedAt == null) {
+            return left;
+        }
+        return right.predictedAt.isAfter(left.predictedAt) ? right : left;
+    }
+
+    private static <T> List<T> safeList(List<T> values) {
+        return values == null ? List.of() : values;
+    }
+
     private static String sha256(String value) {
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
@@ -992,6 +1019,7 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
     }
 
     private record ResolvedConfiguration(
+            Long configId,
             AiConditionalStrategyPayload.RuleConfiguration configuration,
             String fingerprint
     ) {
@@ -1000,19 +1028,19 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
     private record ReviewCounts(int processed, int verified, int noTrigger, int pending) {
     }
 
-    private record OutcomeMetrics(
+    static record OutcomeMetrics(
             BigDecimal postTriggerReturn,
             BigDecimal maxFavorableReturn,
             BigDecimal maxAdverseReturn
     ) {
     }
 
-    private record PerformanceKey(String ruleCode, String ruleType, Integer horizonDays, String marketRegime) {
-    }
-
-    private record FactorFeedbackKey(String factorCode, String marketRegime) {
-    }
-
-    private record FactorDescriptor(String name, String group) {
+    private record PerformanceKey(
+            Long tradeRuleConfigId,
+            String ruleCode,
+            String ruleType,
+            Integer horizonDays,
+            String marketRegime
+    ) {
     }
 }
