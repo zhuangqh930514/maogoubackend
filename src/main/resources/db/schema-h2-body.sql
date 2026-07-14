@@ -591,6 +591,8 @@ CREATE TABLE IF NOT EXISTS ai_sample_label (
     execution_status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
     execution_reason VARCHAR(255) NULL,
     label_status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+    policy_snapshot_json CLOB NOT NULL,
+    market_evidence_json CLOB NOT NULL,
     label_available_at DATETIME(3) NULL,
     matured_at DATETIME(3) NULL,
     verified_at DATETIME(3) NULL,

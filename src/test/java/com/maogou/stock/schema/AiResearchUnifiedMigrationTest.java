@@ -359,7 +359,8 @@ class AiResearchUnifiedMigrationTest {
                 .contains("horizon_trading_days", "sample_id", "strategy_release_id")
                 .doesNotContain("user_id");
         assertThat(columnNames(connection, "ai_sample_label"))
-                .contains("sample_id", "horizon_trading_days", "label_available_at")
+                .contains("sample_id", "horizon_trading_days", "label_available_at",
+                        "policy_snapshot_json", "market_evidence_json")
                 .doesNotContain("prediction_id", "user_id");
         assertThat(columnNames(connection, "ai_pipeline_run"))
                 .contains("scope_type", "owner_user_id", "parent_run_id", "next_retry_at", "lease_until")
