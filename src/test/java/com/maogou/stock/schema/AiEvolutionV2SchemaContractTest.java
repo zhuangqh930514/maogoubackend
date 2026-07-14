@@ -289,12 +289,20 @@ class AiEvolutionV2SchemaContractTest {
     }
 
     @Test
-    void fullSchemaContainsExactlyOneByteEquivalentV2Block() throws Exception {
-        String migration = readResource(MIGRATION_RESOURCE).trim();
+    void fullSchemaUsesUnifiedFormalTablesAndKeepsV2AsHistoricalMigrationOnly() throws Exception {
+        String migration = readResource(MIGRATION_RESOURCE);
         String fullSchema = readResource(FULL_SCHEMA_RESOURCE);
 
-        assertThat(countOccurrences(fullSchema, V2_MARKER)).isEqualTo(1);
-        assertThat(fullSchema.substring(fullSchema.indexOf(V2_MARKER)).trim()).isEqualTo(migration);
+        assertThat(migration).contains(V2_MARKER);
+        assertThat(fullSchema)
+                .doesNotContain(V2_MARKER)
+                .doesNotContain("CREATE TABLE IF NOT EXISTS ai_sample_v2")
+                .doesNotContain("CREATE TABLE IF NOT EXISTS ai_prediction_v2")
+                .doesNotContain("CREATE TABLE IF NOT EXISTS ai_label_v2")
+                .contains("CREATE TABLE IF NOT EXISTS ai_sample")
+                .contains("CREATE TABLE IF NOT EXISTS ai_prediction")
+                .contains("CREATE TABLE IF NOT EXISTS ai_sample_label")
+                .contains("CREATE TABLE IF NOT EXISTS ai_prediction_evaluation");
     }
 
     @Test
@@ -323,13 +331,4 @@ class AiEvolutionV2SchemaContractTest {
         return matcher.group(1);
     }
 
-    private int countOccurrences(String value, String token) {
-        int count = 0;
-        int offset = 0;
-        while ((offset = value.indexOf(token, offset)) >= 0) {
-            count++;
-            offset += token.length();
-        }
-        return count;
-    }
 }

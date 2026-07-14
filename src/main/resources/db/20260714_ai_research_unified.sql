@@ -1,168 +1,7 @@
-CREATE TABLE IF NOT EXISTS user_account (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    username VARCHAR(64) NOT NULL,
-    display_name VARCHAR(64) NULL,
-    email VARCHAR(128) NULL,
-    phone VARCHAR(32) NULL,
-    password_hash VARCHAR(255) NULL,
-    status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
-    system_role VARCHAR(16) NOT NULL DEFAULT 'USER',
-    risk_preference VARCHAR(16) NULL,
-    last_login_at DATETIME NULL,
-    deleted TINYINT NOT NULL DEFAULT 0,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_user_account_username (username),
-    UNIQUE KEY uk_user_account_email (email),
-    UNIQUE KEY uk_user_account_phone (phone),
-    CONSTRAINT chk_user_account_system_role
-        CHECK (system_role IN ('USER', 'OPERATOR', 'ADMIN'))
-) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+-- 猫狗智投 AI 研究统一数据域一次性重置迁移 v1.1。
+-- 该迁移会清空旧 AI 研究历史，但保留账号、自选股、持仓、模型配置、提示词、聊天和用户记忆。
+-- MySQL DDL 会隐式提交；若版本状态停在 APPLYING，必须从切换点备份恢复后重新执行。
 
-CREATE TABLE IF NOT EXISTS watch_stock (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    user_id BIGINT NOT NULL,
-    stock_code VARCHAR(16) NOT NULL,
-    stock_name VARCHAR(64) NULL,
-    market VARCHAR(16) NULL,
-    group_name VARCHAR(64) NOT NULL DEFAULT '全部',
-    priority INT NOT NULL DEFAULT 100,
-    deleted TINYINT NOT NULL DEFAULT 0,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_watch_stock_user_code (user_id, stock_code),
-    KEY idx_watch_stock_group (user_id, group_name)
-) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
-
-CREATE TABLE IF NOT EXISTS trade_record (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    user_id BIGINT NOT NULL,
-    stock_code VARCHAR(16) NOT NULL,
-    stock_name VARCHAR(64) NULL,
-    side VARCHAR(16) NOT NULL DEFAULT 'BUY',
-    price DECIMAL(18, 4) NOT NULL,
-    quantity INT NOT NULL,
-    fee DECIMAL(18, 4) NOT NULL DEFAULT 0,
-    traded_at DATETIME NOT NULL,
-    deleted TINYINT NOT NULL DEFAULT 0,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    KEY idx_trade_record_user_time (user_id, traded_at),
-    KEY idx_trade_record_stock (user_id, stock_code)
-) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
-
-CREATE TABLE IF NOT EXISTS ai_model_config (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    user_id BIGINT NOT NULL,
-    api_base_url VARCHAR(512) NOT NULL,
-    model_name VARCHAR(128) NOT NULL,
-    api_key VARCHAR(512) NULL,
-    timeout_ms INT NOT NULL DEFAULT 60000,
-    temperature DECIMAL(4, 2) NOT NULL DEFAULT 0.20,
-    max_tokens INT NOT NULL DEFAULT 2048,
-    intraday_interval_minutes INT NOT NULL DEFAULT 30,
-    close_analysis_time VARCHAR(16) NOT NULL DEFAULT '15:30',
-    analysis_scope VARCHAR(64) NOT NULL DEFAULT '全部自选股',
-    prompt_template TEXT NULL,
-    auto_close_pipeline_enabled TINYINT NOT NULL DEFAULT 0,
-    auto_close_pipeline_last_run_at DATETIME NULL,
-    auto_close_pipeline_last_finished_at DATETIME NULL,
-    auto_close_pipeline_last_status VARCHAR(32) NOT NULL DEFAULT 'IDLE',
-    auto_close_pipeline_last_message TEXT NULL,
-    deleted TINYINT NOT NULL DEFAULT 0,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_ai_model_config_user (user_id)
-) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
-
-CREATE TABLE IF NOT EXISTS ai_prompt_template (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    user_id BIGINT NOT NULL,
-    title VARCHAR(128) NOT NULL,
-    content TEXT NOT NULL,
-    deleted TINYINT NOT NULL DEFAULT 0,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    KEY idx_ai_prompt_template_user_updated (user_id, updated_at)
-) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
-
-CREATE TABLE IF NOT EXISTS ai_chat_session (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    user_id BIGINT NOT NULL,
-    title VARCHAR(128) NOT NULL,
-    model_name VARCHAR(128) NULL,
-    deleted TINYINT NOT NULL DEFAULT 0,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    KEY idx_ai_chat_session_user_updated (user_id, updated_at)
-) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
-
-CREATE TABLE IF NOT EXISTS ai_chat_message (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    session_id BIGINT NOT NULL,
-    user_id BIGINT NOT NULL,
-    message_role VARCHAR(16) NOT NULL,
-    content MEDIUMTEXT NOT NULL,
-    model_name VARCHAR(128) NULL,
-    status VARCHAR(32) NOT NULL DEFAULT 'SUCCESS',
-    error_message TEXT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    KEY idx_ai_chat_message_session_time (session_id, created_at),
-    KEY idx_ai_chat_message_user_time (user_id, created_at)
-) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
-
-CREATE TABLE IF NOT EXISTS ai_user_memory (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    user_id BIGINT NOT NULL,
-    memory_summary TEXT NULL,
-    last_interaction_at DATETIME NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_ai_user_memory_user (user_id)
-) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
-
-CREATE TABLE IF NOT EXISTS news_flash (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    title VARCHAR(512) NOT NULL,
-    source VARCHAR(64) NULL,
-    url VARCHAR(1024) NULL,
-    published_at DATETIME NOT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    KEY idx_news_flash_published (published_at)
-) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
-
-CREATE TABLE IF NOT EXISTS market_snapshot (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    symbol VARCHAR(32) NOT NULL,
-    name VARCHAR(64) NULL,
-    market VARCHAR(16) NULL,
-    latest_price DECIMAL(18, 4) NOT NULL,
-    change_amount DECIMAL(18, 4) NOT NULL DEFAULT 0,
-    change_percent DECIMAL(10, 4) NOT NULL DEFAULT 0,
-    volume_ratio DECIMAL(10, 4) NULL,
-    amount DECIMAL(24, 4) NULL,
-    quote_time DATETIME NOT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    KEY idx_market_snapshot_symbol_time (symbol, quote_time)
-) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
-
-CREATE TABLE IF NOT EXISTS stock_kline (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    stock_code VARCHAR(16) NOT NULL,
-    period VARCHAR(16) NOT NULL DEFAULT 'day',
-    trade_date DATE NOT NULL,
-    open_price DECIMAL(18, 4) NOT NULL,
-    close_price DECIMAL(18, 4) NOT NULL,
-    low_price DECIMAL(18, 4) NOT NULL,
-    high_price DECIMAL(18, 4) NOT NULL,
-    volume BIGINT NULL,
-    amount DECIMAL(24, 4) NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_stock_kline_code_period_date (stock_code, period, trade_date)
-) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
-
-INSERT IGNORE INTO user_account (id, username, display_name, email, status)
-VALUES (1, 'demo', '默认用户', NULL, 'ACTIVE');
 CREATE TABLE IF NOT EXISTS ai_research_schema_version (
     version_no VARCHAR(64) PRIMARY KEY,
     status VARCHAR(32) NOT NULL,
@@ -170,6 +9,92 @@ CREATE TABLE IF NOT EXISTS ai_research_schema_version (
     completed_at DATETIME(3) NULL,
     schema_checksum VARCHAR(128) NOT NULL
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+INSERT INTO ai_research_schema_version
+    (version_no, status, started_at, schema_checksum)
+VALUES
+    ('20260714-unified-1.1', 'APPLYING', CURRENT_TIMESTAMP(3), 'AI_RESEARCH_UNIFIED_1_1');
+
+ALTER TABLE user_account
+    ADD COLUMN system_role VARCHAR(16) NOT NULL DEFAULT 'USER' AFTER status,
+    ADD CONSTRAINT chk_user_account_system_role
+        CHECK (system_role IN ('USER', 'OPERATOR', 'ADMIN'));
+
+CREATE TEMPORARY TABLE tmp_ai_trading_calendar_backup LIKE ai_trading_calendar;
+INSERT INTO tmp_ai_trading_calendar_backup SELECT * FROM ai_trading_calendar;
+SET @ai_calendar_backup_count = (SELECT COUNT(*) FROM tmp_ai_trading_calendar_backup);
+SET @ai_calendar_backup_min_date = (
+    SELECT COALESCE(MIN(trade_date), '1900-01-01') FROM tmp_ai_trading_calendar_backup
+);
+SET @ai_calendar_backup_max_date = (
+    SELECT COALESCE(MAX(trade_date), '1900-01-01') FROM tmp_ai_trading_calendar_backup
+);
+
+CREATE TEMPORARY TABLE tmp_ai_calendar_coverage_guard (
+    id TINYINT PRIMARY KEY,
+    coverage_ok TINYINT NOT NULL,
+    CONSTRAINT chk_tmp_ai_calendar_coverage CHECK (coverage_ok = 1)
+);
+INSERT INTO tmp_ai_calendar_coverage_guard (id, coverage_ok)
+SELECT 1, CASE WHEN EXISTS (
+    SELECT 1
+    FROM tmp_ai_trading_calendar_backup
+    WHERE market_code = 'CN_A'
+      AND is_trade_day = 1
+      AND trade_date >= CURRENT_DATE
+) THEN 1 ELSE 0 END;
+
+SET FOREIGN_KEY_CHECKS = 0;
+DROP TABLE IF EXISTS ai_analysis_report;
+DROP TABLE IF EXISTS ai_trade_rule_config;
+DROP TABLE IF EXISTS ai_trade_plan_review;
+DROP TABLE IF EXISTS ai_trade_rule_performance;
+DROP TABLE IF EXISTS ai_analysis_outcome;
+DROP TABLE IF EXISTS ai_analysis_decision;
+DROP TABLE IF EXISTS ai_analysis_factor_hit;
+DROP TABLE IF EXISTS ai_factor_stat;
+DROP TABLE IF EXISTS ai_strategy_version;
+DROP TABLE IF EXISTS ai_strategy_evolution_log;
+DROP TABLE IF EXISTS ai_stock_universe;
+DROP TABLE IF EXISTS ai_prediction_sample;
+DROP TABLE IF EXISTS ai_factor_definition;
+DROP TABLE IF EXISTS ai_factor_value;
+DROP TABLE IF EXISTS ai_prediction_result;
+DROP TABLE IF EXISTS ai_prediction_label;
+DROP TABLE IF EXISTS ai_strategy_experiment;
+DROP TABLE IF EXISTS ai_backtest_run;
+DROP TABLE IF EXISTS ai_backtest_trade;
+DROP TABLE IF EXISTS ai_learning_job_log;
+DROP TABLE IF EXISTS ai_model_eval_run;
+DROP TABLE IF EXISTS ai_daily_insight_snapshot;
+DROP TABLE IF EXISTS ai_daily_insight_item;
+DROP TABLE IF EXISTS ai_data_batch;
+DROP TABLE IF EXISTS ai_sample_v2;
+DROP TABLE IF EXISTS ai_factor_value_v2;
+DROP TABLE IF EXISTS ai_trading_calendar;
+DROP TABLE IF EXISTS ai_training_dataset;
+DROP TABLE IF EXISTS ai_model_version;
+DROP TABLE IF EXISTS ai_strategy_release;
+DROP TABLE IF EXISTS ai_prediction_v2;
+DROP TABLE IF EXISTS ai_label_v2;
+DROP TABLE IF EXISTS ai_label_cost_evidence;
+DROP TABLE IF EXISTS ai_training_dataset_item;
+DROP TABLE IF EXISTS ai_factor_performance_v2;
+DROP TABLE IF EXISTS ai_walk_forward_run;
+DROP TABLE IF EXISTS ai_walk_forward_fold;
+DROP TABLE IF EXISTS ai_walk_forward_baseline;
+DROP TABLE IF EXISTS ai_portfolio_backtest_run;
+DROP TABLE IF EXISTS ai_portfolio_backtest_daily;
+DROP TABLE IF EXISTS ai_portfolio_backtest_trade;
+DROP TABLE IF EXISTS ai_portfolio_backtest_position;
+DROP TABLE IF EXISTS ai_pipeline_run;
+DROP TABLE IF EXISTS ai_pipeline_step;
+DROP TABLE IF EXISTS ai_shadow_evaluation;
+DROP TABLE IF EXISTS ai_shadow_evaluation_item;
+DROP TABLE IF EXISTS ai_drift_event;
+DROP TABLE IF EXISTS ai_strategy_governance_event;
+DROP TABLE IF EXISTS ai_research_daily_report;
+SET FOREIGN_KEY_CHECKS = 1;
 
 CREATE TABLE IF NOT EXISTS ai_research_universe (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -398,6 +323,30 @@ CREATE TABLE IF NOT EXISTS ai_trading_calendar (
     KEY idx_trading_calendar_source (source_fingerprint),
     CONSTRAINT chk_trading_calendar_day CHECK (is_trade_day IN (0, 1))
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+INSERT INTO ai_trading_calendar
+    (id, market_code, trade_date, calendar_version, is_trade_day, session_open_time,
+     session_close_time, previous_trade_date, next_trade_date, source_name, source_as_of,
+     source_fingerprint, created_at)
+SELECT
+    id, market_code, trade_date, calendar_version, is_trade_day, session_open_time,
+    session_close_time, previous_trade_date, next_trade_date, source_name, source_as_of,
+    source_fingerprint, created_at
+FROM tmp_ai_trading_calendar_backup;
+
+CREATE TEMPORARY TABLE tmp_ai_calendar_restore_guard (
+    id TINYINT PRIMARY KEY,
+    restore_ok TINYINT NOT NULL,
+    CONSTRAINT chk_tmp_ai_calendar_restore CHECK (restore_ok = 1)
+);
+INSERT INTO tmp_ai_calendar_restore_guard (id, restore_ok)
+SELECT 1, CASE WHEN
+    (SELECT COUNT(*) FROM ai_trading_calendar) = @ai_calendar_backup_count
+    AND (SELECT COALESCE(MIN(trade_date), '1900-01-01') FROM ai_trading_calendar) =
+        @ai_calendar_backup_min_date
+    AND (SELECT COALESCE(MAX(trade_date), '1900-01-01') FROM ai_trading_calendar) =
+        @ai_calendar_backup_max_date
+THEN 1 ELSE 0 END;
 
 CREATE TABLE IF NOT EXISTS ai_training_dataset (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -1506,11 +1455,6 @@ CREATE TABLE IF NOT EXISTS ai_research_daily_report (
         REFERENCES ai_research_daily_report (user_id, id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 
-INSERT INTO ai_research_schema_version
-    (version_no, status, started_at, schema_checksum)
-VALUES
-    ('20260714-unified-1.1', 'APPLYING', CURRENT_TIMESTAMP(3), 'AI_RESEARCH_UNIFIED_1_1');
-
 -- 可启动的全局研究基线。所有种子均记录版本，后续升级必须创建新版本，不能原地覆盖历史版本。
 INSERT INTO ai_research_universe
     (id, universe_code, universe_name, market_code, selection_policy_json,
@@ -1602,3 +1546,7 @@ UPDATE ai_research_schema_version
 SET status = 'APPLIED', completed_at = CURRENT_TIMESTAMP(3)
 WHERE version_no = '20260714-unified-1.1'
   AND status = 'APPLYING';
+
+DROP TEMPORARY TABLE IF EXISTS tmp_ai_calendar_restore_guard;
+DROP TEMPORARY TABLE IF EXISTS tmp_ai_calendar_coverage_guard;
+DROP TEMPORARY TABLE IF EXISTS tmp_ai_trading_calendar_backup;
