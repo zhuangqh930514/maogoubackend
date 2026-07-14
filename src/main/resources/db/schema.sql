@@ -111,6 +111,7 @@ CREATE TABLE IF NOT EXISTS ai_analysis_report (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_ai_report_user_time (user_id, generated_at),
+    KEY idx_ai_report_user_date_time (user_id, report_date, generated_at),
     KEY idx_ai_report_stock_time (stock_code, generated_at),
     KEY idx_ai_report_sample (sample_id),
     KEY idx_ai_report_prediction (prediction_id),

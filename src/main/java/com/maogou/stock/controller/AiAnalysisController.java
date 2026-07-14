@@ -2,6 +2,7 @@ package com.maogou.stock.controller;
 
 import com.maogou.stock.common.ApiResponse;
 import com.maogou.stock.dto.ai.AiAnalysisReportResponse;
+import com.maogou.stock.dto.ai.AiAnalysisReportPageResponse;
 import com.maogou.stock.dto.ai.BatchAiAnalysisReportDeleteRequest;
 import com.maogou.stock.dto.ai.RunAnalysisRequest;
 import com.maogou.stock.dto.ai.RunWatchlistAnalysisRequest;
@@ -13,7 +14,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.format.annotation.DateTimeFormat;
 
+import java.time.LocalDate;
 import java.util.List;
 
 @RestController
@@ -29,6 +32,17 @@ public class AiAnalysisController {
     @GetMapping("/reports")
     public ApiResponse<List<AiAnalysisReportResponse>> reports(@RequestParam(required = false) String code) {
         return ApiResponse.ok(aiAnalysisService.listReports(code));
+    }
+
+    @GetMapping("/reports/page")
+    public ApiResponse<AiAnalysisReportPageResponse> reportPage(
+            @RequestParam(required = false) String code,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "10") int pageSize,
+            @RequestParam(defaultValue = "ALL") String filter
+    ) {
+        return ApiResponse.ok(aiAnalysisService.pageReports(code, date, page, pageSize, filter));
     }
 
     @PostMapping("/reports/batch-delete")

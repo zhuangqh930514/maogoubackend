@@ -10,6 +10,7 @@ import com.maogou.stock.domain.entity.AiModelConfig;
 import com.maogou.stock.domain.entity.AiStrategyVersion;
 import com.maogou.stock.domain.enums.AnalysisStatus;
 import com.maogou.stock.dto.ai.AiAnalysisReportResponse;
+import com.maogou.stock.dto.ai.AiAnalysisReportPageResponse;
 import com.maogou.stock.dto.ai.AiAnalysisResultPayload;
 import com.maogou.stock.dto.ai.AiLearningPayloads;
 import com.maogou.stock.dto.market.IntradayPointResponse;
@@ -115,6 +116,101 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             wrapper.eq("stock_code", code);
         }
         return reportMapper.selectList(wrapper).stream().map(AiAnalysisReportResponse::from).toList();
+    }
+
+    @Override
+    public AiAnalysisReportPageResponse pageReports(
+            String code,
+            LocalDate date,
+            int page,
+            int pageSize,
+            String filter
+    ) {
+        int normalizedPageSize = Math.max(1, Math.min(pageSize, 50));
+        LocalDate selectedDate = date == null ? latestReportDate(code) : date;
+        if (selectedDate == null) {
+            return AiAnalysisReportPageResponse.empty(normalizedPageSize);
+        }
+
+        long total = reportMapper.selectCount(reportPageQuery(code, selectedDate, filter));
+        int totalPages = total == 0 ? 0 : (int) Math.ceil((double) total / normalizedPageSize);
+        int normalizedPage = totalPages == 0 ? 1 : Math.min(Math.max(1, page), totalPages);
+        if (total == 0) {
+            return new AiAnalysisReportPageResponse(
+                    List.of(), 0, normalizedPage, normalizedPageSize, 0,
+                    selectedDate, date == null ? selectedDate : null);
+        }
+
+        long offset = (long) (normalizedPage - 1) * normalizedPageSize;
+        QueryWrapper<AiAnalysisReport> query = reportPageQuery(code, selectedDate, filter)
+                .orderByDesc("generated_at")
+                .orderByDesc("id")
+                .last("LIMIT " + normalizedPageSize + " OFFSET " + offset);
+        List<AiAnalysisReportResponse> items = reportMapper.selectList(query).stream()
+                .map(AiAnalysisReportResponse::from)
+                .toList();
+        return new AiAnalysisReportPageResponse(
+                items,
+                total,
+                normalizedPage,
+                normalizedPageSize,
+                totalPages,
+                selectedDate,
+                date == null ? selectedDate : null);
+    }
+
+    private LocalDate latestReportDate(String code) {
+        QueryWrapper<AiAnalysisReport> query = new QueryWrapper<AiAnalysisReport>()
+                .eq("user_id", AuthContext.currentUserIdOrDefault())
+                .select("MAX(report_date)");
+        if (code != null && !code.isBlank()) {
+            query.eq("stock_code", code.trim());
+        }
+        return reportMapper.selectObjs(query).stream()
+                .map(AiAnalysisServiceImpl::toLocalDate)
+                .filter(Objects::nonNull)
+                .findFirst()
+                .orElse(null);
+    }
+
+    private QueryWrapper<AiAnalysisReport> reportPageQuery(String code, LocalDate date, String filter) {
+        QueryWrapper<AiAnalysisReport> query = new QueryWrapper<AiAnalysisReport>()
+                .eq("user_id", AuthContext.currentUserIdOrDefault())
+                .eq("report_date", date);
+        if (code != null && !code.isBlank()) {
+            query.eq("stock_code", code.trim());
+        }
+        switch (filter == null ? "ALL" : filter.trim().toUpperCase(Locale.ROOT)) {
+            case "HIGH_RISK" -> query.lt("score", 60);
+            case "BUY" -> query.and(nested -> nested
+                    .like("advice", "买入")
+                    .or().like("advice", "突破")
+                    .or().like("advice", "持有"));
+            case "REDUCE" -> query.and(nested -> nested
+                    .like("advice", "减仓")
+                    .or().like("advice", "控制")
+                    .or().like("advice", "风险"));
+            default -> {
+            }
+        }
+        return query;
+    }
+
+    private static LocalDate toLocalDate(Object value) {
+        if (value instanceof LocalDate localDate) {
+            return localDate;
+        }
+        if (value instanceof LocalDateTime localDateTime) {
+            return localDateTime.toLocalDate();
+        }
+        if (value instanceof java.sql.Date sqlDate) {
+            return sqlDate.toLocalDate();
+        }
+        if (value == null) {
+            return null;
+        }
+        String text = String.valueOf(value).trim();
+        return text.length() < 10 ? null : LocalDate.parse(text.substring(0, 10));
     }
 
     @Override
