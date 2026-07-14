@@ -1,6 +1,6 @@
 package com.maogou.stock.scheduler;
 
-import com.maogou.stock.service.v2.AiEvolutionAutomationService;
+import com.maogou.stock.service.research.AiEvolutionAutomationService;
 import org.junit.jupiter.api.Test;
 
 import static org.mockito.Mockito.mock;

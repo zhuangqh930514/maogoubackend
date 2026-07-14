@@ -1,14 +1,14 @@
-package com.maogou.stock.service.impl.v2;
+package com.maogou.stock.service.impl.research;
 
-import com.maogou.stock.domain.entity.v2.AiFactorValueV2;
-import com.maogou.stock.domain.entity.v2.AiSampleV2;
+import com.maogou.stock.domain.entity.research.AiFactorValue;
+import com.maogou.stock.domain.entity.research.AiSample;
 import com.maogou.stock.dto.market.FinanceSnapshotResponse;
 import com.maogou.stock.dto.market.KlinePointResponse;
 import com.maogou.stock.dto.market.KlineSeriesSnapshot;
 import com.maogou.stock.dto.market.StockDetailResponse;
 import com.maogou.stock.dto.market.StockQuoteResponse;
-import com.maogou.stock.mapper.v2.AiFactorValueV2Mapper;
-import com.maogou.stock.service.v2.AiFactorEngineV2;
+import com.maogou.stock.mapper.research.AiFactorValueMapper;
+import com.maogou.stock.service.research.AiFactorEngine;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -29,12 +29,12 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-class AiFactorEngineV2ImplTest {
+class AiFactorEngineImplTest {
 
     @Test
     void preservesTheSignOfContinuousMomentumFactors() {
-        AiFactorEngineV2 engine = engine();
-        AiSampleV2 sample = sample(LocalDate.of(2026, 7, 10));
+        AiFactorEngine engine = engine();
+        AiSample sample = sample(LocalDate.of(2026, 7, 10));
         StockDetailResponse detail = detail(List.of(
                 kline("2026-07-07", "12"),
                 kline("2026-07-08", "11"),
@@ -42,17 +42,17 @@ class AiFactorEngineV2ImplTest {
                 kline("2026-07-10", "9")
         ), FinanceSnapshotResponse.empty());
 
-        List<AiFactorValueV2> factors = engine.compute(sample, detail);
+        List<AiFactorValue> factors = engine.compute(sample, detail);
 
-        AiFactorValueV2 momentum = factor(factors, "MOMENTUM_RETURN_3D");
+        AiFactorValue momentum = factor(factors, "MOMENTUM_RETURN_3D");
         assertThat(momentum.rawValue).isNegative();
         assertThat(momentum.missing).isZero();
     }
 
     @Test
     void excludesKlinesAfterTheSampleAsOfTime() {
-        AiFactorEngineV2 engine = engine();
-        AiSampleV2 sample = sample(LocalDate.of(2026, 7, 10));
+        AiFactorEngine engine = engine();
+        AiSample sample = sample(LocalDate.of(2026, 7, 10));
         StockDetailResponse detail = detail(List.of(
                 kline("2026-07-07", "10"),
                 kline("2026-07-08", "10"),
@@ -61,15 +61,15 @@ class AiFactorEngineV2ImplTest {
                 kline("2026-07-13", "9999")
         ), FinanceSnapshotResponse.empty());
 
-        List<AiFactorValueV2> factors = engine.compute(sample, detail);
+        List<AiFactorValue> factors = engine.compute(sample, detail);
 
         assertThat(factor(factors, "MOMENTUM_RETURN_3D").rawValue).isEqualByComparingTo("0.00000000");
     }
 
     @Test
     void excludesSameDayClosingKlineFromIntradaySamples() {
-        AiFactorEngineV2 engine = engine();
-        AiSampleV2 sample = sample(LocalDate.of(2026, 7, 10));
+        AiFactorEngine engine = engine();
+        AiSample sample = sample(LocalDate.of(2026, 7, 10));
         sample.samplePhase = "INTRADAY";
         sample.asOfTime = LocalDateTime.of(2026, 7, 10, 14, 0);
         StockDetailResponse detail = detail(List.of(
@@ -80,23 +80,23 @@ class AiFactorEngineV2ImplTest {
                 kline("2026-07-10", "99")
         ), FinanceSnapshotResponse.empty());
 
-        List<AiFactorValueV2> factors = engine.compute(sample, detail);
+        List<AiFactorValue> factors = engine.compute(sample, detail);
 
         assertThat(factor(factors, "MOMENTUM_RETURN_3D").rawValue).isEqualByComparingTo("0.00000000");
     }
 
     @Test
     void recordsMissingFinanceInsteadOfTurningItIntoAZeroSignal() {
-        AiFactorEngineV2 engine = engine();
-        AiSampleV2 sample = sample(LocalDate.of(2026, 7, 10));
+        AiFactorEngine engine = engine();
+        AiSample sample = sample(LocalDate.of(2026, 7, 10));
         StockDetailResponse detail = detail(List.of(
                 kline("2026-07-09", "10"),
                 kline("2026-07-10", "10")
         ), null);
 
-        List<AiFactorValueV2> factors = engine.compute(sample, detail);
+        List<AiFactorValue> factors = engine.compute(sample, detail);
 
-        AiFactorValueV2 pe = factor(factors, "FUNDAMENTAL_PE");
+        AiFactorValue pe = factor(factors, "FUNDAMENTAL_PE");
         assertThat(pe.missing).isEqualTo(1);
         assertThat(pe.rawValue).isNull();
         assertThat(pe.missingReason).contains("财务");
@@ -104,14 +104,14 @@ class AiFactorEngineV2ImplTest {
 
     @Test
     void recordsPartiallyMissingFinanceFieldsIndividually() {
-        AiFactorEngineV2 engine = engine();
+        AiFactorEngine engine = engine();
         FinanceSnapshotResponse partialFinance = new FinanceSnapshotResponse(
                 null, new BigDecimal("2.1"), null, null, null, null, null, null,
                 null, null, null, null, null, null, null,
                 LocalDate.of(2026, 3, 31), LocalDateTime.of(2026, 4, 25, 18, 0),
                 LocalDateTime.of(2026, 7, 10, 15, 55), "EASTMONEY");
 
-        List<AiFactorValueV2> factors = engine.compute(
+        List<AiFactorValue> factors = engine.compute(
                 sample(LocalDate.of(2026, 7, 10)),
                 detail(List.of(kline("2026-07-09", "10"), kline("2026-07-10", "10")), partialFinance));
 
@@ -122,32 +122,32 @@ class AiFactorEngineV2ImplTest {
 
     @Test
     void rejectsFinancePublishedAfterTheSampleTime() {
-        AiFactorEngineV2 engine = engine();
+        AiFactorEngine engine = engine();
         FinanceSnapshotResponse futureFinance = new FinanceSnapshotResponse(
                 new BigDecimal("20"), new BigDecimal("2.1"), null, null, null, null, null, null,
                 null, null, null, null, null, null, null,
                 LocalDate.of(2026, 6, 30), LocalDateTime.of(2026, 7, 11, 18, 0),
                 LocalDateTime.of(2026, 7, 11, 18, 1), "EASTMONEY");
 
-        List<AiFactorValueV2> factors = engine.compute(
+        List<AiFactorValue> factors = engine.compute(
                 sample(LocalDate.of(2026, 7, 10)),
                 detail(List.of(kline("2026-07-09", "10"), kline("2026-07-10", "10")), futureFinance));
 
-        AiFactorValueV2 pe = factor(factors, "FUNDAMENTAL_PE");
+        AiFactorValue pe = factor(factors, "FUNDAMENTAL_PE");
         assertThat(pe.missing).isEqualTo(1);
         assertThat(pe.missingReason).contains("样本时点");
     }
 
     @Test
     void preservesNegativeValuationSignalsInsteadOfTreatingThemAsMissing() {
-        AiFactorEngineV2 engine = engine();
+        AiFactorEngine engine = engine();
         FinanceSnapshotResponse lossMakingFinance = new FinanceSnapshotResponse(
                 new BigDecimal("-10"), new BigDecimal("-0.5"), null, null, null, null, null, null,
                 new BigDecimal("-100"), null, new BigDecimal("-3"), null, null, null, null,
                 LocalDate.of(2026, 3, 31), LocalDateTime.of(2026, 4, 25, 18, 0),
                 LocalDateTime.of(2026, 7, 10, 15, 55), "EASTMONEY");
 
-        List<AiFactorValueV2> factors = engine.compute(
+        List<AiFactorValue> factors = engine.compute(
                 sample(LocalDate.of(2026, 7, 10)),
                 detail(List.of(kline("2026-07-09", "10"), kline("2026-07-10", "10")), lossMakingFinance));
 
@@ -157,13 +157,13 @@ class AiFactorEngineV2ImplTest {
 
     @Test
     void keepsPointInTimeValuationWhenTheFinancialReportSourceIsUnavailable() {
-        AiFactorEngineV2 engine = engine();
+        AiFactorEngine engine = engine();
         FinanceSnapshotResponse valuationOnly = new FinanceSnapshotResponse(
                 new BigDecimal("20"), new BigDecimal("2.1"), null, null, null, null, null, null,
                 null, null, null, null, null, null, null,
                 null, null, LocalDateTime.of(2026, 7, 10, 15, 55), "EASTMONEY");
 
-        List<AiFactorValueV2> factors = engine.compute(
+        List<AiFactorValue> factors = engine.compute(
                 sample(LocalDate.of(2026, 7, 10)),
                 detail(List.of(kline("2026-07-09", "10"), kline("2026-07-10", "10")), valuationOnly));
 
@@ -174,13 +174,13 @@ class AiFactorEngineV2ImplTest {
 
     @Test
     void crossSectionNormalizationKeepsNegativeAndPositiveDirection() {
-        AiFactorEngineV2 engine = engine();
-        List<AiFactorValueV2> values = new ArrayList<>();
+        AiFactorEngine engine = engine();
+        List<AiFactorValue> values = new ArrayList<>();
         values.add(value("000001", "MOMENTUM_RETURN_3D", "-10"));
         values.add(value("000002", "MOMENTUM_RETURN_3D", "0"));
         values.add(value("000003", "MOMENTUM_RETURN_3D", "10"));
 
-        List<AiFactorValueV2> normalized = engine.normalizeCrossSection(values);
+        List<AiFactorValue> normalized = engine.normalizeCrossSection(values);
 
         assertThat(normalized.get(0).normalizedValue).isNegative();
         assertThat(normalized.get(1).normalizedValue).isEqualByComparingTo(BigDecimal.ZERO);
@@ -189,14 +189,14 @@ class AiFactorEngineV2ImplTest {
 
     @Test
     void crossSectionNormalizationDoesNotMixFutureSampleTimes() {
-        AiFactorEngineV2 engine = engine();
+        AiFactorEngine engine = engine();
         LocalDateTime currentAsOf = LocalDateTime.of(2026, 7, 10, 16, 0);
         LocalDateTime futureAsOf = currentAsOf.plusDays(1);
-        AiFactorValueV2 negative = value("000001", "MOMENTUM_RETURN_3D", "-1", currentAsOf);
-        AiFactorValueV2 positive = value("000002", "MOMENTUM_RETURN_3D", "1", currentAsOf);
-        AiFactorValueV2 futureOutlier = value("000003", "MOMENTUM_RETURN_3D", "1000", futureAsOf);
+        AiFactorValue negative = value("000001", "MOMENTUM_RETURN_3D", "-1", currentAsOf);
+        AiFactorValue positive = value("000002", "MOMENTUM_RETURN_3D", "1", currentAsOf);
+        AiFactorValue futureOutlier = value("000003", "MOMENTUM_RETURN_3D", "1000", futureAsOf);
 
-        List<AiFactorValueV2> normalized = engine.normalizeCrossSection(
+        List<AiFactorValue> normalized = engine.normalizeCrossSection(
                 new ArrayList<>(List.of(negative, positive, futureOutlier)));
 
         assertThat(normalized.get(0).normalizedValue).isEqualByComparingTo("-1.00000000");
@@ -206,16 +206,16 @@ class AiFactorEngineV2ImplTest {
 
     @Test
     void crossSectionNormalizationDoesNotMixUsersOrUniverses() {
-        AiFactorEngineV2 engine = engine();
+        AiFactorEngine engine = engine();
         LocalDateTime asOf = LocalDateTime.of(2026, 7, 10, 16, 0);
-        AiFactorValueV2 firstUser = value("000001", "MOMENTUM_RETURN_3D", "-1", asOf);
+        AiFactorValue firstUser = value("000001", "MOMENTUM_RETURN_3D", "-1", asOf);
         firstUser.userId = 5L;
         firstUser.crossSectionKey = "5:WATCHLIST:A";
-        AiFactorValueV2 secondUser = value("000002", "MOMENTUM_RETURN_3D", "1", asOf);
+        AiFactorValue secondUser = value("000002", "MOMENTUM_RETURN_3D", "1", asOf);
         secondUser.userId = 6L;
         secondUser.crossSectionKey = "6:WATCHLIST:B";
 
-        List<AiFactorValueV2> normalized = engine.normalizeCrossSection(
+        List<AiFactorValue> normalized = engine.normalizeCrossSection(
                 new ArrayList<>(List.of(firstUser, secondUser)));
 
         assertThat(normalized.get(0).normalizedValue).isEqualByComparingTo("0.00000000");
@@ -224,12 +224,12 @@ class AiFactorEngineV2ImplTest {
 
     @Test
     void storesCrossSectionOnlyAfterNormalizationWithoutUpdatingImmutableRows() {
-        AiFactorValueV2Mapper mapper = mock(AiFactorValueV2Mapper.class);
+        AiFactorValueMapper mapper = mock(AiFactorValueMapper.class);
         stubBatchPersistence(mapper);
-        AiFactorEngineV2 engine = new AiFactorEngineV2Impl(mapper);
-        AiFactorValueV2 negative = value("000001", "MOMENTUM_RETURN_3D", "-1");
+        AiFactorEngine engine = new AiFactorEngineImpl(mapper);
+        AiFactorValue negative = value("000001", "MOMENTUM_RETURN_3D", "-1");
         negative.sampleId = 11L;
-        AiFactorValueV2 positive = value("000002", "MOMENTUM_RETURN_3D", "1");
+        AiFactorValue positive = value("000002", "MOMENTUM_RETURN_3D", "1");
         positive.sampleId = 12L;
 
         engine.normalizeAndStoreCrossSection(new ArrayList<>(List.of(negative, positive)));
@@ -237,18 +237,18 @@ class AiFactorEngineV2ImplTest {
         assertThat(negative.normalizedValue).isEqualByComparingTo("-1.00000000");
         assertThat(positive.normalizedValue).isEqualByComparingTo("1.00000000");
         verify(mapper).insertBatchImmutable(anyList());
-        verify(mapper, never()).updateById(any(AiFactorValueV2.class));
+        verify(mapper, never()).updateById(any(AiFactorValue.class));
     }
 
     @Test
     void usesAtomicImmutableBatchUpsertForConcurrentIdempotency() {
-        AiFactorValueV2Mapper mapper = mock(AiFactorValueV2Mapper.class);
+        AiFactorValueMapper mapper = mock(AiFactorValueMapper.class);
         stubBatchPersistence(mapper);
-        AiFactorEngineV2 engine = new AiFactorEngineV2Impl(mapper);
-        AiFactorValueV2 input = value("000001", "MOMENTUM_RETURN_3D", "-1");
+        AiFactorEngine engine = new AiFactorEngineImpl(mapper);
+        AiFactorValue input = value("000001", "MOMENTUM_RETURN_3D", "-1");
         input.sampleId = 11L;
 
-        List<AiFactorValueV2> stored = engine.normalizeAndStoreCrossSection(
+        List<AiFactorValue> stored = engine.normalizeAndStoreCrossSection(
                 new ArrayList<>(List.of(input)));
 
         assertThat(stored).singleElement().extracting(value -> value.id).isNotNull();
@@ -257,16 +257,16 @@ class AiFactorEngineV2ImplTest {
 
     @Test
     void rejectsAnIdempotencyCollisionWithDifferentImmutableContent() {
-        AiFactorValueV2Mapper mapper = mock(AiFactorValueV2Mapper.class);
+        AiFactorValueMapper mapper = mock(AiFactorValueMapper.class);
         when(mapper.insertBatchImmutable(anyList())).thenReturn(1);
-        AiFactorValueV2 persisted = value("000001", "MOMENTUM_RETURN_3D", "999");
+        AiFactorValue persisted = value("000001", "MOMENTUM_RETURN_3D", "999");
         persisted.id = 99L;
         persisted.sampleId = 11L;
-        persisted.factorVersion = AiFactorEngineV2Impl.FACTOR_VERSION;
+        persisted.factorVersion = AiFactorEngineImpl.FACTOR_VERSION;
         persisted.inputFingerprint = "different";
         when(mapper.selectBySamplesForShare(anyList(), anyString())).thenReturn(List.of(persisted));
-        AiFactorEngineV2 engine = new AiFactorEngineV2Impl(mapper);
-        AiFactorValueV2 input = value("000001", "MOMENTUM_RETURN_3D", "-1");
+        AiFactorEngine engine = new AiFactorEngineImpl(mapper);
+        AiFactorValue input = value("000001", "MOMENTUM_RETURN_3D", "-1");
         input.sampleId = 11L;
 
         assertThatThrownBy(() -> engine.normalizeAndStoreCrossSection(new ArrayList<>(List.of(input))))
@@ -276,8 +276,8 @@ class AiFactorEngineV2ImplTest {
 
     @Test
     void computesMarketSectorAndNewsFactorsFromPointInTimeContext() {
-        AiFactorEngineV2 engine = engine();
-        AiSampleV2 sample = sample(LocalDate.of(2026, 7, 10));
+        AiFactorEngine engine = engine();
+        AiSample sample = sample(LocalDate.of(2026, 7, 10));
         List<KlinePointResponse> stockKlines = List.of(
                 kline("2026-07-07", "10"), kline("2026-07-08", "10"),
                 kline("2026-07-09", "10"), kline("2026-07-10", "12"));
@@ -288,7 +288,7 @@ class AiFactorEngineV2ImplTest {
                 kline("2026-07-07", "10"), kline("2026-07-08", "10"),
                 kline("2026-07-09", "10"), kline("2026-07-10", "9"));
 
-        List<AiFactorValueV2> factors = engine.compute(new AiFactorEngineV2.FactorContext(
+        List<AiFactorValue> factors = engine.compute(new AiFactorEngine.FactorContext(
                 sample,
                 detail(stockKlines, FinanceSnapshotResponse.empty()),
                 marketKlines,
@@ -307,30 +307,30 @@ class AiFactorEngineV2ImplTest {
 
     @Test
     void productionEntryComputesNormalizesAndStoresTheWholeCrossSection() {
-        AiFactorValueV2Mapper mapper = mock(AiFactorValueV2Mapper.class);
+        AiFactorValueMapper mapper = mock(AiFactorValueMapper.class);
         stubBatchPersistence(mapper);
-        AiFactorEngineV2 engine = new AiFactorEngineV2Impl(mapper);
+        AiFactorEngine engine = new AiFactorEngineImpl(mapper);
         LocalDate tradeDate = LocalDate.of(2026, 7, 10);
-        AiSampleV2 fallingSample = sample(tradeDate);
+        AiSample fallingSample = sample(tradeDate);
         fallingSample.stockCode = "000001";
-        AiSampleV2 risingSample = sample(tradeDate);
+        AiSample risingSample = sample(tradeDate);
         risingSample.id = 9L;
         risingSample.stockCode = "000002";
 
-        List<AiFactorValueV2> stored = engine.computeAndStoreCrossSection(List.of(
-                new AiFactorEngineV2.FactorContext(
+        List<AiFactorValue> stored = engine.computeAndStoreCrossSection(List.of(
+                new AiFactorEngine.FactorContext(
                         fallingSample,
                         detail(momentumKlines("12", "9"), FinanceSnapshotResponse.empty()),
                         List.of(), List.of(), null, null,
                         series("000001", momentumKlines("12", "9"), fallingSample.asOfTime), null, null),
-                new AiFactorEngineV2.FactorContext(
+                new AiFactorEngine.FactorContext(
                         risingSample,
                         detail(momentumKlines("9", "12"), FinanceSnapshotResponse.empty()),
                         List.of(), List.of(), null, null,
                         series("000002", momentumKlines("9", "12"), risingSample.asOfTime), null, null)
         ));
 
-        List<AiFactorValueV2> momentum = stored.stream()
+        List<AiFactorValue> momentum = stored.stream()
                 .filter(value -> "MOMENTUM_RETURN_3D".equals(value.factorCode))
                 .toList();
         assertThat(momentum).hasSize(2);
@@ -341,12 +341,12 @@ class AiFactorEngineV2ImplTest {
 
     @Test
     void productionEntryRejectsAdjustedOrUnversionedKlines() {
-        AiFactorValueV2Mapper mapper = mock(AiFactorValueV2Mapper.class);
-        AiFactorEngineV2 engine = new AiFactorEngineV2Impl(mapper);
-        AiSampleV2 sample = sample(LocalDate.of(2026, 7, 10));
+        AiFactorValueMapper mapper = mock(AiFactorValueMapper.class);
+        AiFactorEngine engine = new AiFactorEngineImpl(mapper);
+        AiSample sample = sample(LocalDate.of(2026, 7, 10));
 
         assertThatThrownBy(() -> engine.computeAndStoreCrossSection(List.of(
-                new AiFactorEngineV2.FactorContext(
+                new AiFactorEngine.FactorContext(
                         sample,
                         detail(momentumKlines("10", "11"), FinanceSnapshotResponse.empty()),
                         List.of(), List.of(), null, null))))
@@ -356,13 +356,13 @@ class AiFactorEngineV2ImplTest {
 
     @Test
     void productionEntryRejectsUnversionedRawBenchmarkLists() {
-        AiFactorValueV2Mapper mapper = mock(AiFactorValueV2Mapper.class);
-        AiFactorEngineV2 engine = new AiFactorEngineV2Impl(mapper);
-        AiSampleV2 sample = sample(LocalDate.of(2026, 7, 10));
+        AiFactorValueMapper mapper = mock(AiFactorValueMapper.class);
+        AiFactorEngine engine = new AiFactorEngineImpl(mapper);
+        AiSample sample = sample(LocalDate.of(2026, 7, 10));
         List<KlinePointResponse> points = momentumKlines("10", "11");
 
         assertThatThrownBy(() -> engine.computeAndStoreCrossSection(List.of(
-                new AiFactorEngineV2.FactorContext(
+                new AiFactorEngine.FactorContext(
                         sample, detail(points, FinanceSnapshotResponse.empty()),
                         points, List.of(), null, null,
                         series("600519", points, sample.asOfTime), null, null))))
@@ -372,13 +372,13 @@ class AiFactorEngineV2ImplTest {
 
     @Test
     void productionEntryBindsTheStockSnapshotToSampleAndDailyPeriod() {
-        AiFactorValueV2Mapper mapper = mock(AiFactorValueV2Mapper.class);
-        AiFactorEngineV2 engine = new AiFactorEngineV2Impl(mapper);
-        AiSampleV2 sample = sample(LocalDate.of(2026, 7, 10));
+        AiFactorValueMapper mapper = mock(AiFactorValueMapper.class);
+        AiFactorEngine engine = new AiFactorEngineImpl(mapper);
+        AiSample sample = sample(LocalDate.of(2026, 7, 10));
         List<KlinePointResponse> points = momentumKlines("10", "11");
 
         assertThatThrownBy(() -> engine.computeAndStoreCrossSection(List.of(
-                new AiFactorEngineV2.FactorContext(
+                new AiFactorEngine.FactorContext(
                         sample, detail(points, FinanceSnapshotResponse.empty()),
                         List.of(), List.of(), null, null,
                         series("000001", points, sample.asOfTime), null, null))))
@@ -388,8 +388,8 @@ class AiFactorEngineV2ImplTest {
 
     @Test
     void relativeStrengthRequiresAlignedTradingDates() {
-        AiFactorEngineV2 engine = engine();
-        AiSampleV2 sample = sample(LocalDate.of(2026, 7, 10));
+        AiFactorEngine engine = engine();
+        AiSample sample = sample(LocalDate.of(2026, 7, 10));
         List<KlinePointResponse> stockKlines = List.of(
                 kline("2026-07-07", "10"), kline("2026-07-08", "10"),
                 kline("2026-07-09", "10"), kline("2026-07-10", "12"));
@@ -397,25 +397,25 @@ class AiFactorEngineV2ImplTest {
                 kline("2026-07-06", "10"), kline("2026-07-07", "10"),
                 kline("2026-07-08", "10"), kline("2026-07-10", "11"));
 
-        List<AiFactorValueV2> factors = engine.compute(new AiFactorEngineV2.FactorContext(
+        List<AiFactorValue> factors = engine.compute(new AiFactorEngine.FactorContext(
                 sample, detail(stockKlines, FinanceSnapshotResponse.empty()),
                 benchmarkWithGap, List.of(), null, null));
 
         assertThat(factor(factors, "MARKET_RELATIVE_STRENGTH").missing).isEqualTo(1);
     }
 
-    private static AiFactorEngineV2 engine() {
-        AiFactorValueV2Mapper mapper = mock(AiFactorValueV2Mapper.class);
+    private static AiFactorEngine engine() {
+        AiFactorValueMapper mapper = mock(AiFactorValueMapper.class);
         when(mapper.selectOne(any())).thenReturn(null);
-        return new AiFactorEngineV2Impl(mapper);
+        return new AiFactorEngineImpl(mapper);
     }
 
-    private static void stubBatchPersistence(AiFactorValueV2Mapper mapper) {
-        List<AiFactorValueV2> database = new ArrayList<>();
+    private static void stubBatchPersistence(AiFactorValueMapper mapper) {
+        List<AiFactorValue> database = new ArrayList<>();
         AtomicLong ids = new AtomicLong(100);
         when(mapper.insertBatchImmutable(anyList())).thenAnswer(invocation -> {
-            List<AiFactorValueV2> batch = invocation.getArgument(0);
-            for (AiFactorValueV2 value : batch) {
+            List<AiFactorValue> batch = invocation.getArgument(0);
+            for (AiFactorValue value : batch) {
                 value.id = ids.incrementAndGet();
                 database.add(value);
             }
@@ -430,8 +430,8 @@ class AiFactorEngineV2ImplTest {
         });
     }
 
-    private static AiSampleV2 sample(LocalDate tradeDate) {
-        AiSampleV2 sample = new AiSampleV2();
+    private static AiSample sample(LocalDate tradeDate) {
+        AiSample sample = new AiSample();
         sample.id = 8L;
         sample.userId = 5L;
         sample.stockCode = "600519";
@@ -470,21 +470,21 @@ class AiFactorEngineV2ImplTest {
                 symbol, "day", "NONE", "EASTMONEY", asOfTime, asOfTime.minusSeconds(1), points);
     }
 
-    private static AiFactorValueV2 value(String stockCode, String factorCode, String rawValue) {
+    private static AiFactorValue value(String stockCode, String factorCode, String rawValue) {
         return value(stockCode, factorCode, rawValue, LocalDateTime.of(2026, 7, 10, 16, 0));
     }
 
-    private static AiFactorValueV2 value(
+    private static AiFactorValue value(
             String stockCode,
             String factorCode,
             String rawValue,
             LocalDateTime calculatedAt
     ) {
-        AiFactorValueV2 value = new AiFactorValueV2();
+        AiFactorValue value = new AiFactorValue();
         value.userId = 5L;
         value.stockCode = stockCode;
         value.factorCode = factorCode;
-        value.factorVersion = AiFactorEngineV2Impl.FACTOR_VERSION;
+        value.factorVersion = AiFactorEngineImpl.FACTOR_VERSION;
         value.factorGroup = "TEST";
         value.rawValue = new BigDecimal(rawValue);
         value.direction = value.rawValue.signum() < 0 ? "NEGATIVE" : "POSITIVE";
@@ -496,7 +496,7 @@ class AiFactorEngineV2ImplTest {
         return value;
     }
 
-    private static AiFactorValueV2 factor(List<AiFactorValueV2> factors, String code) {
+    private static AiFactorValue factor(List<AiFactorValue> factors, String code) {
         return factors.stream().filter(item -> code.equals(item.factorCode)).findFirst().orElseThrow();
     }
 }

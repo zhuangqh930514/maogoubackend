@@ -13,11 +13,10 @@ import com.maogou.stock.domain.entity.AiTradePlanReview;
 import com.maogou.stock.domain.entity.AiTradeRuleConfig;
 import com.maogou.stock.domain.entity.AiTradeRulePerformance;
 import com.maogou.stock.domain.entity.TradeRecord;
-import com.maogou.stock.domain.entity.v2.AiFactorPerformanceV2;
-import com.maogou.stock.domain.entity.v2.AiFactorValueV2;
-import com.maogou.stock.domain.entity.v2.AiPredictionV2;
-import com.maogou.stock.domain.entity.v2.AiSampleV2;
-import com.maogou.stock.domain.entity.v2.AiStrategyRelease;
+import com.maogou.stock.domain.entity.research.AiFactorPerformance;
+import com.maogou.stock.domain.entity.research.AiPrediction;
+import com.maogou.stock.domain.entity.research.AiSample;
+import com.maogou.stock.domain.entity.research.AiStrategyRelease;
 import com.maogou.stock.domain.enums.AnalysisStatus;
 import com.maogou.stock.domain.enums.TradeSide;
 import com.maogou.stock.dto.ai.AiConditionalStrategyPayload;
@@ -34,15 +33,14 @@ import com.maogou.stock.mapper.AiTradePlanReviewMapper;
 import com.maogou.stock.mapper.AiTradeRuleConfigMapper;
 import com.maogou.stock.mapper.AiTradeRulePerformanceMapper;
 import com.maogou.stock.mapper.TradeRecordMapper;
-import com.maogou.stock.mapper.v2.AiFactorPerformanceV2Mapper;
-import com.maogou.stock.mapper.v2.AiFactorValueV2Mapper;
-import com.maogou.stock.mapper.v2.AiPredictionV2Mapper;
-import com.maogou.stock.mapper.v2.AiSampleV2Mapper;
-import com.maogou.stock.mapper.v2.AiStrategyReleaseMapper;
+import com.maogou.stock.mapper.research.AiFactorPerformanceMapper;
+import com.maogou.stock.mapper.research.AiPredictionMapper;
+import com.maogou.stock.mapper.research.AiSampleMapper;
+import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
 import com.maogou.stock.service.AiConditionalTradeStrategyService;
 import com.maogou.stock.service.MarketDataService;
 import com.maogou.stock.service.TradingCalendarService;
-import com.maogou.stock.service.v2.AiEvolutionV2Contract;
+import com.maogou.stock.service.research.AiResearchContract;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
@@ -80,10 +78,10 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
     private final AiTradeRulePerformanceMapper rulePerformanceMapper;
     private final AiAnalysisReportMapper reportMapper;
     private final TradeRecordMapper tradeRecordMapper;
-    private final AiSampleV2Mapper sampleV2Mapper;
-    private final AiFactorValueV2Mapper factorValueV2Mapper;
-    private final AiFactorPerformanceV2Mapper factorPerformanceV2Mapper;
-    private final AiPredictionV2Mapper predictionV2Mapper;
+    private final AiSampleMapper sampleV2Mapper;
+    private final com.maogou.stock.mapper.research.AiFactorValueMapper factorValueV2Mapper;
+    private final AiFactorPerformanceMapper factorPerformanceV2Mapper;
+    private final AiPredictionMapper predictionV2Mapper;
     private final AiStrategyReleaseMapper strategyReleaseMapper;
     private final AiFactorValueMapper factorValueMapper;
     private final AiFactorDefinitionMapper factorDefinitionMapper;
@@ -99,10 +97,10 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
             AiTradeRulePerformanceMapper rulePerformanceMapper,
             AiAnalysisReportMapper reportMapper,
             TradeRecordMapper tradeRecordMapper,
-            AiSampleV2Mapper sampleV2Mapper,
-            AiFactorValueV2Mapper factorValueV2Mapper,
-            AiFactorPerformanceV2Mapper factorPerformanceV2Mapper,
-            AiPredictionV2Mapper predictionV2Mapper,
+            AiSampleMapper sampleV2Mapper,
+            com.maogou.stock.mapper.research.AiFactorValueMapper factorValueV2Mapper,
+            AiFactorPerformanceMapper factorPerformanceV2Mapper,
+            AiPredictionMapper predictionV2Mapper,
             AiStrategyReleaseMapper strategyReleaseMapper,
             AiFactorValueMapper factorValueMapper,
             AiFactorDefinitionMapper factorDefinitionMapper,
@@ -374,7 +372,7 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
             AiLearningPayloads.AnalysisLearningContext learningContext
     ) {
         List<String> limitations = new ArrayList<>();
-        AiSampleV2 sample = sampleV2Mapper.selectOne(new QueryWrapper<AiSampleV2>()
+        AiSample sample = sampleV2Mapper.selectOne(new QueryWrapper<AiSample>()
                 .eq("user_id", userId)
                 .eq("stock_code", stockCode)
                 .le("trade_date", tradeDate)
@@ -385,14 +383,15 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
             limitations.add("研究实验室最新样本日期为 " + sample.tradeDate + "，与本次报告日期不一致，仅用于历史权重参考");
         }
         AiStrategyRelease release = activeRelease(userId);
-        AiPredictionV2 prediction = null;
-        List<AiFactorValueV2> v2Factors = List.of();
+        AiPrediction prediction = null;
+        List<com.maogou.stock.domain.entity.research.AiFactorValue> v2Factors = List.of();
         if (sample != null) {
-            v2Factors = factorValueV2Mapper.selectList(new QueryWrapper<AiFactorValueV2>()
+            v2Factors = factorValueV2Mapper.selectList(
+                    new QueryWrapper<com.maogou.stock.domain.entity.research.AiFactorValue>()
                     .eq("user_id", userId)
                     .eq("sample_id", sample.id)
-                    .eq("factor_version", AiEvolutionV2Contract.FACTOR_VERSION));
-            prediction = predictionV2Mapper.selectOne(new QueryWrapper<AiPredictionV2>()
+                    .eq("factor_version", AiResearchContract.FACTOR_VERSION));
+            prediction = predictionV2Mapper.selectOne(new QueryWrapper<AiPrediction>()
                     .eq("user_id", userId)
                     .eq("sample_id", sample.id)
                     .eq("horizon_days", 3)
@@ -427,27 +426,27 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
 
     private Map<String, AiConditionalStrategyPayload.FactorEvidence> v2Evidence(
             Long userId,
-            AiSampleV2 sample,
-            List<AiFactorValueV2> factors
+            AiSample sample,
+            List<com.maogou.stock.domain.entity.research.AiFactorValue> factors
     ) {
         if (factors == null || factors.isEmpty()) {
             return Map.of();
         }
-        List<AiFactorPerformanceV2> performances = factorPerformanceV2Mapper.selectList(
-                new QueryWrapper<AiFactorPerformanceV2>()
+        List<AiFactorPerformance> performances = factorPerformanceV2Mapper.selectList(
+                new QueryWrapper<AiFactorPerformance>()
                         .eq("user_id", userId)
-                        .eq("factor_version", AiEvolutionV2Contract.FACTOR_VERSION)
+                        .eq("factor_version", AiResearchContract.FACTOR_VERSION)
                         .in("factor_code", factors.stream().map(item -> item.factorCode).distinct().toList())
                         .orderByDesc("evaluated_at")
                         .last("LIMIT 600"));
-        Map<String, AiFactorPerformanceV2> performanceByCode = new LinkedHashMap<>();
+        Map<String, AiFactorPerformance> performanceByCode = new LinkedHashMap<>();
         String regime = sample == null ? "UNKNOWN" : normalize(sample.marketRegime, "UNKNOWN");
         performances.stream().filter(item -> regime.equals(item.marketRegime))
                 .forEach(item -> performanceByCode.putIfAbsent(item.factorCode, item));
         performances.forEach(item -> performanceByCode.putIfAbsent(item.factorCode, item));
         Map<String, AiConditionalStrategyPayload.FactorEvidence> result = new LinkedHashMap<>();
-        for (AiFactorValueV2 factor : factors) {
-            AiFactorPerformanceV2 performance = performanceByCode.get(factor.factorCode);
+        for (com.maogou.stock.domain.entity.research.AiFactorValue factor : factors) {
+            AiFactorPerformance performance = performanceByCode.get(factor.factorCode);
             result.put(factor.factorCode, new AiConditionalStrategyPayload.FactorEvidence(
                     factor.factorCode,
                     factor.factorCode,
@@ -594,7 +593,7 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
                 predictionId,
                 research.release == null ? null : research.release.id,
                 research.release == null ? null : research.release.versionNo,
-                AiEvolutionV2Contract.FACTOR_VERSION,
+                AiResearchContract.FACTOR_VERSION,
                 resolved.configuration.version(),
                 resolved.fingerprint,
                 quality == null ? BigDecimal.ZERO : quality,
@@ -899,7 +898,7 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
         return new BigDecimal("50");
     }
 
-    private static BigDecimal learnedFactorWeight(AiFactorPerformanceV2 performance) {
+    private static BigDecimal learnedFactorWeight(AiFactorPerformance performance) {
         if (performance == null || performance.successRate == null) {
             return null;
         }
@@ -982,8 +981,8 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
     }
 
     private record ResearchSnapshot(
-            AiSampleV2 sample,
-            AiPredictionV2 prediction,
+            AiSample sample,
+            AiPrediction prediction,
             AiStrategyRelease release,
             AiConditionalStrategyPayload.MarketContext market,
             Map<String, AiConditionalStrategyPayload.FactorEvidence> factorEvidence,

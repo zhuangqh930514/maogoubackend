@@ -1,6 +1,6 @@
 package com.maogou.stock.scheduler;
 
-import com.maogou.stock.service.v2.AiEvolutionAutomationService;
+import com.maogou.stock.service.research.AiEvolutionAutomationService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;

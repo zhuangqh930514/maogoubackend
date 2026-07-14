@@ -1,17 +1,17 @@
 package com.maogou.stock.service.impl;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.maogou.stock.domain.entity.v2.AiPipelineRun;
-import com.maogou.stock.domain.entity.v2.AiPipelineStep;
+import com.maogou.stock.domain.entity.research.AiPipelineRun;
+import com.maogou.stock.domain.entity.research.AiPipelineStep;
 import com.maogou.stock.mapper.AiDailyInsightItemMapper;
 import com.maogou.stock.mapper.AiDailyInsightSnapshotMapper;
 import com.maogou.stock.mapper.TradeRecordMapper;
-import com.maogou.stock.mapper.v2.AiFactorPerformanceV2Mapper;
-import com.maogou.stock.mapper.v2.AiPipelineRunMapper;
-import com.maogou.stock.mapper.v2.AiPipelineStepMapper;
-import com.maogou.stock.mapper.v2.AiPortfolioBacktestRunMapper;
-import com.maogou.stock.mapper.v2.AiStrategyReleaseMapper;
-import com.maogou.stock.service.v2.AiResearchDailyReportSource;
+import com.maogou.stock.mapper.research.AiFactorPerformanceMapper;
+import com.maogou.stock.mapper.research.AiPipelineRunMapper;
+import com.maogou.stock.mapper.research.AiPipelineStepMapper;
+import com.maogou.stock.mapper.research.AiPortfolioBacktestRunMapper;
+import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
+import com.maogou.stock.service.research.AiResearchDailyReportSource;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;
@@ -31,7 +31,7 @@ class AiResearchDailyReportSourceImplTest {
         TradeRecordMapper tradeMapper = mock(TradeRecordMapper.class);
         AiStrategyReleaseMapper releaseMapper = mock(AiStrategyReleaseMapper.class);
         AiPortfolioBacktestRunMapper backtestMapper = mock(AiPortfolioBacktestRunMapper.class);
-        AiFactorPerformanceV2Mapper performanceMapper = mock(AiFactorPerformanceV2Mapper.class);
+        AiFactorPerformanceMapper performanceMapper = mock(AiFactorPerformanceMapper.class);
         AiPipelineRunMapper runMapper = mock(AiPipelineRunMapper.class);
         AiPipelineStepMapper stepMapper = mock(AiPipelineStepMapper.class);
         when(snapshotMapper.selectOne(any())).thenReturn(null);

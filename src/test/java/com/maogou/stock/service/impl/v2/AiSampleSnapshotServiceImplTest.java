@@ -1,15 +1,15 @@
-package com.maogou.stock.service.impl.v2;
+package com.maogou.stock.service.impl.research;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.maogou.stock.domain.entity.v2.AiDataBatch;
-import com.maogou.stock.domain.entity.v2.AiSampleV2;
+import com.maogou.stock.domain.entity.research.AiDataBatch;
+import com.maogou.stock.domain.entity.research.AiSample;
 import com.maogou.stock.dto.market.FinanceSnapshotResponse;
 import com.maogou.stock.dto.market.KlinePointResponse;
 import com.maogou.stock.dto.market.StockDetailResponse;
 import com.maogou.stock.dto.market.StockQuoteResponse;
-import com.maogou.stock.mapper.v2.AiDataBatchMapper;
-import com.maogou.stock.mapper.v2.AiSampleV2Mapper;
-import com.maogou.stock.service.v2.AiSampleSnapshotService;
+import com.maogou.stock.mapper.research.AiDataBatchMapper;
+import com.maogou.stock.mapper.research.AiSampleMapper;
+import com.maogou.stock.service.research.AiSampleSnapshotService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -29,49 +29,49 @@ class AiSampleSnapshotServiceImplTest {
 
     @Test
     void returnsExistingSnapshotWithoutMutatingIt() {
-        AiSampleV2Mapper sampleMapper = mock(AiSampleV2Mapper.class);
-        AiSampleV2 existing = new AiSampleV2();
+        AiSampleMapper sampleMapper = mock(AiSampleMapper.class);
+        AiSample existing = new AiSample();
         existing.id = 12L;
         existing.featureSnapshot = "original";
         existing.asOfTime = LocalDateTime.of(2026, 7, 10, 16, 0);
         when(sampleMapper.selectOne(any())).thenReturn(existing);
         AiSampleSnapshotService service = service(sampleMapper, mock(AiDataBatchMapper.class));
 
-        AiSampleV2 result = service.createOrGetSnapshot(command(existing.asOfTime, freshDetail(existing.asOfTime)));
+        AiSample result = service.createOrGetSnapshot(command(existing.asOfTime, freshDetail(existing.asOfTime)));
 
         assertThat(result).isSameAs(existing);
         assertThat(result.featureSnapshot).isEqualTo("original");
-        verify(sampleMapper, never()).insert(any(AiSampleV2.class));
-        verify(sampleMapper, never()).updateById(any(AiSampleV2.class));
+        verify(sampleMapper, never()).insert(any(AiSample.class));
+        verify(sampleMapper, never()).updateById(any(AiSample.class));
     }
 
     @Test
     void createsANewImmutableSnapshotForANewAsOfTime() {
-        AiSampleV2Mapper sampleMapper = mock(AiSampleV2Mapper.class);
+        AiSampleMapper sampleMapper = mock(AiSampleMapper.class);
         when(sampleMapper.selectOne(any())).thenReturn(null);
         AiSampleSnapshotService service = service(sampleMapper, mock(AiDataBatchMapper.class));
         LocalDateTime asOf = LocalDateTime.of(2026, 7, 10, 16, 5);
 
-        AiSampleV2 result = service.createOrGetSnapshot(command(asOf, freshDetail(asOf)));
+        AiSample result = service.createOrGetSnapshot(command(asOf, freshDetail(asOf)));
 
-        ArgumentCaptor<AiSampleV2> captor = ArgumentCaptor.forClass(AiSampleV2.class);
+        ArgumentCaptor<AiSample> captor = ArgumentCaptor.forClass(AiSample.class);
         verify(sampleMapper).insert(captor.capture());
         assertThat(result).isSameAs(captor.getValue());
         assertThat(result.asOfTime).isEqualTo(asOf);
         assertThat(result.qualityStatus).isEqualTo("READY");
         assertThat(result.sourceFingerprint).hasSize(64);
-        verify(sampleMapper, never()).updateById(any(AiSampleV2.class));
+        verify(sampleMapper, never()).updateById(any(AiSample.class));
     }
 
     @Test
     void marksSnapshotUnavailableWhenQuoteIsStale() {
-        AiSampleV2Mapper sampleMapper = mock(AiSampleV2Mapper.class);
+        AiSampleMapper sampleMapper = mock(AiSampleMapper.class);
         when(sampleMapper.selectOne(any())).thenReturn(null);
         AiSampleSnapshotService service = service(sampleMapper, mock(AiDataBatchMapper.class));
         LocalDateTime asOf = LocalDateTime.of(2026, 7, 10, 16, 0);
         StockDetailResponse detail = freshDetail(asOf.minusMinutes(10));
 
-        AiSampleV2 result = service.createOrGetSnapshot(command(asOf, detail));
+        AiSample result = service.createOrGetSnapshot(command(asOf, detail));
 
         assertThat(result.qualityStatus).isEqualTo("UNAVAILABLE");
         assertThat(result.dataQualityScore).isLessThan(new BigDecimal("60"));
@@ -84,7 +84,7 @@ class AiSampleSnapshotServiceImplTest {
         existing.id = 7L;
         existing.idempotencyKey = "AUTO_CLOSE:5:2026-07-10";
         when(batchMapper.selectOne(any())).thenReturn(existing);
-        AiSampleSnapshotService service = service(mock(AiSampleV2Mapper.class), batchMapper);
+        AiSampleSnapshotService service = service(mock(AiSampleMapper.class), batchMapper);
 
         AiDataBatch result = service.startOrGetBatch(
                 5L,
@@ -98,7 +98,7 @@ class AiSampleSnapshotServiceImplTest {
         verify(batchMapper, never()).insert(any(AiDataBatch.class));
     }
 
-    private static AiSampleSnapshotService service(AiSampleV2Mapper sampleMapper, AiDataBatchMapper batchMapper) {
+    private static AiSampleSnapshotService service(AiSampleMapper sampleMapper, AiDataBatchMapper batchMapper) {
         return new AiSampleSnapshotServiceImpl(sampleMapper, batchMapper, new ObjectMapper().findAndRegisterModules());
     }
 

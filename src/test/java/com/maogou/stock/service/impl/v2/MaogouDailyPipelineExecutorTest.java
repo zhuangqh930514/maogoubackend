@@ -1,28 +1,28 @@
-package com.maogou.stock.service.impl.v2;
+package com.maogou.stock.service.impl.research;
 
 import com.maogou.stock.domain.entity.WatchStock;
-import com.maogou.stock.domain.entity.v2.AiDataBatch;
-import com.maogou.stock.domain.entity.v2.AiFactorValueV2;
-import com.maogou.stock.domain.entity.v2.AiPredictionV2;
-import com.maogou.stock.domain.entity.v2.AiSampleV2;
-import com.maogou.stock.domain.entity.v2.AiStrategyRelease;
+import com.maogou.stock.domain.entity.research.AiDataBatch;
+import com.maogou.stock.domain.entity.research.AiFactorValue;
+import com.maogou.stock.domain.entity.research.AiPrediction;
+import com.maogou.stock.domain.entity.research.AiSample;
+import com.maogou.stock.domain.entity.research.AiStrategyRelease;
 import com.maogou.stock.dto.ai.AiAnalysisReportResponse;
 import com.maogou.stock.dto.ai.AiDailyInsightPayloads;
 import com.maogou.stock.dto.market.StockDetailResponse;
 import com.maogou.stock.dto.market.KlineSeriesSnapshot;
 import com.maogou.stock.dto.market.StockQuoteResponse;
 import com.maogou.stock.mapper.WatchStockMapper;
-import com.maogou.stock.mapper.v2.AiStrategyReleaseMapper;
+import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
 import com.maogou.stock.service.AiAnalysisService;
 import com.maogou.stock.service.AiConditionalTradeStrategyService;
 import com.maogou.stock.service.AiDailyInsightService;
 import com.maogou.stock.service.AiResearchDailyReportService;
 import com.maogou.stock.service.MarketDataService;
-import com.maogou.stock.service.v2.AiDailyPipelineExecutor;
-import com.maogou.stock.service.v2.AiFactorEngineV2;
-import com.maogou.stock.service.v2.AiLabelVerificationCoordinatorV2;
-import com.maogou.stock.service.v2.AiPredictionEngineV2;
-import com.maogou.stock.service.v2.AiSampleSnapshotService;
+import com.maogou.stock.service.research.AiGlobalDailyResearchExecutor;
+import com.maogou.stock.service.research.AiFactorEngine;
+import com.maogou.stock.service.research.AiLabelVerificationCoordinator;
+import com.maogou.stock.service.research.AiPredictionEngine;
+import com.maogou.stock.service.research.AiSampleSnapshotService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -39,20 +39,20 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-class MaogouDailyPipelineExecutorTest {
+class GlobalDailyResearchExecutorTest {
 
     @Test
     void resumesPredictionsFromPersistedSamplesAndFactorsWithoutRefetchingCurrentMarketData() {
         WatchStockMapper watchStockMapper = mock(WatchStockMapper.class);
         MarketDataService marketDataService = mock(MarketDataService.class);
         AiSampleSnapshotService sampleSnapshotService = mock(AiSampleSnapshotService.class);
-        AiFactorEngineV2 factorEngine = mock(AiFactorEngineV2.class);
-        AiPredictionEngineV2 predictionEngine = mock(AiPredictionEngineV2.class);
+        AiFactorEngine factorEngine = mock(AiFactorEngine.class);
+        AiPredictionEngine predictionEngine = mock(AiPredictionEngine.class);
         AiAnalysisService aiAnalysisService = mock(AiAnalysisService.class);
         AiDailyInsightService aiDailyInsightService = mock(AiDailyInsightService.class);
-        AiLabelVerificationCoordinatorV2 labelVerificationCoordinator = mock(AiLabelVerificationCoordinatorV2.class);
+        AiLabelVerificationCoordinator labelVerificationCoordinator = mock(AiLabelVerificationCoordinator.class);
         AiResearchDailyReportService researchDailyReportService = mock(AiResearchDailyReportService.class);
-        AiSampleV2 sample = new AiSampleV2();
+        AiSample sample = new AiSample();
         sample.id = 21L;
         sample.userId = 5L;
         sample.dataBatchId = 11L;
@@ -67,21 +67,21 @@ class MaogouDailyPipelineExecutorTest {
                 + "\"finance\":null,\"intraday\":[],\"kline\":[]}";
         when(sampleSnapshotService.findBatchSnapshots(5L, 11L, LocalDate.of(2026, 7, 10)))
                 .thenReturn(List.of(sample));
-        AiFactorValueV2 factor = new AiFactorValueV2();
+        AiFactorValue factor = new AiFactorValue();
         factor.sampleId = 21L;
         factor.factorCode = "MOMENTUM_RETURN_5D";
         when(factorEngine.findStoredForSamples(List.of(21L))).thenReturn(List.of(factor));
-        AiPredictionV2 prediction = new AiPredictionV2();
+        AiPrediction prediction = new AiPrediction();
         prediction.id = 31L;
         prediction.sampleId = 21L;
         when(predictionEngine.predictAndStore(any())).thenReturn(List.of(prediction));
 
-        MaogouDailyPipelineExecutor executor = new MaogouDailyPipelineExecutor(
+        GlobalDailyResearchExecutor executor = new GlobalDailyResearchExecutor(
                 watchStockMapper, marketDataService, sampleSnapshotService, factorEngine,
                 predictionEngine, aiAnalysisService, aiDailyInsightService, labelVerificationCoordinator,
                 researchDailyReportService);
 
-        AiDailyPipelineExecutor.StepOutcome outcome = executor.execute("GENERATE_PREDICTIONS", context());
+        AiGlobalDailyResearchExecutor.StepOutcome outcome = executor.execute("GENERATE_PREDICTIONS", context());
 
         assertThat(outcome.successCount()).isEqualTo(3);
         verify(marketDataService, never()).stockDetailForAnalysis(any());
@@ -96,14 +96,14 @@ class MaogouDailyPipelineExecutorTest {
         WatchStockMapper watchStockMapper = mock(WatchStockMapper.class);
         MarketDataService marketDataService = mock(MarketDataService.class);
         AiSampleSnapshotService sampleSnapshotService = mock(AiSampleSnapshotService.class);
-        AiFactorEngineV2 factorEngine = mock(AiFactorEngineV2.class);
-        AiPredictionEngineV2 predictionEngine = mock(AiPredictionEngineV2.class);
+        AiFactorEngine factorEngine = mock(AiFactorEngine.class);
+        AiPredictionEngine predictionEngine = mock(AiPredictionEngine.class);
         AiStrategyReleaseMapper releaseMapper = mock(AiStrategyReleaseMapper.class);
         AiAnalysisService aiAnalysisService = mock(AiAnalysisService.class);
         AiDailyInsightService aiDailyInsightService = mock(AiDailyInsightService.class);
-        AiLabelVerificationCoordinatorV2 labelCoordinator = mock(AiLabelVerificationCoordinatorV2.class);
+        AiLabelVerificationCoordinator labelCoordinator = mock(AiLabelVerificationCoordinator.class);
         AiResearchDailyReportService reportService = mock(AiResearchDailyReportService.class);
-        AiSampleV2 sample = new AiSampleV2();
+        AiSample sample = new AiSample();
         sample.id = 21L;
         sample.userId = 5L;
         sample.dataBatchId = 11L;
@@ -114,7 +114,7 @@ class MaogouDailyPipelineExecutorTest {
         sample.featureSnapshot = "{\"quote\":{\"code\":\"600519\",\"price\":1500}}";
         when(sampleSnapshotService.findBatchSnapshots(5L, 11L, LocalDate.of(2026, 7, 10)))
                 .thenReturn(List.of(sample));
-        AiFactorValueV2 factor = new AiFactorValueV2();
+        AiFactorValue factor = new AiFactorValue();
         factor.sampleId = 21L;
         factor.factorCode = "MOMENTUM_RETURN_5D";
         when(factorEngine.findStoredForSamples(List.of(21L))).thenReturn(List.of(factor));
@@ -125,22 +125,22 @@ class MaogouDailyPipelineExecutorTest {
         challenger.status = "SHADOW";
         challenger.modelVersionId = 202L;
         when(releaseMapper.selectShadowChallengers(5L)).thenReturn(List.of(challenger));
-        AiPredictionV2 stored = new AiPredictionV2();
+        AiPrediction stored = new AiPrediction();
         stored.id = 31L;
         when(predictionEngine.predictAndStore(any())).thenReturn(List.of(stored));
-        MaogouDailyPipelineExecutor executor = new MaogouDailyPipelineExecutor(
+        GlobalDailyResearchExecutor executor = new GlobalDailyResearchExecutor(
                 watchStockMapper, marketDataService, sampleSnapshotService, factorEngine,
                 predictionEngine, releaseMapper, aiAnalysisService, aiDailyInsightService,
                 labelCoordinator, reportService);
 
-        AiDailyPipelineExecutor.PipelineContext modelContext = new AiDailyPipelineExecutor.PipelineContext(
+        AiGlobalDailyResearchExecutor.PipelineContext modelContext = new AiGlobalDailyResearchExecutor.PipelineContext(
                 100L, 5L, LocalDate.of(2026, 7, 10), 11L, 10L, 101L,
                 "AUTO_CLOSE:2026-07-10", "input-fingerprint",
                 LocalDateTime.of(2026, 7, 10, 16, 0));
-        AiDailyPipelineExecutor.StepOutcome outcome = executor.execute("GENERATE_PREDICTIONS", modelContext);
+        AiGlobalDailyResearchExecutor.StepOutcome outcome = executor.execute("GENERATE_PREDICTIONS", modelContext);
 
-        ArgumentCaptor<AiPredictionEngineV2.PredictionBatch> batches = ArgumentCaptor.forClass(
-                AiPredictionEngineV2.PredictionBatch.class);
+        ArgumentCaptor<AiPredictionEngine.PredictionBatch> batches = ArgumentCaptor.forClass(
+                AiPredictionEngine.PredictionBatch.class);
         verify(predictionEngine, times(6)).predictAndStore(batches.capture());
         assertThat(batches.getAllValues()).filteredOn(item -> "CHAMPION".equals(item.inferenceMode()))
                 .hasSize(3)
@@ -158,11 +158,11 @@ class MaogouDailyPipelineExecutorTest {
         WatchStockMapper watchStockMapper = mock(WatchStockMapper.class);
         MarketDataService marketDataService = mock(MarketDataService.class);
         AiSampleSnapshotService sampleSnapshotService = mock(AiSampleSnapshotService.class);
-        AiFactorEngineV2 factorEngine = mock(AiFactorEngineV2.class);
-        AiPredictionEngineV2 predictionEngine = mock(AiPredictionEngineV2.class);
+        AiFactorEngine factorEngine = mock(AiFactorEngine.class);
+        AiPredictionEngine predictionEngine = mock(AiPredictionEngine.class);
         AiAnalysisService aiAnalysisService = mock(AiAnalysisService.class);
         AiDailyInsightService aiDailyInsightService = mock(AiDailyInsightService.class);
-        AiLabelVerificationCoordinatorV2 labelVerificationCoordinator = mock(AiLabelVerificationCoordinatorV2.class);
+        AiLabelVerificationCoordinator labelVerificationCoordinator = mock(AiLabelVerificationCoordinator.class);
         AiResearchDailyReportService researchDailyReportService = mock(AiResearchDailyReportService.class);
 
         WatchStock stock = new WatchStock();
@@ -196,7 +196,7 @@ class MaogouDailyPipelineExecutorTest {
         batch.asOfTime = LocalDateTime.of(2026, 7, 10, 16, 0);
         when(sampleSnapshotService.startOrGetBatch(any(), any(), any(), any(), any())).thenReturn(batch);
 
-        AiSampleV2 sample = new AiSampleV2();
+        AiSample sample = new AiSample();
         sample.id = 21L;
         sample.userId = 5L;
         sample.dataBatchId = 11L;
@@ -211,7 +211,7 @@ class MaogouDailyPipelineExecutorTest {
         sample.dataQualityScore = new BigDecimal("88");
         when(sampleSnapshotService.createOrGetSnapshot(any())).thenReturn(sample);
 
-        AiFactorValueV2 factor = new AiFactorValueV2();
+        AiFactorValue factor = new AiFactorValue();
         factor.sampleId = 21L;
         factor.userId = 5L;
         factor.stockCode = "600519";
@@ -221,7 +221,7 @@ class MaogouDailyPipelineExecutorTest {
         factor.normalizedValue = new BigDecimal("1.2");
         when(factorEngine.computeAndStoreCrossSection(any())).thenReturn(List.of(factor));
 
-        AiPredictionV2 prediction = new AiPredictionV2();
+        AiPrediction prediction = new AiPrediction();
         prediction.id = 31L;
         prediction.userId = 5L;
         prediction.sampleId = 21L;
@@ -231,7 +231,7 @@ class MaogouDailyPipelineExecutorTest {
         prediction.actionBucket = "RECOMMEND";
         when(predictionEngine.predictAndStore(any())).thenReturn(List.of(prediction));
 
-        MaogouDailyPipelineExecutor executor = new MaogouDailyPipelineExecutor(
+        GlobalDailyResearchExecutor executor = new GlobalDailyResearchExecutor(
                 watchStockMapper,
                 marketDataService,
                 sampleSnapshotService,
@@ -242,9 +242,9 @@ class MaogouDailyPipelineExecutorTest {
                 labelVerificationCoordinator,
                 researchDailyReportService);
 
-        AiDailyPipelineExecutor.StepOutcome outcome = executor.execute(
+        AiGlobalDailyResearchExecutor.StepOutcome outcome = executor.execute(
                 "GENERATE_PREDICTIONS",
-                new AiDailyPipelineExecutor.PipelineContext(
+                new AiGlobalDailyResearchExecutor.PipelineContext(
                         100L,
                         5L,
                         LocalDate.of(2026, 7, 10),
@@ -273,11 +273,11 @@ class MaogouDailyPipelineExecutorTest {
         WatchStockMapper watchStockMapper = mock(WatchStockMapper.class);
         MarketDataService marketDataService = mock(MarketDataService.class);
         AiSampleSnapshotService sampleSnapshotService = mock(AiSampleSnapshotService.class);
-        AiFactorEngineV2 factorEngine = mock(AiFactorEngineV2.class);
-        AiPredictionEngineV2 predictionEngine = mock(AiPredictionEngineV2.class);
+        AiFactorEngine factorEngine = mock(AiFactorEngine.class);
+        AiPredictionEngine predictionEngine = mock(AiPredictionEngine.class);
         AiAnalysisService aiAnalysisService = mock(AiAnalysisService.class);
         AiDailyInsightService aiDailyInsightService = mock(AiDailyInsightService.class);
-        AiLabelVerificationCoordinatorV2 labelVerificationCoordinator = mock(AiLabelVerificationCoordinatorV2.class);
+        AiLabelVerificationCoordinator labelVerificationCoordinator = mock(AiLabelVerificationCoordinator.class);
         AiResearchDailyReportService researchDailyReportService = mock(AiResearchDailyReportService.class);
 
         WatchStock stock = new WatchStock();
@@ -303,7 +303,7 @@ class MaogouDailyPipelineExecutorTest {
         AiDataBatch batch = new AiDataBatch();
         batch.id = 11L;
         when(sampleSnapshotService.startOrGetBatch(any(), any(), any(), any(), any())).thenReturn(batch);
-        AiSampleV2 sample = new AiSampleV2();
+        AiSample sample = new AiSample();
         sample.id = 21L;
         sample.userId = 5L;
         sample.stockCode = "600519";
@@ -316,11 +316,11 @@ class MaogouDailyPipelineExecutorTest {
         when(factorEngine.computeAndStoreCrossSection(any())).thenReturn(List.of());
         when(predictionEngine.predictAndStore(any())).thenReturn(List.of());
 
-        MaogouDailyPipelineExecutor executor = new MaogouDailyPipelineExecutor(
+        GlobalDailyResearchExecutor executor = new GlobalDailyResearchExecutor(
                 watchStockMapper, marketDataService, sampleSnapshotService, factorEngine,
                 predictionEngine, aiAnalysisService, aiDailyInsightService, labelVerificationCoordinator,
                 researchDailyReportService);
-        AiDailyPipelineExecutor.PipelineContext context = context();
+        AiGlobalDailyResearchExecutor.PipelineContext context = context();
 
         executor.execute("FETCH_DATA", context);
         executor.execute("CHECK_DATA_QUALITY", context);
@@ -344,25 +344,25 @@ class MaogouDailyPipelineExecutorTest {
         WatchStockMapper watchStockMapper = mock(WatchStockMapper.class);
         MarketDataService marketDataService = mock(MarketDataService.class);
         AiSampleSnapshotService sampleSnapshotService = mock(AiSampleSnapshotService.class);
-        AiFactorEngineV2 factorEngine = mock(AiFactorEngineV2.class);
-        AiPredictionEngineV2 predictionEngine = mock(AiPredictionEngineV2.class);
+        AiFactorEngine factorEngine = mock(AiFactorEngine.class);
+        AiPredictionEngine predictionEngine = mock(AiPredictionEngine.class);
         AiAnalysisService aiAnalysisService = mock(AiAnalysisService.class);
         AiDailyInsightService aiDailyInsightService = mock(AiDailyInsightService.class);
-        AiLabelVerificationCoordinatorV2 labelVerificationCoordinator = mock(AiLabelVerificationCoordinatorV2.class);
+        AiLabelVerificationCoordinator labelVerificationCoordinator = mock(AiLabelVerificationCoordinator.class);
         AiConditionalTradeStrategyService conditionalTradeStrategyService = mock(AiConditionalTradeStrategyService.class);
         AiResearchDailyReportService researchDailyReportService = mock(AiResearchDailyReportService.class);
         when(labelVerificationCoordinator.verifyMatured(any(), any(), any())).thenReturn(
-                new AiLabelVerificationCoordinatorV2.VerificationResult(
+                new AiLabelVerificationCoordinator.VerificationResult(
                         3, 2, 1, List.of("300058: K线暂不可用"), "label-fingerprint"));
         when(conditionalTradeStrategyService.verifyMatured(5L, LocalDate.of(2026, 7, 10))).thenReturn(
                 new AiConditionalTradeStrategyService.ReviewRunResult(
                         2, 1, 1, 0, 0, List.of()));
-        MaogouDailyPipelineExecutor executor = new MaogouDailyPipelineExecutor(
+        GlobalDailyResearchExecutor executor = new GlobalDailyResearchExecutor(
                 watchStockMapper, marketDataService, sampleSnapshotService, factorEngine,
                 predictionEngine, null, aiAnalysisService, aiDailyInsightService, labelVerificationCoordinator,
                 conditionalTradeStrategyService, researchDailyReportService);
 
-        AiDailyPipelineExecutor.StepOutcome outcome = executor.execute("VERIFY_LABELS", context());
+        AiGlobalDailyResearchExecutor.StepOutcome outcome = executor.execute("VERIFY_LABELS", context());
 
         assertThat(outcome.processedCount()).isEqualTo(5);
         assertThat(outcome.successCount()).isEqualTo(4);
@@ -378,11 +378,11 @@ class MaogouDailyPipelineExecutorTest {
         WatchStockMapper watchStockMapper = mock(WatchStockMapper.class);
         MarketDataService marketDataService = mock(MarketDataService.class);
         AiSampleSnapshotService sampleSnapshotService = mock(AiSampleSnapshotService.class);
-        AiFactorEngineV2 factorEngine = mock(AiFactorEngineV2.class);
-        AiPredictionEngineV2 predictionEngine = mock(AiPredictionEngineV2.class);
+        AiFactorEngine factorEngine = mock(AiFactorEngine.class);
+        AiPredictionEngine predictionEngine = mock(AiPredictionEngine.class);
         AiAnalysisService aiAnalysisService = mock(AiAnalysisService.class);
         AiDailyInsightService aiDailyInsightService = mock(AiDailyInsightService.class);
-        AiLabelVerificationCoordinatorV2 labelVerificationCoordinator = mock(AiLabelVerificationCoordinatorV2.class);
+        AiLabelVerificationCoordinator labelVerificationCoordinator = mock(AiLabelVerificationCoordinator.class);
         AiResearchDailyReportService researchDailyReportService = mock(AiResearchDailyReportService.class);
 
         WatchStock ok = new WatchStock();
@@ -404,7 +404,7 @@ class MaogouDailyPipelineExecutorTest {
                 "300058", false, null, null, LocalDate.of(2026, 7, 10)))
                 .thenThrow(new IllegalStateException("模型服务超时"));
 
-        MaogouDailyPipelineExecutor executor = new MaogouDailyPipelineExecutor(
+        GlobalDailyResearchExecutor executor = new GlobalDailyResearchExecutor(
                 watchStockMapper,
                 marketDataService,
                 sampleSnapshotService,
@@ -447,9 +447,9 @@ class MaogouDailyPipelineExecutorTest {
                         List.of()
                 ));
 
-        AiDailyPipelineExecutor.StepOutcome outcome = executor.execute(
+        AiGlobalDailyResearchExecutor.StepOutcome outcome = executor.execute(
                 "GENERATE_REPORTS",
-                new AiDailyPipelineExecutor.PipelineContext(
+                new AiGlobalDailyResearchExecutor.PipelineContext(
                         100L,
                         5L,
                         LocalDate.of(2026, 7, 10),
@@ -469,9 +469,9 @@ class MaogouDailyPipelineExecutorTest {
         verify(aiAnalysisService, times(1)).analyzeStockForTradeDate(
                 "300058", false, null, null, LocalDate.of(2026, 7, 10));
 
-        AiDailyPipelineExecutor.StepOutcome dailyInsightOutcome = executor.execute(
+        AiGlobalDailyResearchExecutor.StepOutcome dailyInsightOutcome = executor.execute(
                 "BUILD_DAILY_INSIGHT",
-                new AiDailyPipelineExecutor.PipelineContext(
+                new AiGlobalDailyResearchExecutor.PipelineContext(
                         100L,
                         5L,
                         LocalDate.of(2026, 7, 10),
@@ -495,11 +495,11 @@ class MaogouDailyPipelineExecutorTest {
         WatchStockMapper watchStockMapper = mock(WatchStockMapper.class);
         MarketDataService marketDataService = mock(MarketDataService.class);
         AiSampleSnapshotService sampleSnapshotService = mock(AiSampleSnapshotService.class);
-        AiFactorEngineV2 factorEngine = mock(AiFactorEngineV2.class);
-        AiPredictionEngineV2 predictionEngine = mock(AiPredictionEngineV2.class);
+        AiFactorEngine factorEngine = mock(AiFactorEngine.class);
+        AiPredictionEngine predictionEngine = mock(AiPredictionEngine.class);
         AiAnalysisService aiAnalysisService = mock(AiAnalysisService.class);
         AiDailyInsightService aiDailyInsightService = mock(AiDailyInsightService.class);
-        AiLabelVerificationCoordinatorV2 labelVerificationCoordinator = mock(AiLabelVerificationCoordinatorV2.class);
+        AiLabelVerificationCoordinator labelVerificationCoordinator = mock(AiLabelVerificationCoordinator.class);
         AiResearchDailyReportService researchDailyReportService = mock(AiResearchDailyReportService.class);
         WatchStock stock = new WatchStock();
         stock.userId = 5L;
@@ -510,12 +510,12 @@ class MaogouDailyPipelineExecutorTest {
                 new AiAnalysisReportResponse(9L, "贵州茅台", "600519", 0, "", LocalDateTime.now(),
                         "", "", "", "{}", List.of(), "", "qwen", "FAILED", "模型输出无法解析",
                         null, null, null, BigDecimal.ZERO, BigDecimal.ZERO));
-        MaogouDailyPipelineExecutor executor = new MaogouDailyPipelineExecutor(
+        GlobalDailyResearchExecutor executor = new GlobalDailyResearchExecutor(
                 watchStockMapper, marketDataService, sampleSnapshotService, factorEngine,
                 predictionEngine, aiAnalysisService, aiDailyInsightService,
                 labelVerificationCoordinator, researchDailyReportService);
 
-        AiDailyPipelineExecutor.StepOutcome outcome = executor.execute("GENERATE_REPORTS", context());
+        AiGlobalDailyResearchExecutor.StepOutcome outcome = executor.execute("GENERATE_REPORTS", context());
 
         assertThat(outcome.successCount()).isZero();
         assertThat(outcome.failedCount()).isEqualTo(1);
@@ -527,30 +527,30 @@ class MaogouDailyPipelineExecutorTest {
         WatchStockMapper watchStockMapper = mock(WatchStockMapper.class);
         MarketDataService marketDataService = mock(MarketDataService.class);
         AiSampleSnapshotService sampleSnapshotService = mock(AiSampleSnapshotService.class);
-        AiFactorEngineV2 factorEngine = mock(AiFactorEngineV2.class);
-        AiPredictionEngineV2 predictionEngine = mock(AiPredictionEngineV2.class);
+        AiFactorEngine factorEngine = mock(AiFactorEngine.class);
+        AiPredictionEngine predictionEngine = mock(AiPredictionEngine.class);
         AiAnalysisService aiAnalysisService = mock(AiAnalysisService.class);
         AiDailyInsightService aiDailyInsightService = mock(AiDailyInsightService.class);
-        AiLabelVerificationCoordinatorV2 labelVerificationCoordinator = mock(AiLabelVerificationCoordinatorV2.class);
+        AiLabelVerificationCoordinator labelVerificationCoordinator = mock(AiLabelVerificationCoordinator.class);
         AiResearchDailyReportService researchDailyReportService = mock(AiResearchDailyReportService.class);
         when(watchStockMapper.selectList(any())).thenReturn(List.of());
         AiDataBatch batch = new AiDataBatch();
         batch.id = 11L;
         when(sampleSnapshotService.startOrGetBatch(any(), any(), any(), any(), any())).thenReturn(batch);
-        MaogouDailyPipelineExecutor executor = new MaogouDailyPipelineExecutor(
+        GlobalDailyResearchExecutor executor = new GlobalDailyResearchExecutor(
                 watchStockMapper, marketDataService, sampleSnapshotService, factorEngine,
                 predictionEngine, aiAnalysisService, aiDailyInsightService,
                 labelVerificationCoordinator, researchDailyReportService);
 
-        AiDailyPipelineExecutor.StepOutcome outcome = executor.execute("CHECK_DATA_QUALITY", context());
+        AiGlobalDailyResearchExecutor.StepOutcome outcome = executor.execute("CHECK_DATA_QUALITY", context());
 
         assertThat(outcome.processedCount()).isZero();
         verify(sampleSnapshotService).completeBatch(
                 org.mockito.ArgumentMatchers.eq(11L), any());
     }
 
-    private static AiDailyPipelineExecutor.PipelineContext context() {
-        return new AiDailyPipelineExecutor.PipelineContext(
+    private static AiGlobalDailyResearchExecutor.PipelineContext context() {
+        return new AiGlobalDailyResearchExecutor.PipelineContext(
                 100L,
                 5L,
                 LocalDate.of(2026, 7, 10),

@@ -1,32 +1,32 @@
-package com.maogou.stock.service.impl.v2;
+package com.maogou.stock.service.impl.research;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.maogou.stock.config.AppProperties;
-import com.maogou.stock.domain.entity.v2.AiFactorValueV2;
-import com.maogou.stock.domain.entity.v2.AiFactorPerformanceV2;
-import com.maogou.stock.domain.entity.v2.AiLabelV2;
-import com.maogou.stock.domain.entity.v2.AiModelVersion;
-import com.maogou.stock.domain.entity.v2.AiPortfolioBacktestPosition;
-import com.maogou.stock.domain.entity.v2.AiPortfolioBacktestRun;
-import com.maogou.stock.domain.entity.v2.AiPredictionV2;
-import com.maogou.stock.domain.entity.v2.AiSampleV2;
-import com.maogou.stock.domain.entity.v2.AiStrategyRelease;
-import com.maogou.stock.domain.entity.v2.AiWalkForwardFold;
-import com.maogou.stock.domain.entity.v2.AiWalkForwardRun;
+import com.maogou.stock.domain.entity.research.AiFactorValue;
+import com.maogou.stock.domain.entity.research.AiFactorPerformance;
+import com.maogou.stock.domain.entity.research.AiSampleLabel;
+import com.maogou.stock.domain.entity.research.AiModelVersion;
+import com.maogou.stock.domain.entity.research.AiPortfolioBacktestPosition;
+import com.maogou.stock.domain.entity.research.AiPortfolioBacktestRun;
+import com.maogou.stock.domain.entity.research.AiPrediction;
+import com.maogou.stock.domain.entity.research.AiSample;
+import com.maogou.stock.domain.entity.research.AiStrategyRelease;
+import com.maogou.stock.domain.entity.research.AiWalkForwardFold;
+import com.maogou.stock.domain.entity.research.AiWalkForwardRun;
 import com.maogou.stock.dto.market.KlinePointResponse;
 import com.maogou.stock.dto.market.KlineSeriesSnapshot;
-import com.maogou.stock.mapper.v2.AiFactorValueV2Mapper;
-import com.maogou.stock.mapper.v2.AiLabelV2Mapper;
-import com.maogou.stock.mapper.v2.AiModelVersionMapper;
-import com.maogou.stock.mapper.v2.AiPredictionV2Mapper;
-import com.maogou.stock.mapper.v2.AiSampleV2Mapper;
-import com.maogou.stock.mapper.v2.AiStrategyReleaseMapper;
+import com.maogou.stock.mapper.research.AiFactorValueMapper;
+import com.maogou.stock.mapper.research.AiSampleLabelMapper;
+import com.maogou.stock.mapper.research.AiModelVersionMapper;
+import com.maogou.stock.mapper.research.AiPredictionMapper;
+import com.maogou.stock.mapper.research.AiSampleMapper;
+import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
 import com.maogou.stock.service.MarketDataService;
-import com.maogou.stock.service.v2.AiEvolutionAutomationService;
-import com.maogou.stock.service.v2.AiFactorPerformanceService;
-import com.maogou.stock.service.v2.AiPortfolioBacktestService;
-import com.maogou.stock.service.v2.AiShadowEvaluationService;
-import com.maogou.stock.service.v2.AiWalkForwardService;
+import com.maogou.stock.service.research.AiEvolutionAutomationService;
+import com.maogou.stock.service.research.AiFactorPerformanceService;
+import com.maogou.stock.service.research.AiPortfolioBacktestService;
+import com.maogou.stock.service.research.AiShadowEvaluationService;
+import com.maogou.stock.service.research.AiWalkForwardService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -72,12 +72,12 @@ class AiWeeklyEvolutionRunnerImplTest {
         AiStrategyRelease challenger = challenger();
         when(fixture.releaseMapper.selectOne(any())).thenReturn(champion);
         when(fixture.releaseMapper.selectShadowChallengers(5L)).thenReturn(List.of(challenger));
-        AiPredictionV2 championPrediction = prediction(101L, 1001L, 11L, null, "CHAMPION", "0.55");
-        AiPredictionV2 challengerPrediction = prediction(
+        AiPrediction championPrediction = prediction(101L, 1001L, 11L, null, "CHAMPION", "0.55");
+        AiPrediction challengerPrediction = prediction(
                 201L, 1001L, 12L, 81L, "CHALLENGER_SHADOW", "0.68");
         when(fixture.predictionMapper.selectList(any()))
                 .thenReturn(List.of(championPrediction), List.of(challengerPrediction));
-        AiLabelV2 label = label(championPrediction);
+        AiSampleLabel label = label(championPrediction);
         when(fixture.labelMapper.selectList(any())).thenReturn(List.of(label));
         when(fixture.modelMapper.selectById(81L)).thenReturn(null);
 
@@ -124,29 +124,29 @@ class AiWeeklyEvolutionRunnerImplTest {
         List<LocalDate> dates = IntStream.range(0, 35)
                 .mapToObj(index -> LocalDate.of(2026, 5, 1).plusDays(index))
                 .toList();
-        List<AiPredictionV2> championPredictions = new ArrayList<>();
-        List<AiPredictionV2> challengerPredictions = new ArrayList<>();
-        List<AiLabelV2> labels = new ArrayList<>();
-        List<AiFactorValueV2> factors = new ArrayList<>();
-        List<AiSampleV2> samples = new ArrayList<>();
+        List<AiPrediction> championPredictions = new ArrayList<>();
+        List<AiPrediction> challengerPredictions = new ArrayList<>();
+        List<AiSampleLabel> labels = new ArrayList<>();
+        List<AiFactorValue> factors = new ArrayList<>();
+        List<AiSample> samples = new ArrayList<>();
         for (int index = 0; index < dates.size(); index++) {
             long sampleId = 1000L + index;
-            AiPredictionV2 championPrediction = predictionAt(
+            AiPrediction championPrediction = predictionAt(
                     2000L + index, sampleId, 11L, null, "CHAMPION", "0.55", dates.get(index));
-            AiPredictionV2 challengerPrediction = predictionAt(
+            AiPrediction challengerPrediction = predictionAt(
                     3000L + index, sampleId, 12L, 81L, "CHALLENGER_SHADOW", "0.68", dates.get(index));
             championPredictions.add(championPrediction);
             challengerPredictions.add(challengerPrediction);
-            AiLabelV2 label = label(championPrediction);
+            AiSampleLabel label = label(championPrediction);
             label.id = 4000L + index;
             label.exitTradeDate = dates.get(index).plusDays(3);
             label.verifiedAt = label.exitTradeDate.atTime(16, 0);
-            label.labelVersion = "LABEL_V2.2";
+            label.labelVersion = "LABEL/1.0.0";
             label.inputFingerprint = "label-" + label.id;
             label.executionStatus = "EXECUTED";
-            label.actionEvaluation = "HIT";
+            label.executionStatus = "EXECUTED";
             labels.add(label);
-            AiFactorValueV2 factor = new AiFactorValueV2();
+            AiFactorValue factor = new AiFactorValue();
             factor.id = 5000L + index;
             factor.userId = 5L;
             factor.sampleId = sampleId;
@@ -157,7 +157,7 @@ class AiWeeklyEvolutionRunnerImplTest {
             factor.missing = 0;
             factor.inputFingerprint = "factor-" + sampleId;
             factors.add(factor);
-            AiSampleV2 sample = new AiSampleV2();
+            AiSample sample = new AiSample();
             sample.id = sampleId;
             sample.userId = 5L;
             sample.stockCode = "600519";
@@ -176,7 +176,7 @@ class AiWeeklyEvolutionRunnerImplTest {
         when(fixture.modelMapper.selectById(81L)).thenReturn(model);
         when(fixture.factorMapper.selectList(any())).thenReturn(factors);
         when(fixture.sampleMapper.selectList(any())).thenReturn(samples);
-        AiFactorPerformanceV2 performance = new AiFactorPerformanceV2();
+        AiFactorPerformance performance = new AiFactorPerformance();
         performance.id = 5501L;
         when(fixture.factorPerformanceService.evaluateAndStore(any())).thenReturn(
                 new AiFactorPerformanceService.EvaluationResult(
@@ -254,10 +254,10 @@ class AiWeeklyEvolutionRunnerImplTest {
                 new AppProperties(),
                 mock(AiStrategyReleaseMapper.class),
                 mock(AiModelVersionMapper.class),
-                mock(AiPredictionV2Mapper.class),
-                mock(AiLabelV2Mapper.class),
-                mock(AiFactorValueV2Mapper.class),
-                mock(AiSampleV2Mapper.class),
+                mock(AiPredictionMapper.class),
+                mock(AiSampleLabelMapper.class),
+                mock(AiFactorValueMapper.class),
+                mock(AiSampleMapper.class),
                 mock(MarketDataService.class),
                 mock(AiFactorPerformanceService.class),
                 mock(AiWalkForwardService.class),
@@ -284,7 +284,7 @@ class AiWeeklyEvolutionRunnerImplTest {
         return value;
     }
 
-    private static AiPredictionV2 prediction(
+    private static AiPrediction prediction(
             Long id,
             Long sampleId,
             Long releaseId,
@@ -296,7 +296,7 @@ class AiWeeklyEvolutionRunnerImplTest {
                 LocalDate.of(2026, 7, 10));
     }
 
-    private static AiPredictionV2 predictionAt(
+    private static AiPrediction predictionAt(
             Long id,
             Long sampleId,
             Long releaseId,
@@ -305,7 +305,7 @@ class AiWeeklyEvolutionRunnerImplTest {
             String probability,
             LocalDate tradeDate
     ) {
-        AiPredictionV2 value = new AiPredictionV2();
+        AiPrediction value = new AiPrediction();
         value.id = id;
         value.userId = 5L;
         value.sampleId = sampleId;
@@ -327,20 +327,19 @@ class AiWeeklyEvolutionRunnerImplTest {
         return value;
     }
 
-    private static AiLabelV2 label(AiPredictionV2 prediction) {
-        AiLabelV2 value = new AiLabelV2();
+    private static AiSampleLabel label(AiPrediction prediction) {
+        AiSampleLabel value = new AiSampleLabel();
         value.id = 301L;
-        value.userId = 5L;
-        value.predictionId = prediction.id;
         value.sampleId = prediction.sampleId;
         value.stockCode = prediction.stockCode;
-        value.horizonDays = 3;
+        value.horizonTradingDays = 3;
         value.inputFingerprint = "label-301";
         value.netReturn = new BigDecimal("0.05");
         value.benchmarkReturn = new BigDecimal("0.01");
         value.excessReturn = new BigDecimal("0.04");
-        value.labelStatus = "VERIFIED";
-        value.labelVersion = "LABEL_V2.2";
+        value.labelStatus = "MATURED";
+        value.executionStatus = "EXECUTED";
+        value.labelVersion = "LABEL/1.0.0";
         value.exitTradeDate = LocalDate.of(2026, 7, 13);
         value.verifiedAt = now();
         return value;
@@ -365,10 +364,10 @@ class AiWeeklyEvolutionRunnerImplTest {
             AppProperties properties,
             AiStrategyReleaseMapper releaseMapper,
             AiModelVersionMapper modelMapper,
-            AiPredictionV2Mapper predictionMapper,
-            AiLabelV2Mapper labelMapper,
-            AiFactorValueV2Mapper factorMapper,
-            AiSampleV2Mapper sampleMapper,
+            AiPredictionMapper predictionMapper,
+            AiSampleLabelMapper labelMapper,
+            AiFactorValueMapper factorMapper,
+            AiSampleMapper sampleMapper,
             MarketDataService marketDataService,
             AiFactorPerformanceService factorPerformanceService,
             AiWalkForwardService walkForwardService,

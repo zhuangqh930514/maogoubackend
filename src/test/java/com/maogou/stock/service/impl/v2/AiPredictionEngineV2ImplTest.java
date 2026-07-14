@@ -1,12 +1,12 @@
-package com.maogou.stock.service.impl.v2;
+package com.maogou.stock.service.impl.research;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.maogou.stock.domain.entity.v2.AiFactorValueV2;
-import com.maogou.stock.domain.entity.v2.AiPredictionV2;
-import com.maogou.stock.domain.entity.v2.AiSampleV2;
-import com.maogou.stock.mapper.v2.AiPredictionV2Mapper;
-import com.maogou.stock.service.v2.AiModelInferenceService;
-import com.maogou.stock.service.v2.AiPredictionEngineV2;
+import com.maogou.stock.domain.entity.research.AiFactorValue;
+import com.maogou.stock.domain.entity.research.AiPrediction;
+import com.maogou.stock.domain.entity.research.AiSample;
+import com.maogou.stock.mapper.research.AiPredictionMapper;
+import com.maogou.stock.service.research.AiModelInferenceService;
+import com.maogou.stock.service.research.AiPredictionEngine;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -25,17 +25,17 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-class AiPredictionEngineV2ImplTest {
+class AiPredictionEngineImplTest {
 
     @Test
     void ranksEachTradingDayIndependentlyAndOnlyTopKCanBeRecommended() {
-        AiPredictionV2Mapper mapper = mock(AiPredictionV2Mapper.class);
+        AiPredictionMapper mapper = mock(AiPredictionMapper.class);
         stubPersistence(mapper);
-        AiPredictionEngineV2 engine = engine(mapper);
+        AiPredictionEngine engine = engine(mapper);
         LocalDate firstDate = LocalDate.of(2026, 7, 9);
         LocalDate secondDate = LocalDate.of(2026, 7, 10);
 
-        List<AiPredictionV2> predictions = new ArrayList<>();
+        List<AiPrediction> predictions = new ArrayList<>();
         predictions.addAll(engine.predictAndStore(batch(List.of(
                 input(sample(1L, "000001", firstDate, "READY", "TRADABLE", "92"), "2.2"),
                 input(sample(2L, "000002", firstDate, "READY", "TRADABLE", "92"), "0.8")
@@ -46,7 +46,7 @@ class AiPredictionEngineV2ImplTest {
         ), 1)));
 
         for (LocalDate tradeDate : List.of(firstDate, secondDate)) {
-            List<AiPredictionV2> day = predictions.stream()
+            List<AiPrediction> day = predictions.stream()
                     .filter(item -> tradeDate.equals(item.tradeDate))
                     .toList();
             assertThat(day).hasSize(2);
@@ -59,14 +59,14 @@ class AiPredictionEngineV2ImplTest {
 
     @Test
     void lowConfidenceActivelyAbstainsInsteadOfMakingUpADirection() {
-        AiPredictionV2Mapper mapper = mock(AiPredictionV2Mapper.class);
+        AiPredictionMapper mapper = mock(AiPredictionMapper.class);
         stubPersistence(mapper);
-        AiPredictionEngineV2 engine = engine(mapper);
-        AiSampleV2 sample = sample(8L, "600519", LocalDate.of(2026, 7, 10), "PARTIAL", "TRADABLE", "66");
-        List<AiFactorValueV2> missingFactors = List.of(missingFactor(sample.id, "MOMENTUM_RETURN_3D"));
+        AiPredictionEngine engine = engine(mapper);
+        AiSample sample = sample(8L, "600519", LocalDate.of(2026, 7, 10), "PARTIAL", "TRADABLE", "66");
+        List<AiFactorValue> missingFactors = List.of(missingFactor(sample.id, "MOMENTUM_RETURN_3D"));
 
-        AiPredictionV2 prediction = engine.predictAndStore(batch(
-                List.of(new AiPredictionEngineV2.PredictionInput(sample, missingFactors)), 3)).get(0);
+        AiPrediction prediction = engine.predictAndStore(batch(
+                List.of(new AiPredictionEngine.PredictionInput(sample, missingFactors)), 3)).get(0);
 
         assertThat(prediction.action).isEqualTo("WATCH");
         assertThat(prediction.actionBucket).isEqualTo("ABSTAIN");
@@ -76,12 +76,12 @@ class AiPredictionEngineV2ImplTest {
 
     @Test
     void staleOrUntradableSamplesAreUnavailableAndNeverReceiveARank() {
-        AiPredictionV2Mapper mapper = mock(AiPredictionV2Mapper.class);
+        AiPredictionMapper mapper = mock(AiPredictionMapper.class);
         stubPersistence(mapper);
-        AiPredictionEngineV2 engine = engine(mapper);
-        AiSampleV2 stale = sample(8L, "600519", LocalDate.of(2026, 7, 10), "UNAVAILABLE", "DATA_UNAVAILABLE", "35");
+        AiPredictionEngine engine = engine(mapper);
+        AiSample stale = sample(8L, "600519", LocalDate.of(2026, 7, 10), "UNAVAILABLE", "DATA_UNAVAILABLE", "35");
 
-        AiPredictionV2 prediction = engine.predictAndStore(
+        AiPrediction prediction = engine.predictAndStore(
                 batch(List.of(input(stale, "3.0")), 3)).get(0);
 
         assertThat(prediction.action).isEqualTo("UNAVAILABLE");
@@ -92,12 +92,12 @@ class AiPredictionEngineV2ImplTest {
 
     @Test
     void ruleBaselineOutputsAuditableProbabilitiesReturnsRiskAndReasons() {
-        AiPredictionV2Mapper mapper = mock(AiPredictionV2Mapper.class);
+        AiPredictionMapper mapper = mock(AiPredictionMapper.class);
         stubPersistence(mapper);
-        AiPredictionEngineV2 engine = engine(mapper);
-        AiSampleV2 sample = sample(8L, "600519", LocalDate.of(2026, 7, 10), "READY", "TRADABLE", "95");
+        AiPredictionEngine engine = engine(mapper);
+        AiSample sample = sample(8L, "600519", LocalDate.of(2026, 7, 10), "READY", "TRADABLE", "95");
 
-        AiPredictionV2 prediction = engine.predictAndStore(
+        AiPrediction prediction = engine.predictAndStore(
                 batch(List.of(input(sample, "2.0")), 3)).get(0);
 
         assertThat(prediction.expectedReturn).isNotNull();
@@ -111,32 +111,32 @@ class AiPredictionEngineV2ImplTest {
 
     @Test
     void repeatedBusinessKeyReturnsTheImmutablePersistedPredictionWithoutUpdates() {
-        AiPredictionV2Mapper mapper = mock(AiPredictionV2Mapper.class);
+        AiPredictionMapper mapper = mock(AiPredictionMapper.class);
         stubPersistence(mapper);
-        AiPredictionEngineV2 engine = engine(mapper);
-        AiSampleV2 sample = sample(8L, "600519", LocalDate.of(2026, 7, 10), "READY", "TRADABLE", "95");
-        AiPredictionEngineV2.PredictionBatch batch = batch(List.of(input(sample, "2.0")), 3);
+        AiPredictionEngine engine = engine(mapper);
+        AiSample sample = sample(8L, "600519", LocalDate.of(2026, 7, 10), "READY", "TRADABLE", "95");
+        AiPredictionEngine.PredictionBatch batch = batch(List.of(input(sample, "2.0")), 3);
 
-        AiPredictionV2 first = engine.predictAndStore(batch).get(0);
-        AiPredictionV2 second = engine.predictAndStore(batch).get(0);
+        AiPrediction first = engine.predictAndStore(batch).get(0);
+        AiPrediction second = engine.predictAndStore(batch).get(0);
 
         assertThat(second.id).isEqualTo(first.id);
         assertThat(second.inputFingerprint).isEqualTo(first.inputFingerprint);
-        verify(mapper, never()).updateById(org.mockito.ArgumentMatchers.any(AiPredictionV2.class));
+        verify(mapper, never()).updateById(org.mockito.ArgumentMatchers.any(AiPrediction.class));
     }
 
     @Test
     void rejectsAnImmutablePredictionCollisionWithDifferentContent() {
-        AiPredictionV2Mapper mapper = mock(AiPredictionV2Mapper.class);
+        AiPredictionMapper mapper = mock(AiPredictionMapper.class);
         when(mapper.insertBatchImmutable(anyList())).thenReturn(1);
-        AiPredictionV2 conflicting = new AiPredictionV2();
+        AiPrediction conflicting = new AiPrediction();
         conflicting.id = 99L;
         conflicting.userId = 5L;
         conflicting.idempotencyKey = "RULE_BASELINE:10:BASELINE:8:3:K3:POLICY_V2_1";
         conflicting.inputFingerprint = "different";
         when(mapper.selectByIdempotencyKeysForShare(anyLong(), anyList())).thenReturn(List.of(conflicting));
-        AiPredictionEngineV2 engine = engine(mapper);
-        AiSampleV2 sample = sample(8L, "600519", LocalDate.of(2026, 7, 10), "READY", "TRADABLE", "95");
+        AiPredictionEngine engine = engine(mapper);
+        AiSample sample = sample(8L, "600519", LocalDate.of(2026, 7, 10), "READY", "TRADABLE", "95");
 
         assertThatThrownBy(() -> engine.predictAndStore(batch(List.of(input(sample, "2.0")), 3)))
                 .isInstanceOf(IllegalStateException.class)
@@ -145,16 +145,16 @@ class AiPredictionEngineV2ImplTest {
 
     @Test
     void topKIsPartOfTheImmutableStrategyIdentity() {
-        AiPredictionV2Mapper mapper = mock(AiPredictionV2Mapper.class);
+        AiPredictionMapper mapper = mock(AiPredictionMapper.class);
         stubPersistence(mapper);
-        AiPredictionEngineV2 engine = engine(mapper);
+        AiPredictionEngine engine = engine(mapper);
         LocalDate tradeDate = LocalDate.of(2026, 7, 10);
-        List<AiPredictionEngineV2.PredictionInput> inputs = List.of(
+        List<AiPredictionEngine.PredictionInput> inputs = List.of(
                 input(sample(1L, "000001", tradeDate, "READY", "TRADABLE", "92"), "2.2"),
                 input(sample(2L, "000002", tradeDate, "READY", "TRADABLE", "92"), "1.9"));
 
-        List<AiPredictionV2> topOne = engine.predictAndStore(batch(inputs, 1));
-        List<AiPredictionV2> topTwo = engine.predictAndStore(batch(inputs, 2));
+        List<AiPrediction> topOne = engine.predictAndStore(batch(inputs, 1));
+        List<AiPrediction> topTwo = engine.predictAndStore(batch(inputs, 2));
 
         assertThat(topOne).filteredOn(item -> "RECOMMEND".equals(item.actionBucket)).hasSize(1);
         assertThat(topTwo).filteredOn(item -> "RECOMMEND".equals(item.actionBucket)).hasSize(2);
@@ -164,10 +164,10 @@ class AiPredictionEngineV2ImplTest {
 
     @Test
     void rejectsMixedTradingDatesPhasesOrUniverseVersionsInOneRankingBatch() {
-        AiPredictionV2Mapper mapper = mock(AiPredictionV2Mapper.class);
-        AiPredictionEngineV2 engine = engine(mapper);
-        AiSampleV2 first = sample(1L, "000001", LocalDate.of(2026, 7, 9), "READY", "TRADABLE", "92");
-        AiSampleV2 second = sample(2L, "000002", LocalDate.of(2026, 7, 10), "READY", "TRADABLE", "92");
+        AiPredictionMapper mapper = mock(AiPredictionMapper.class);
+        AiPredictionEngine engine = engine(mapper);
+        AiSample first = sample(1L, "000001", LocalDate.of(2026, 7, 9), "READY", "TRADABLE", "92");
+        AiSample second = sample(2L, "000002", LocalDate.of(2026, 7, 10), "READY", "TRADABLE", "92");
 
         assertThatThrownBy(() -> engine.predictAndStore(batch(List.of(input(first, "2"), input(second, "2")), 1)))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -176,23 +176,23 @@ class AiPredictionEngineV2ImplTest {
 
     @Test
     void rejectsFactorsThatDoNotBelongToTheInputSample() {
-        AiPredictionV2Mapper mapper = mock(AiPredictionV2Mapper.class);
-        AiPredictionEngineV2 engine = engine(mapper);
-        AiSampleV2 sample = sample(8L, "600519", LocalDate.of(2026, 7, 10), "READY", "TRADABLE", "95");
-        AiFactorValueV2 wrong = factor(sample.id + 1, sample.stockCode, "MOMENTUM_RETURN_3D", "2");
+        AiPredictionMapper mapper = mock(AiPredictionMapper.class);
+        AiPredictionEngine engine = engine(mapper);
+        AiSample sample = sample(8L, "600519", LocalDate.of(2026, 7, 10), "READY", "TRADABLE", "95");
+        AiFactorValue wrong = factor(sample.id + 1, sample.stockCode, "MOMENTUM_RETURN_3D", "2");
 
         assertThatThrownBy(() -> engine.predictAndStore(batch(
-                List.of(new AiPredictionEngineV2.PredictionInput(sample, List.of(wrong))), 1)))
+                List.of(new AiPredictionEngine.PredictionInput(sample, List.of(wrong))), 1)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("因子血缘");
     }
 
     @Test
     void ruleBaselineRequiresNullModelAndNeverAcceptsZeroParentIds() {
-        AiPredictionV2Mapper mapper = mock(AiPredictionV2Mapper.class);
-        AiPredictionEngineV2 engine = engine(mapper);
-        AiSampleV2 sample = sample(8L, "600519", LocalDate.of(2026, 7, 10), "READY", "TRADABLE", "95");
-        AiPredictionEngineV2.PredictionBatch invalid = new AiPredictionEngineV2.PredictionBatch(
+        AiPredictionMapper mapper = mock(AiPredictionMapper.class);
+        AiPredictionEngine engine = engine(mapper);
+        AiSample sample = sample(8L, "600519", LocalDate.of(2026, 7, 10), "READY", "TRADABLE", "95");
+        AiPredictionEngine.PredictionBatch invalid = new AiPredictionEngine.PredictionBatch(
                 List.of(input(sample, "2")), 10L, 0L, 3, 1, "RULE_BASELINE",
                 LocalDateTime.of(2026, 7, 10, 16, 5));
 
@@ -203,19 +203,19 @@ class AiPredictionEngineV2ImplTest {
 
     @Test
     void validatedModelInferenceDrivesScoreInsteadOfReusingRuleScore() {
-        AiPredictionV2Mapper mapper = mock(AiPredictionV2Mapper.class);
+        AiPredictionMapper mapper = mock(AiPredictionMapper.class);
         stubPersistence(mapper);
         AiModelInferenceService inferenceService = mock(AiModelInferenceService.class);
         when(inferenceService.infer(
                 org.mockito.ArgumentMatchers.eq(5L),
                 org.mockito.ArgumentMatchers.eq(101L),
-                org.mockito.ArgumentMatchers.any(AiSampleV2.class),
+                org.mockito.ArgumentMatchers.any(AiSample.class),
                 anyList())).thenReturn(new AiModelInferenceService.ModelInference(
                 101L, "ranker", "v1", "artifact-sha", 1.4f, 0.80f, 16, 16));
-        AiPredictionEngineV2 engine = engine(mapper, inferenceService);
-        AiSampleV2 sample = sample(8L, "600519", LocalDate.of(2026, 7, 10), "READY", "TRADABLE", "95");
+        AiPredictionEngine engine = engine(mapper, inferenceService);
+        AiSample sample = sample(8L, "600519", LocalDate.of(2026, 7, 10), "READY", "TRADABLE", "95");
 
-        AiPredictionV2 prediction = engine.predictAndStore(modelBatch(List.of(input(sample, "0.2")), 1)).get(0);
+        AiPrediction prediction = engine.predictAndStore(modelBatch(List.of(input(sample, "0.2")), 1)).get(0);
 
         assertThat(prediction.score).isEqualByComparingTo("80.0000");
         assertThat(prediction.probabilityUp).isEqualByComparingTo("0.800000");
@@ -225,18 +225,18 @@ class AiPredictionEngineV2ImplTest {
 
     @Test
     void modelFailureBecomesUnavailableAndNeverFallsBackToRuleRecommendation() {
-        AiPredictionV2Mapper mapper = mock(AiPredictionV2Mapper.class);
+        AiPredictionMapper mapper = mock(AiPredictionMapper.class);
         stubPersistence(mapper);
         AiModelInferenceService inferenceService = mock(AiModelInferenceService.class);
         when(inferenceService.infer(
                 org.mockito.ArgumentMatchers.eq(5L),
                 org.mockito.ArgumentMatchers.eq(101L),
-                org.mockito.ArgumentMatchers.any(AiSampleV2.class),
+                org.mockito.ArgumentMatchers.any(AiSample.class),
                 anyList())).thenThrow(new IllegalStateException("ONNX artifact missing"));
-        AiPredictionEngineV2 engine = engine(mapper, inferenceService);
-        AiSampleV2 sample = sample(8L, "600519", LocalDate.of(2026, 7, 10), "READY", "TRADABLE", "95");
+        AiPredictionEngine engine = engine(mapper, inferenceService);
+        AiSample sample = sample(8L, "600519", LocalDate.of(2026, 7, 10), "READY", "TRADABLE", "95");
 
-        AiPredictionV2 prediction = engine.predictAndStore(modelBatch(List.of(input(sample, "3.0")), 1)).get(0);
+        AiPrediction prediction = engine.predictAndStore(modelBatch(List.of(input(sample, "3.0")), 1)).get(0);
 
         assertThat(prediction.action).isEqualTo("UNAVAILABLE");
         assertThat(prediction.actionBucket).isEqualTo("UNAVAILABLE");
@@ -245,38 +245,38 @@ class AiPredictionEngineV2ImplTest {
         assertThat(prediction.reasonJson).contains("ONNX artifact missing");
     }
 
-    private static AiPredictionEngineV2 engine(AiPredictionV2Mapper mapper) {
+    private static AiPredictionEngine engine(AiPredictionMapper mapper) {
         return engine(mapper, mock(AiModelInferenceService.class));
     }
 
-    private static AiPredictionEngineV2 engine(
-            AiPredictionV2Mapper mapper,
+    private static AiPredictionEngine engine(
+            AiPredictionMapper mapper,
             AiModelInferenceService inferenceService
     ) {
-        return new AiPredictionEngineV2Impl(
+        return new AiPredictionEngineImpl(
                 mapper,
                 new DefaultAiDecisionPolicy(),
                 inferenceService,
                 new ObjectMapper().findAndRegisterModules());
     }
 
-    private static AiPredictionEngineV2.PredictionBatch batch(
-            List<AiPredictionEngineV2.PredictionInput> inputs,
+    private static AiPredictionEngine.PredictionBatch batch(
+            List<AiPredictionEngine.PredictionInput> inputs,
             int topK
     ) {
-        return new AiPredictionEngineV2.PredictionBatch(
+        return new AiPredictionEngine.PredictionBatch(
                 inputs, 10L, null, 3, topK, "RULE_BASELINE", LocalDateTime.of(2026, 7, 10, 16, 5));
     }
 
-    private static AiPredictionEngineV2.PredictionBatch modelBatch(
-            List<AiPredictionEngineV2.PredictionInput> inputs,
+    private static AiPredictionEngine.PredictionBatch modelBatch(
+            List<AiPredictionEngine.PredictionInput> inputs,
             int topK
     ) {
-        return new AiPredictionEngineV2.PredictionBatch(
+        return new AiPredictionEngine.PredictionBatch(
                 inputs, 10L, 101L, 3, topK, "CHAMPION", LocalDateTime.of(2026, 7, 10, 16, 5));
     }
 
-    private static AiPredictionEngineV2.PredictionInput input(AiSampleV2 sample, String strength) {
+    private static AiPredictionEngine.PredictionInput input(AiSample sample, String strength) {
         List<String> codes = List.of(
                 "MOMENTUM_RETURN_3D", "MOMENTUM_RETURN_5D", "TREND_MA5_DISTANCE",
                 "TREND_MA20_DISTANCE", "VOLUME_RATIO_5D", "VOLATILITY_10D",
@@ -284,11 +284,11 @@ class AiPredictionEngineV2ImplTest {
                 "FUNDAMENTAL_ROE", "FUNDAMENTAL_REVENUE_GROWTH", "FUNDAMENTAL_PROFIT_GROWTH",
                 "FUNDAMENTAL_DEBT_RATIO", "MARKET_RELATIVE_STRENGTH",
                 "SECTOR_RELATIVE_STRENGTH", "NEWS_SENTIMENT");
-        List<AiFactorValueV2> factors = codes.stream()
+        List<AiFactorValue> factors = codes.stream()
                 .map(code -> {
                     boolean inverse = code.contains("VOLATILITY") || code.contains("DEBT_RATIO")
                             || code.contains("FUNDAMENTAL_PE") || code.contains("FUNDAMENTAL_PB");
-                    AiFactorValueV2 factor = factor(
+                    AiFactorValue factor = factor(
                             sample.id, sample.stockCode, code, inverse ? "-" + strength : strength);
                     if (code.contains("FUNDAMENTAL_PE") || code.contains("FUNDAMENTAL_PB")) {
                         factor.rawValue = new BigDecimal("10");
@@ -296,10 +296,10 @@ class AiPredictionEngineV2ImplTest {
                     return factor;
                 })
                 .toList();
-        return new AiPredictionEngineV2.PredictionInput(sample, factors);
+        return new AiPredictionEngine.PredictionInput(sample, factors);
     }
 
-    private static AiSampleV2 sample(
+    private static AiSample sample(
             Long id,
             String stockCode,
             LocalDate tradeDate,
@@ -307,7 +307,7 @@ class AiPredictionEngineV2ImplTest {
             String tradableStatus,
             String qualityScore
     ) {
-        AiSampleV2 sample = new AiSampleV2();
+        AiSample sample = new AiSample();
         sample.id = id;
         sample.userId = 5L;
         sample.dataBatchId = 20L;
@@ -327,13 +327,13 @@ class AiPredictionEngineV2ImplTest {
         return sample;
     }
 
-    private static AiFactorValueV2 factor(
+    private static AiFactorValue factor(
             Long sampleId,
             String stockCode,
             String code,
             String normalizedValue
     ) {
-        AiFactorValueV2 factor = new AiFactorValueV2();
+        AiFactorValue factor = new AiFactorValue();
         factor.id = sampleId * 10;
         factor.userId = 5L;
         factor.sampleId = sampleId;
@@ -348,8 +348,8 @@ class AiPredictionEngineV2ImplTest {
         return factor;
     }
 
-    private static AiFactorValueV2 missingFactor(Long sampleId, String code) {
-        AiFactorValueV2 factor = factor(sampleId, "600519", code, "0");
+    private static AiFactorValue missingFactor(Long sampleId, String code) {
+        AiFactorValue factor = factor(sampleId, "600519", code, "0");
         factor.rawValue = null;
         factor.normalizedValue = null;
         factor.missing = 1;
@@ -357,13 +357,13 @@ class AiPredictionEngineV2ImplTest {
         return factor;
     }
 
-    private static void stubPersistence(AiPredictionV2Mapper mapper) {
-        List<AiPredictionV2> database = new ArrayList<>();
+    private static void stubPersistence(AiPredictionMapper mapper) {
+        List<AiPrediction> database = new ArrayList<>();
         AtomicLong ids = new AtomicLong(200);
         when(mapper.insertBatchImmutable(anyList())).thenAnswer(invocation -> {
-            List<AiPredictionV2> batch = invocation.getArgument(0);
-            for (AiPredictionV2 candidate : batch) {
-                AiPredictionV2 existing = database.stream()
+            List<AiPrediction> batch = invocation.getArgument(0);
+            for (AiPrediction candidate : batch) {
+                AiPrediction existing = database.stream()
                         .filter(item -> item.userId.equals(candidate.userId)
                                 && item.idempotencyKey.equals(candidate.idempotencyKey))
                         .findFirst()

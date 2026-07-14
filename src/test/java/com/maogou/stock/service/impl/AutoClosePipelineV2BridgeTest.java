@@ -3,13 +3,13 @@ package com.maogou.stock.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.maogou.stock.domain.entity.AiLearningJobLog;
 import com.maogou.stock.domain.entity.AiModelConfig;
-import com.maogou.stock.domain.entity.v2.AiPipelineRun;
+import com.maogou.stock.domain.entity.research.AiPipelineRun;
 import com.maogou.stock.mapper.AiLearningJobLogMapper;
 import com.maogou.stock.mapper.AiModelConfigMapper;
 import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.TradingCalendarService;
-import com.maogou.stock.service.v2.AiDailyPipelineServiceV2;
-import com.maogou.stock.service.v2.AiDailyPipelinePreparationService;
+import com.maogou.stock.service.research.AiGlobalDailyResearchService;
+import com.maogou.stock.service.research.AiGlobalResearchPreparationService;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;
@@ -29,8 +29,8 @@ class AutoClosePipelineV2BridgeTest {
         AiModelConfigMapper configMapper = mock(AiModelConfigMapper.class);
         AiLearningJobLogMapper jobLogMapper = mock(AiLearningJobLogMapper.class);
         TradingCalendarService tradingCalendarService = mock(TradingCalendarService.class);
-        AiDailyPipelineServiceV2 dailyPipelineServiceV2 = mock(AiDailyPipelineServiceV2.class);
-        AiDailyPipelinePreparationService preparationService = mock(AiDailyPipelinePreparationService.class);
+        AiGlobalDailyResearchService dailyPipelineServiceV2 = mock(AiGlobalDailyResearchService.class);
+        AiGlobalResearchPreparationService preparationService = mock(AiGlobalResearchPreparationService.class);
 
         AiModelConfig config = new AiModelConfig();
         config.id = 7L;
@@ -45,7 +45,7 @@ class AutoClosePipelineV2BridgeTest {
             return 1;
         });
         when(preparationService.prepare(any(), any(), any(), any())).thenReturn(
-                new AiDailyPipelinePreparationService.PreparedPipeline(11L, 91L, null, "real-input-fingerprint"));
+                new AiGlobalResearchPreparationService.PreparedPipeline(11L, 91L, null, "real-input-fingerprint"));
 
         AiPipelineRun run = new AiPipelineRun();
         run.id = 91L;
@@ -53,7 +53,7 @@ class AutoClosePipelineV2BridgeTest {
         run.processedCount = 9;
         run.successCount = 9;
         run.failedCount = 0;
-        when(dailyPipelineServiceV2.run(any())).thenReturn(new AiDailyPipelineServiceV2.PipelineResult(run, List.of()));
+        when(dailyPipelineServiceV2.run(any())).thenReturn(new AiGlobalDailyResearchService.PipelineResult(run, List.of()));
 
         AutoClosePipelineServiceImpl service = new AutoClosePipelineServiceImpl(
                 configMapper,
@@ -76,8 +76,8 @@ class AutoClosePipelineV2BridgeTest {
         AiModelConfigMapper configMapper = mock(AiModelConfigMapper.class);
         AiLearningJobLogMapper jobLogMapper = mock(AiLearningJobLogMapper.class);
         TradingCalendarService tradingCalendarService = mock(TradingCalendarService.class);
-        AiDailyPipelineServiceV2 dailyPipelineServiceV2 = mock(AiDailyPipelineServiceV2.class);
-        AiDailyPipelinePreparationService preparationService = mock(AiDailyPipelinePreparationService.class);
+        AiGlobalDailyResearchService dailyPipelineServiceV2 = mock(AiGlobalDailyResearchService.class);
+        AiGlobalResearchPreparationService preparationService = mock(AiGlobalResearchPreparationService.class);
         AiModelConfig config = new AiModelConfig();
         config.id = 7L;
         config.userId = 5L;
@@ -89,7 +89,7 @@ class AutoClosePipelineV2BridgeTest {
             return 1;
         });
         when(preparationService.prepare(any(), any(), any(), any())).thenReturn(
-                new AiDailyPipelinePreparationService.PreparedPipeline(11L, 91L, null, "real-input-fingerprint"));
+                new AiGlobalResearchPreparationService.PreparedPipeline(11L, 91L, null, "real-input-fingerprint"));
         when(dailyPipelineServiceV2.run(any())).thenThrow(new IllegalStateException("pipeline storage unavailable"));
         AutoClosePipelineServiceImpl service = new AutoClosePipelineServiceImpl(
                 configMapper, jobLogMapper, tradingCalendarService, dailyPipelineServiceV2, preparationService);
@@ -105,8 +105,8 @@ class AutoClosePipelineV2BridgeTest {
         AiModelConfigMapper configMapper = mock(AiModelConfigMapper.class);
         AiLearningJobLogMapper jobLogMapper = mock(AiLearningJobLogMapper.class);
         TradingCalendarService tradingCalendarService = mock(TradingCalendarService.class);
-        AiDailyPipelineServiceV2 dailyPipelineServiceV2 = mock(AiDailyPipelineServiceV2.class);
-        AiDailyPipelinePreparationService preparationService = mock(AiDailyPipelinePreparationService.class);
+        AiGlobalDailyResearchService dailyPipelineServiceV2 = mock(AiGlobalDailyResearchService.class);
+        AiGlobalResearchPreparationService preparationService = mock(AiGlobalResearchPreparationService.class);
         AiModelConfig config = new AiModelConfig();
         config.id = 7L;
         config.userId = 5L;
@@ -115,7 +115,7 @@ class AutoClosePipelineV2BridgeTest {
         when(configMapper.selectOne(any(QueryWrapper.class))).thenReturn(config);
         when(configMapper.selectById(7L)).thenReturn(config);
         when(preparationService.prepare(any(), any(), any(), any())).thenReturn(
-                new AiDailyPipelinePreparationService.PreparedPipeline(11L, 91L, null, "real-input-fingerprint"));
+                new AiGlobalResearchPreparationService.PreparedPipeline(11L, 91L, null, "real-input-fingerprint"));
         when(dailyPipelineServiceV2.run(any())).thenThrow(
                 new IllegalStateException("每日投研流水线正在由其他实例执行，请稍后查看结果"));
         AutoClosePipelineServiceImpl service = new AutoClosePipelineServiceImpl(

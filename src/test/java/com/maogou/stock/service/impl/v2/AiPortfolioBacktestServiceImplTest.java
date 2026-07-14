@@ -1,15 +1,15 @@
-package com.maogou.stock.service.impl.v2;
+package com.maogou.stock.service.impl.research;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.maogou.stock.domain.entity.v2.AiPortfolioBacktestDaily;
-import com.maogou.stock.domain.entity.v2.AiPortfolioBacktestPosition;
-import com.maogou.stock.domain.entity.v2.AiPortfolioBacktestRun;
-import com.maogou.stock.domain.entity.v2.AiPortfolioBacktestTrade;
-import com.maogou.stock.mapper.v2.AiPortfolioBacktestDailyMapper;
-import com.maogou.stock.mapper.v2.AiPortfolioBacktestPositionMapper;
-import com.maogou.stock.mapper.v2.AiPortfolioBacktestRunMapper;
-import com.maogou.stock.mapper.v2.AiPortfolioBacktestTradeMapper;
-import com.maogou.stock.service.v2.AiPortfolioBacktestService;
+import com.maogou.stock.domain.entity.research.AiPortfolioBacktestDaily;
+import com.maogou.stock.domain.entity.research.AiPortfolioBacktestPosition;
+import com.maogou.stock.domain.entity.research.AiPortfolioBacktestRun;
+import com.maogou.stock.domain.entity.research.AiPortfolioBacktestTrade;
+import com.maogou.stock.mapper.research.AiPortfolioBacktestDailyMapper;
+import com.maogou.stock.mapper.research.AiPortfolioBacktestPositionMapper;
+import com.maogou.stock.mapper.research.AiPortfolioBacktestRunMapper;
+import com.maogou.stock.mapper.research.AiPortfolioBacktestTradeMapper;
+import com.maogou.stock.service.research.AiPortfolioBacktestService;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;

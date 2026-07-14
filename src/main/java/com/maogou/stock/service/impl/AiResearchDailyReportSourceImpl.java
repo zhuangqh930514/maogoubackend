@@ -4,21 +4,21 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.maogou.stock.domain.entity.AiDailyInsightItem;
 import com.maogou.stock.domain.entity.AiDailyInsightSnapshot;
 import com.maogou.stock.domain.entity.TradeRecord;
-import com.maogou.stock.domain.entity.v2.AiFactorPerformanceV2;
-import com.maogou.stock.domain.entity.v2.AiPipelineRun;
-import com.maogou.stock.domain.entity.v2.AiPipelineStep;
-import com.maogou.stock.domain.entity.v2.AiPortfolioBacktestRun;
-import com.maogou.stock.domain.entity.v2.AiStrategyRelease;
+import com.maogou.stock.domain.entity.research.AiFactorPerformance;
+import com.maogou.stock.domain.entity.research.AiPipelineRun;
+import com.maogou.stock.domain.entity.research.AiPipelineStep;
+import com.maogou.stock.domain.entity.research.AiPortfolioBacktestRun;
+import com.maogou.stock.domain.entity.research.AiStrategyRelease;
 import com.maogou.stock.dto.ai.AiResearchDailyReportPayloads;
 import com.maogou.stock.mapper.AiDailyInsightItemMapper;
 import com.maogou.stock.mapper.AiDailyInsightSnapshotMapper;
 import com.maogou.stock.mapper.TradeRecordMapper;
-import com.maogou.stock.mapper.v2.AiFactorPerformanceV2Mapper;
-import com.maogou.stock.mapper.v2.AiPipelineRunMapper;
-import com.maogou.stock.mapper.v2.AiPipelineStepMapper;
-import com.maogou.stock.mapper.v2.AiPortfolioBacktestRunMapper;
-import com.maogou.stock.mapper.v2.AiStrategyReleaseMapper;
-import com.maogou.stock.service.v2.AiResearchDailyReportSource;
+import com.maogou.stock.mapper.research.AiFactorPerformanceMapper;
+import com.maogou.stock.mapper.research.AiPipelineRunMapper;
+import com.maogou.stock.mapper.research.AiPipelineStepMapper;
+import com.maogou.stock.mapper.research.AiPortfolioBacktestRunMapper;
+import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
+import com.maogou.stock.service.research.AiResearchDailyReportSource;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -37,7 +37,7 @@ public class AiResearchDailyReportSourceImpl implements AiResearchDailyReportSou
     private final TradeRecordMapper tradeRecordMapper;
     private final AiStrategyReleaseMapper strategyReleaseMapper;
     private final AiPortfolioBacktestRunMapper backtestRunMapper;
-    private final AiFactorPerformanceV2Mapper factorPerformanceMapper;
+    private final AiFactorPerformanceMapper factorPerformanceMapper;
     private final AiPipelineRunMapper pipelineRunMapper;
     private final AiPipelineStepMapper pipelineStepMapper;
     private final ObjectMapper objectMapper;
@@ -48,7 +48,7 @@ public class AiResearchDailyReportSourceImpl implements AiResearchDailyReportSou
             TradeRecordMapper tradeRecordMapper,
             AiStrategyReleaseMapper strategyReleaseMapper,
             AiPortfolioBacktestRunMapper backtestRunMapper,
-            AiFactorPerformanceV2Mapper factorPerformanceMapper,
+            AiFactorPerformanceMapper factorPerformanceMapper,
             AiPipelineRunMapper pipelineRunMapper,
             AiPipelineStepMapper pipelineStepMapper,
             ObjectMapper objectMapper
@@ -126,8 +126,8 @@ public class AiResearchDailyReportSourceImpl implements AiResearchDailyReportSou
         if (factorVersion == null || factorVersion.isBlank()) {
             return "UNKNOWN";
         }
-        List<AiFactorPerformanceV2> performance = factorPerformanceMapper.selectList(
-                new QueryWrapper<AiFactorPerformanceV2>()
+        List<AiFactorPerformance> performance = factorPerformanceMapper.selectList(
+                new QueryWrapper<AiFactorPerformance>()
                         .eq("user_id", userId)
                         .eq("factor_version", factorVersion)
                         .eq("horizon_days", 3)

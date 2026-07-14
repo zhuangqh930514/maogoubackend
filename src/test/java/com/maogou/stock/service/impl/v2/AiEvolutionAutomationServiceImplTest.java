@@ -1,12 +1,12 @@
-package com.maogou.stock.service.impl.v2;
+package com.maogou.stock.service.impl.research;
 
 import com.maogou.stock.domain.entity.AiLearningJobLog;
 import com.maogou.stock.domain.entity.AiModelConfig;
 import com.maogou.stock.mapper.AiLearningJobLogMapper;
 import com.maogou.stock.mapper.AiModelConfigMapper;
-import com.maogou.stock.service.v2.AiEvolutionAutomationService;
-import com.maogou.stock.service.v2.AiMonthlyTrainingRunner;
-import com.maogou.stock.service.v2.AiWeeklyEvolutionRunner;
+import com.maogou.stock.service.research.AiEvolutionAutomationService;
+import com.maogou.stock.service.research.AiMonthlyTrainingRunner;
+import com.maogou.stock.service.research.AiWeeklyEvolutionRunner;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 

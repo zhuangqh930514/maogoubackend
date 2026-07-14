@@ -1,11 +1,11 @@
-package com.maogou.stock.service.impl.v2;
+package com.maogou.stock.service.impl.research;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.maogou.stock.domain.entity.v2.AiFactorValueV2;
-import com.maogou.stock.domain.entity.v2.AiModelVersion;
-import com.maogou.stock.domain.entity.v2.AiSampleV2;
+import com.maogou.stock.domain.entity.research.AiFactorValue;
+import com.maogou.stock.domain.entity.research.AiModelVersion;
+import com.maogou.stock.domain.entity.research.AiSample;
 import com.maogou.stock.infrastructure.ml.OnnxPredictionClient;
-import com.maogou.stock.mapper.v2.AiModelVersionMapper;
+import com.maogou.stock.mapper.research.AiModelVersionMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -117,8 +117,8 @@ class AiModelInferenceServiceImplTest {
         return model;
     }
 
-    private static AiSampleV2 sample() {
-        AiSampleV2 sample = new AiSampleV2();
+    private static AiSample sample() {
+        AiSample sample = new AiSample();
         sample.id = 21L;
         sample.userId = 7L;
         sample.stockCode = "600519";
@@ -127,8 +127,8 @@ class AiModelInferenceServiceImplTest {
         return sample;
     }
 
-    private static AiFactorValueV2 factor() {
-        AiFactorValueV2 factor = new AiFactorValueV2();
+    private static AiFactorValue factor() {
+        AiFactorValue factor = new AiFactorValue();
         factor.userId = 7L;
         factor.sampleId = 21L;
         factor.stockCode = "600519";

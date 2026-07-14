@@ -3,7 +3,7 @@ package com.maogou.stock.infrastructure.ml;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.maogou.stock.config.AppProperties;
-import com.maogou.stock.service.v2.AiModelTrainer;
+import com.maogou.stock.service.research.AiModelTrainer;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;

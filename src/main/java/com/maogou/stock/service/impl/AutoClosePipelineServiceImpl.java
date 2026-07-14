@@ -8,8 +8,8 @@ import com.maogou.stock.mapper.AiModelConfigMapper;
 import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.AutoClosePipelineService;
 import com.maogou.stock.service.TradingCalendarService;
-import com.maogou.stock.service.v2.AiDailyPipelineServiceV2;
-import com.maogou.stock.service.v2.AiDailyPipelinePreparationService;
+import com.maogou.stock.service.research.AiGlobalDailyResearchService;
+import com.maogou.stock.service.research.AiGlobalResearchPreparationService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -29,16 +29,16 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
     private final AiModelConfigMapper configMapper;
     private final AiLearningJobLogMapper jobLogMapper;
     private final TradingCalendarService tradingCalendarService;
-    private final AiDailyPipelineServiceV2 dailyPipelineServiceV2;
-    private final AiDailyPipelinePreparationService preparationService;
+    private final AiGlobalDailyResearchService dailyPipelineServiceV2;
+    private final AiGlobalResearchPreparationService preparationService;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     public AutoClosePipelineServiceImpl(
             AiModelConfigMapper configMapper,
             AiLearningJobLogMapper jobLogMapper,
             TradingCalendarService tradingCalendarService,
-            AiDailyPipelineServiceV2 dailyPipelineServiceV2,
-            AiDailyPipelinePreparationService preparationService
+            AiGlobalDailyResearchService dailyPipelineServiceV2,
+            AiGlobalResearchPreparationService preparationService
     ) {
         this.configMapper = configMapper;
         this.jobLogMapper = jobLogMapper;
@@ -104,10 +104,10 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
                 LocalDateTime startedAt = LocalDateTime.now();
                 LocalDate tradeDate = tradingCalendarService.latestExpectedKlineDate(startedAt);
                 String idempotencyKey = "AUTO_CLOSE:" + tradeDate + ":USER:" + userId;
-                AiDailyPipelinePreparationService.PreparedPipeline prepared = preparationService.prepare(
+                AiGlobalResearchPreparationService.PreparedPipeline prepared = preparationService.prepare(
                         userId, tradeDate, startedAt, idempotencyKey);
-                AiDailyPipelineServiceV2.PipelineResult result = dailyPipelineServiceV2.run(
-                        new AiDailyPipelineServiceV2.PipelineRequest(
+                AiGlobalDailyResearchService.PipelineResult result = dailyPipelineServiceV2.run(
+                        new AiGlobalDailyResearchService.PipelineRequest(
                                 userId,
                                 tradeDate,
                                 prepared.dataBatchId(),

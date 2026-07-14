@@ -1,12 +1,12 @@
-package com.maogou.stock.service.impl.v2;
+package com.maogou.stock.service.impl.research;
 
-import com.maogou.stock.domain.entity.v2.AiPipelineRun;
-import com.maogou.stock.domain.entity.v2.AiPipelineStep;
-import com.maogou.stock.mapper.v2.AiPipelineRunMapper;
-import com.maogou.stock.mapper.v2.AiPipelineStepMapper;
+import com.maogou.stock.domain.entity.research.AiPipelineRun;
+import com.maogou.stock.domain.entity.research.AiPipelineStep;
+import com.maogou.stock.mapper.research.AiPipelineRunMapper;
+import com.maogou.stock.mapper.research.AiPipelineStepMapper;
 import com.maogou.stock.service.AiResearchDailyReportService;
-import com.maogou.stock.service.v2.AiDailyPipelineExecutor;
-import com.maogou.stock.service.v2.AiDailyPipelineServiceV2;
+import com.maogou.stock.service.research.AiGlobalDailyResearchExecutor;
+import com.maogou.stock.service.research.AiGlobalDailyResearchService;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;
@@ -31,7 +31,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-class AiDailyPipelineServiceV2ImplTest {
+class AiGlobalDailyResearchServiceImplTest {
 
     @Test
     void executesOnlyTheNineDailyStepsInTheRequiredOrder() {
@@ -39,16 +39,16 @@ class AiDailyPipelineServiceV2ImplTest {
         List<String> executed = new ArrayList<>();
         when(fixture.executor.execute(
                 org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.any(AiDailyPipelineExecutor.PipelineContext.class)))
+                org.mockito.ArgumentMatchers.any(AiGlobalDailyResearchExecutor.PipelineContext.class)))
                 .thenAnswer(invocation -> {
                     String key = invocation.getArgument(0);
                     executed.add(key);
-                    return new AiDailyPipelineExecutor.StepOutcome(
+                    return new AiGlobalDailyResearchExecutor.StepOutcome(
                             3, 3, 0, "{\"step\":\"" + key + "\"}", "output-" + key, List.of());
                 });
-        AiDailyPipelineServiceV2 service = service(fixture);
+        AiGlobalDailyResearchService service = service(fixture);
 
-        AiDailyPipelineServiceV2.PipelineResult result = service.run(request());
+        AiGlobalDailyResearchService.PipelineResult result = service.run(request());
 
         assertThat(executed).containsExactly(
                 "FETCH_DATA",
@@ -59,7 +59,7 @@ class AiDailyPipelineServiceV2ImplTest {
                 "GENERATE_PREDICTIONS",
                 "GENERATE_REPORTS");
         assertThat(result.steps()).extracting(item -> item.stepKey).containsExactlyElementsOf(
-                AiDailyPipelineServiceV2Impl.DAILY_STEPS);
+                AiGlobalDailyResearchServiceImpl.DAILY_STEPS);
         assertThat(executed).doesNotContain("WEEKLY_EXPERIMENT", "WEEKLY_BACKTEST", "MONTHLY_TRAINING");
         assertThat(result.run().status).isEqualTo("SUCCESS");
         assertThat(result.steps()).extracting(item -> item.status).containsOnly("SUCCESS");
@@ -80,7 +80,7 @@ class AiDailyPipelineServiceV2ImplTest {
         AtomicBoolean firstReportAttempt = new AtomicBoolean(true);
         when(fixture.executor.execute(
                 org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.any(AiDailyPipelineExecutor.PipelineContext.class)))
+                org.mockito.ArgumentMatchers.any(AiGlobalDailyResearchExecutor.PipelineContext.class)))
                 .thenAnswer(invocation -> {
                     String key = invocation.getArgument(0);
                     calls.merge(key, 1, Integer::sum);
@@ -89,13 +89,13 @@ class AiDailyPipelineServiceV2ImplTest {
                     }
                     return success(key);
                 });
-        AiDailyPipelineServiceV2 service = service(fixture);
+        AiGlobalDailyResearchService service = service(fixture);
 
-        AiDailyPipelineServiceV2.PipelineResult failed = service.run(request());
+        AiGlobalDailyResearchService.PipelineResult failed = service.run(request());
         assertThat(failed.run().status).isEqualTo("FAILED");
         assertThat(failed.run().currentStep).isEqualTo("GENERATE_REPORTS");
 
-        AiDailyPipelineServiceV2.PipelineResult recovered = service.run(request());
+        AiGlobalDailyResearchService.PipelineResult recovered = service.run(request());
 
         assertThat(recovered.run().status).isEqualTo("SUCCESS");
         assertThat(calls.get("FETCH_DATA")).isEqualTo(1);
@@ -115,7 +115,7 @@ class AiDailyPipelineServiceV2ImplTest {
                         && "GENERATE_REPORTS".equals(request.failedStep())
                         && request.idempotencyKey().contains("FAILED:GENERATE_REPORTS")));
         verify(fixture.executor).onPipelineFailure(
-                org.mockito.ArgumentMatchers.any(AiDailyPipelineExecutor.PipelineContext.class),
+                org.mockito.ArgumentMatchers.any(AiGlobalDailyResearchExecutor.PipelineContext.class),
                 org.mockito.ArgumentMatchers.eq("GENERATE_REPORTS"),
                 org.mockito.ArgumentMatchers.contains("模型服务暂时不可用"));
     }
@@ -126,20 +126,20 @@ class AiDailyPipelineServiceV2ImplTest {
         List<String> executed = new ArrayList<>();
         when(fixture.executor.execute(
                 org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.any(AiDailyPipelineExecutor.PipelineContext.class)))
+                org.mockito.ArgumentMatchers.any(AiGlobalDailyResearchExecutor.PipelineContext.class)))
                 .thenAnswer(invocation -> {
                     String key = invocation.getArgument(0);
                     executed.add(key);
                     if ("GENERATE_REPORTS".equals(key)) {
-                        return new AiDailyPipelineExecutor.StepOutcome(
+                        return new AiGlobalDailyResearchExecutor.StepOutcome(
                                 3, 2, 1, "{\"lastStock\":\"600519\"}",
                                 "output-" + key, List.of("000001 分析失败"));
                     }
                     return success(key);
                 });
-        AiDailyPipelineServiceV2 service = service(fixture);
+        AiGlobalDailyResearchService service = service(fixture);
 
-        AiDailyPipelineServiceV2.PipelineResult result = service.run(request());
+        AiGlobalDailyResearchService.PipelineResult result = service.run(request());
 
         assertThat(result.run().status).isEqualTo("PARTIAL_SUCCESS");
         assertThat(result.run().failedCount).isEqualTo(1);
@@ -168,25 +168,25 @@ class AiDailyPipelineServiceV2ImplTest {
         Map<String, Integer> calls = new LinkedHashMap<>();
         when(fixture.executor.execute(
                 org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.any(AiDailyPipelineExecutor.PipelineContext.class)))
+                org.mockito.ArgumentMatchers.any(AiGlobalDailyResearchExecutor.PipelineContext.class)))
                 .thenAnswer(invocation -> {
                     String key = invocation.getArgument(0);
                     calls.merge(key, 1, Integer::sum);
                     return success(key);
                 });
         when(fixture.executor.buildResearchDailyReport(
-                org.mockito.ArgumentMatchers.any(AiDailyPipelineExecutor.PipelineContext.class),
+                org.mockito.ArgumentMatchers.any(AiGlobalDailyResearchExecutor.PipelineContext.class),
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.nullable(String.class)))
                 .thenThrow(new IllegalStateException("日报落库失败"))
                 .thenReturn(success("BUILD_RESEARCH_DAILY_REPORT"));
-        AiDailyPipelineServiceV2 service = service(fixture);
+        AiGlobalDailyResearchService service = service(fixture);
 
-        AiDailyPipelineServiceV2.PipelineResult failed = service.run(request());
+        AiGlobalDailyResearchService.PipelineResult failed = service.run(request());
         assertThat(failed.run().status).isEqualTo("FAILED");
         assertThat(failed.run().currentStep).isEqualTo("BUILD_RESEARCH_DAILY_REPORT");
 
-        AiDailyPipelineServiceV2.PipelineResult recovered = service.run(request());
+        AiGlobalDailyResearchService.PipelineResult recovered = service.run(request());
 
         assertThat(recovered.run().status).isEqualTo("SUCCESS");
         assertThat(calls.get("FETCH_DATA")).isEqualTo(1);
@@ -206,7 +206,7 @@ class AiDailyPipelineServiceV2ImplTest {
                 org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any()))
                 .thenReturn(0);
-        AiDailyPipelineServiceV2 service = service(fixture);
+        AiGlobalDailyResearchService service = service(fixture);
 
         assertThatThrownBy(() -> service.run(request()))
                 .isInstanceOf(IllegalStateException.class)
@@ -225,7 +225,7 @@ class AiDailyPipelineServiceV2ImplTest {
                         org.mockito.ArgumentMatchers.any(AiPipelineStep.class),
                         org.mockito.ArgumentMatchers.anyString(),
                         org.mockito.ArgumentMatchers.any());
-        AiDailyPipelineServiceV2 service = service(fixture);
+        AiGlobalDailyResearchService service = service(fixture);
 
         assertThatThrownBy(() -> service.run(request()))
                 .isInstanceOf(IllegalStateException.class)
@@ -244,7 +244,7 @@ class AiDailyPipelineServiceV2ImplTest {
                 org.mockito.ArgumentMatchers.any(AiPipelineStep.class),
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.any())).thenReturn(0);
-        AiDailyPipelineServiceV2 service = service(fixture);
+        AiGlobalDailyResearchService service = service(fixture);
 
         assertThatThrownBy(() -> service.run(request()))
                 .isInstanceOf(IllegalStateException.class)
@@ -281,11 +281,11 @@ class AiDailyPipelineServiceV2ImplTest {
                     }
                     return success(invocation.getArgument(0));
                 });
-        AiDailyPipelineServiceV2 service = new AiDailyPipelineServiceV2Impl(
+        AiGlobalDailyResearchService service = new AiGlobalDailyResearchServiceImpl(
                 fixture.runMapper, fixture.stepMapper, fixture.executor, fixture.reportService,
                 Duration.ofMillis(250), Duration.ofMillis(10));
 
-        AiDailyPipelineServiceV2.PipelineResult result = service.run(request());
+        AiGlobalDailyResearchService.PipelineResult result = service.run(request());
 
         assertThat(result.run().status).isEqualTo("SUCCESS");
         assertThat(heartbeatObserved).isTrue();
@@ -296,18 +296,18 @@ class AiDailyPipelineServiceV2ImplTest {
                 org.mockito.ArgumentMatchers.any());
     }
 
-    private static AiDailyPipelineExecutor.StepOutcome success(String key) {
-        return new AiDailyPipelineExecutor.StepOutcome(
+    private static AiGlobalDailyResearchExecutor.StepOutcome success(String key) {
+        return new AiGlobalDailyResearchExecutor.StepOutcome(
                 3, 3, 0, "{\"step\":\"" + key + "\"}", "output-" + key, List.of());
     }
 
-    private static AiDailyPipelineServiceV2 service(Fixture fixture) {
-        return new AiDailyPipelineServiceV2Impl(
+    private static AiGlobalDailyResearchService service(Fixture fixture) {
+        return new AiGlobalDailyResearchServiceImpl(
                 fixture.runMapper, fixture.stepMapper, fixture.executor, fixture.reportService);
     }
 
-    private static AiDailyPipelineServiceV2.PipelineRequest request() {
-        return new AiDailyPipelineServiceV2.PipelineRequest(
+    private static AiGlobalDailyResearchService.PipelineRequest request() {
+        return new AiGlobalDailyResearchService.PipelineRequest(
                 5L, LocalDate.of(2026, 7, 10), 11L, 21L, null,
                 "AUTO_CLOSE:2026-07-10", "daily-input-fingerprint",
                 LocalDateTime.of(2026, 7, 10, 16, 0));
@@ -316,7 +316,7 @@ class AiDailyPipelineServiceV2ImplTest {
     private static Fixture fixture() {
         AiPipelineRunMapper runMapper = mock(AiPipelineRunMapper.class);
         AiPipelineStepMapper stepMapper = mock(AiPipelineStepMapper.class);
-        AiDailyPipelineExecutor executor = mock(AiDailyPipelineExecutor.class);
+        AiGlobalDailyResearchExecutor executor = mock(AiGlobalDailyResearchExecutor.class);
         AiResearchDailyReportService reportService = mock(AiResearchDailyReportService.class);
         AtomicLong ids = new AtomicLong(4000);
         List<AiPipelineRun> runs = new ArrayList<>();
@@ -420,7 +420,7 @@ class AiDailyPipelineServiceV2ImplTest {
     private record Fixture(
             AiPipelineRunMapper runMapper,
             AiPipelineStepMapper stepMapper,
-            AiDailyPipelineExecutor executor,
+            AiGlobalDailyResearchExecutor executor,
             AiResearchDailyReportService reportService
     ) {
     }

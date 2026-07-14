@@ -1,14 +1,14 @@
-package com.maogou.stock.service.impl.v2;
+package com.maogou.stock.service.impl.research;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.maogou.stock.domain.entity.v2.AiDriftEvent;
-import com.maogou.stock.domain.entity.v2.AiFactorPerformanceV2;
-import com.maogou.stock.domain.entity.v2.AiFactorValueV2;
-import com.maogou.stock.domain.entity.v2.AiLabelV2;
-import com.maogou.stock.domain.entity.v2.AiSampleV2;
-import com.maogou.stock.mapper.v2.AiDriftEventMapper;
-import com.maogou.stock.mapper.v2.AiFactorPerformanceV2Mapper;
-import com.maogou.stock.service.v2.AiFactorPerformanceService;
+import com.maogou.stock.domain.entity.research.AiDriftEvent;
+import com.maogou.stock.domain.entity.research.AiFactorPerformance;
+import com.maogou.stock.domain.entity.research.AiFactorValue;
+import com.maogou.stock.domain.entity.research.AiSampleLabel;
+import com.maogou.stock.domain.entity.research.AiSample;
+import com.maogou.stock.mapper.research.AiDriftEventMapper;
+import com.maogou.stock.mapper.research.AiFactorPerformanceMapper;
+import com.maogou.stock.service.research.AiFactorPerformanceService;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -41,7 +41,7 @@ class AiFactorPerformanceServiceImplTest {
         AiFactorPerformanceService.EvaluationResult result = service.evaluateAndStore(batch(observations));
 
         assertThat(result.performances()).hasSize(1);
-        AiFactorPerformanceV2 performance = result.performances().get(0);
+        AiFactorPerformance performance = result.performances().get(0);
         assertThat(performance.factorCode).isEqualTo("MOMENTUM_3D");
         assertThat(performance.factorVersion).isEqualTo("FACTOR_V2_1");
         assertThat(performance.horizonDays).isEqualTo(3);
@@ -74,7 +74,7 @@ class AiFactorPerformanceServiceImplTest {
         highPe.factor().factorGroup = "FUNDAMENTAL";
         highPe.factor().rawValue = new BigDecimal("80");
 
-        AiFactorPerformanceV2 performance = service.evaluateAndStore(
+        AiFactorPerformance performance = service.evaluateAndStore(
                 batch(List.of(lowPe, highPe))).performances().get(0);
 
         assertThat(performance.successCount).isEqualTo(2);
@@ -114,7 +114,7 @@ class AiFactorPerformanceServiceImplTest {
 
         AiFactorPerformanceService.EvaluationResult result = service.evaluateAndStore(withBaseline);
 
-        AiFactorPerformanceV2 performance = result.performances().get(0);
+        AiFactorPerformance performance = result.performances().get(0);
         assertThat(performance.sampleCount).isEqualTo(20);
         assertThat(performance.confidenceLevel).isEqualTo("MEDIUM");
         assertThat(performance.psiScore).isGreaterThan(new BigDecimal("0.25"));
@@ -133,7 +133,7 @@ class AiFactorPerformanceServiceImplTest {
         AiFactorPerformanceService.Observation contaminated = observation(
                 401L, "600401", "2026-07-01", "1.0", "0.02", "-0.01");
         contaminated.factor().factorVersion = "FACTOR_V1";
-        contaminated.label().horizonDays = 5;
+        contaminated.label().horizonTradingDays = 5;
 
         assertThatThrownBy(() -> service.evaluateAndStore(batch(List.of(contaminated))))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -149,7 +149,7 @@ class AiFactorPerformanceServiceImplTest {
         AiFactorPerformanceService.Observation flat = observation(
                 502L, "600502", "2026-07-01", "1.0", "0.00", "-0.01");
 
-        AiFactorPerformanceV2 performance = service.evaluateAndStore(
+        AiFactorPerformance performance = service.evaluateAndStore(
                 batch(List.of(hit, flat))).performances().get(0);
 
         assertThat(performance.sampleCount).isEqualTo(2);
@@ -177,8 +177,8 @@ class AiFactorPerformanceServiceImplTest {
                 observation(701L, "600701", "2026-07-01", "1.0", "0.02", "-0.01"),
                 observation(702L, "600702", "2026-07-01", "-1.0", "-0.02", "-0.02")));
 
-        AiFactorPerformanceV2 first = service.evaluateAndStore(batch).performances().get(0);
-        AiFactorPerformanceV2 repeated = service.evaluateAndStore(batch).performances().get(0);
+        AiFactorPerformance first = service.evaluateAndStore(batch).performances().get(0);
+        AiFactorPerformance repeated = service.evaluateAndStore(batch).performances().get(0);
 
         assertThat(repeated.id).isEqualTo(first.id);
         assertThat(repeated.inputFingerprint).isEqualTo(first.inputFingerprint);
@@ -245,7 +245,7 @@ class AiFactorPerformanceServiceImplTest {
             String excessReturn,
             String adverseReturn
     ) {
-        AiSampleV2 sample = new AiSampleV2();
+        AiSample sample = new AiSample();
         sample.id = sampleId;
         sample.userId = 5L;
         sample.stockCode = stockCode;
@@ -254,7 +254,7 @@ class AiFactorPerformanceServiceImplTest {
         sample.marketRegime = "BULL";
         sample.sourceFingerprint = "sample-" + sampleId;
 
-        AiFactorValueV2 factor = new AiFactorValueV2();
+        AiFactorValue factor = new AiFactorValue();
         factor.id = sampleId + 1000;
         factor.userId = 5L;
         factor.sampleId = sampleId;
@@ -267,33 +267,30 @@ class AiFactorPerformanceServiceImplTest {
         factor.missing = 0;
         factor.inputFingerprint = "factor-" + sampleId;
 
-        AiLabelV2 label = new AiLabelV2();
+        AiSampleLabel label = new AiSampleLabel();
         label.id = sampleId + 2000;
-        label.userId = 5L;
         label.sampleId = sampleId;
-        label.predictionId = sampleId + 3000;
         label.stockCode = stockCode;
-        label.horizonDays = 3;
-        label.labelVersion = "LABEL_V2_1";
+        label.horizonTradingDays = 3;
+        label.labelVersion = "LABEL/1.0.0";
         label.inputFingerprint = "label-" + sampleId;
         label.excessReturn = new BigDecimal(excessReturn);
         label.maxAdverseReturn = new BigDecimal(adverseReturn);
         label.executionStatus = "EXECUTED";
-        label.actionEvaluation = "HIT";
-        label.labelStatus = "VERIFIED";
+        label.labelStatus = "MATURED";
         label.verifiedAt = LocalDate.parse(tradeDate).plusDays(5).atTime(16, 0);
         return new AiFactorPerformanceService.Observation(sample, factor, label);
     }
 
     private static Fixture fixture() {
-        AiFactorPerformanceV2Mapper performanceMapper = mock(AiFactorPerformanceV2Mapper.class);
+        AiFactorPerformanceMapper performanceMapper = mock(AiFactorPerformanceMapper.class);
         AiDriftEventMapper driftMapper = mock(AiDriftEventMapper.class);
-        List<AiFactorPerformanceV2> database = new ArrayList<>();
+        List<AiFactorPerformance> database = new ArrayList<>();
         List<AiDriftEvent> driftDatabase = new ArrayList<>();
         AtomicLong ids = new AtomicLong(700);
         when(performanceMapper.insertBatchImmutable(anyList())).thenAnswer(invocation -> {
-            List<AiFactorPerformanceV2> items = invocation.getArgument(0);
-            for (AiFactorPerformanceV2 item : items) {
+            List<AiFactorPerformance> items = invocation.getArgument(0);
+            for (AiFactorPerformance item : items) {
                 boolean exists = database.stream().anyMatch(existing ->
                         existing.userId.equals(item.userId)
                                 && existing.factorCode.equals(item.factorCode)
@@ -337,7 +334,7 @@ class AiFactorPerformanceServiceImplTest {
     }
 
     private record Fixture(
-            AiFactorPerformanceV2Mapper performanceMapper,
+            AiFactorPerformanceMapper performanceMapper,
             AiDriftEventMapper driftMapper
     ) {
     }

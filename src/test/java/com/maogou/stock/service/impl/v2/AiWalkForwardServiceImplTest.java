@@ -1,13 +1,13 @@
-package com.maogou.stock.service.impl.v2;
+package com.maogou.stock.service.impl.research;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.maogou.stock.domain.entity.v2.AiWalkForwardBaseline;
-import com.maogou.stock.domain.entity.v2.AiWalkForwardFold;
-import com.maogou.stock.domain.entity.v2.AiWalkForwardRun;
-import com.maogou.stock.mapper.v2.AiWalkForwardBaselineMapper;
-import com.maogou.stock.mapper.v2.AiWalkForwardFoldMapper;
-import com.maogou.stock.mapper.v2.AiWalkForwardRunMapper;
-import com.maogou.stock.service.v2.AiWalkForwardService;
+import com.maogou.stock.domain.entity.research.AiWalkForwardBaseline;
+import com.maogou.stock.domain.entity.research.AiWalkForwardFold;
+import com.maogou.stock.domain.entity.research.AiWalkForwardRun;
+import com.maogou.stock.mapper.research.AiWalkForwardBaselineMapper;
+import com.maogou.stock.mapper.research.AiWalkForwardFoldMapper;
+import com.maogou.stock.mapper.research.AiWalkForwardRunMapper;
+import com.maogou.stock.service.research.AiWalkForwardService;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;

@@ -1,22 +1,22 @@
-package com.maogou.stock.service.impl.v2;
+package com.maogou.stock.service.impl.research;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.maogou.stock.domain.entity.v2.AiDriftEvent;
-import com.maogou.stock.domain.entity.v2.AiLabelV2;
-import com.maogou.stock.domain.entity.v2.AiPredictionV2;
-import com.maogou.stock.domain.entity.v2.AiShadowEvaluation;
-import com.maogou.stock.domain.entity.v2.AiShadowEvaluationItem;
-import com.maogou.stock.domain.entity.v2.AiStrategyGovernanceEvent;
-import com.maogou.stock.domain.entity.v2.AiStrategyRelease;
-import com.maogou.stock.mapper.v2.AiDriftEventMapper;
-import com.maogou.stock.mapper.v2.AiLabelV2Mapper;
-import com.maogou.stock.mapper.v2.AiPredictionV2Mapper;
-import com.maogou.stock.mapper.v2.AiShadowEvaluationItemMapper;
-import com.maogou.stock.mapper.v2.AiShadowEvaluationMapper;
-import com.maogou.stock.mapper.v2.AiStrategyReleaseMapper;
-import com.maogou.stock.service.v2.AiShadowEvaluationService;
-import com.maogou.stock.service.v2.AiStrategyGovernanceService;
+import com.maogou.stock.domain.entity.research.AiDriftEvent;
+import com.maogou.stock.domain.entity.research.AiSampleLabel;
+import com.maogou.stock.domain.entity.research.AiPrediction;
+import com.maogou.stock.domain.entity.research.AiShadowEvaluation;
+import com.maogou.stock.domain.entity.research.AiShadowEvaluationItem;
+import com.maogou.stock.domain.entity.research.AiStrategyGovernanceEvent;
+import com.maogou.stock.domain.entity.research.AiStrategyRelease;
+import com.maogou.stock.mapper.research.AiDriftEventMapper;
+import com.maogou.stock.mapper.research.AiSampleLabelMapper;
+import com.maogou.stock.mapper.research.AiPredictionMapper;
+import com.maogou.stock.mapper.research.AiShadowEvaluationItemMapper;
+import com.maogou.stock.mapper.research.AiShadowEvaluationMapper;
+import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
+import com.maogou.stock.service.research.AiShadowEvaluationService;
+import com.maogou.stock.service.research.AiStrategyGovernanceService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -42,15 +42,15 @@ import static org.mockito.Mockito.when;
 class AiShadowEvaluationServiceImplTest {
 
     private static final ObjectMapper JSON = new ObjectMapper().findAndRegisterModules();
-    private static final Map<Long, AiPredictionV2> PREDICTION_DB = new ConcurrentHashMap<>();
-    private static final Map<Long, AiLabelV2> LABEL_DB = new ConcurrentHashMap<>();
+    private static final Map<Long, AiPrediction> PREDICTION_DB = new ConcurrentHashMap<>();
+    private static final Map<Long, AiSampleLabel> LABEL_DB = new ConcurrentHashMap<>();
 
     @Test
     void pairsImmutableSamplesAndComputesComparableWindowMetricsWithoutChangingUserResults() throws Exception {
         Fixture fixture = fixture();
         AiShadowEvaluationService service = service(fixture);
         AiShadowEvaluationService.EvaluationRequest request = passingRequest(new BigDecimal("0.04"));
-        AiPredictionV2 userPrediction = request.pairs().get(0).champion();
+        AiPrediction userPrediction = request.pairs().get(0).champion();
         String originalAction = userPrediction.action;
         String originalDirection = userPrediction.targetDirection;
 
@@ -102,7 +102,7 @@ class AiShadowEvaluationServiceImplTest {
         assertThat(fixture.evaluations).hasSize(1);
         assertThat(fixture.items).hasSize(2);
 
-        AiPredictionV2 changed = prediction(299L, 102L, 2L, "UP", "0.75", "0.65");
+        AiPrediction changed = prediction(299L, 102L, 2L, "UP", "0.75", "0.65");
         AiShadowEvaluationService.EvaluationRequest conflicting = copyWithPairs(request, List.of(
                 request.pairs().get(0),
                 new AiShadowEvaluationService.PredictionPair(
@@ -147,8 +147,8 @@ class AiShadowEvaluationServiceImplTest {
         Fixture fixture = fixture();
         AiShadowEvaluationService service = service(fixture);
         AiShadowEvaluationService.EvaluationRequest request = passingRequest(new BigDecimal("0.04"));
-        AiPredictionV2 champion = request.pairs().get(0).champion();
-        AiPredictionV2 sameId = prediction(champion.id, champion.sampleId, 2L, "UP", "0.80", "0.70");
+        AiPrediction champion = request.pairs().get(0).champion();
+        AiPrediction sameId = prediction(champion.id, champion.sampleId, 2L, "UP", "0.80", "0.70");
 
         assertThatThrownBy(() -> service.evaluate(copyWithPairs(request, List.of(
                 new AiShadowEvaluationService.PredictionPair(
@@ -156,7 +156,7 @@ class AiShadowEvaluationServiceImplTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("不能相同");
 
-        AiPredictionV2 differentSample = prediction(999L, 999L, 2L, "UP", "0.80", "0.70");
+        AiPrediction differentSample = prediction(999L, 999L, 2L, "UP", "0.80", "0.70");
         assertThatThrownBy(() -> service.evaluate(copyWithPairs(request, List.of(
                 new AiShadowEvaluationService.PredictionPair(
                         champion, differentSample, request.pairs().get(0).label())))))
@@ -301,10 +301,10 @@ class AiShadowEvaluationServiceImplTest {
     }
 
     private static AiShadowEvaluationService.EvaluationRequest passingRequest(BigDecimal driftScore) {
-        AiPredictionV2 championOne = prediction(201L, 101L, 1L, "UP", "0.80", "0.70");
-        AiPredictionV2 challengerOne = prediction(301L, 101L, 2L, "UP", "0.90", "0.80");
-        AiPredictionV2 championTwo = prediction(202L, 102L, 1L, "DOWN", "0.30", "0.65");
-        AiPredictionV2 challengerTwo = prediction(302L, 102L, 2L, "UP", "0.70", "0.75");
+        AiPrediction championOne = prediction(201L, 101L, 1L, "UP", "0.80", "0.70");
+        AiPrediction challengerOne = prediction(301L, 101L, 2L, "UP", "0.90", "0.80");
+        AiPrediction championTwo = prediction(202L, 102L, 1L, "DOWN", "0.30", "0.65");
+        AiPrediction challengerTwo = prediction(302L, 102L, 2L, "UP", "0.70", "0.75");
         List<AiShadowEvaluationService.PredictionPair> pairs = List.of(
                 new AiShadowEvaluationService.PredictionPair(
                         championOne, challengerOne, label(401L, championOne, "0.10")),
@@ -340,7 +340,7 @@ class AiShadowEvaluationServiceImplTest {
                 source.governance(), source.evaluatedAt());
     }
 
-    private static AiPredictionV2 prediction(
+    private static AiPrediction prediction(
             Long id,
             Long sampleId,
             Long releaseId,
@@ -348,7 +348,7 @@ class AiShadowEvaluationServiceImplTest {
             String probabilityUp,
             String score
     ) {
-        AiPredictionV2 value = new AiPredictionV2();
+        AiPrediction value = new AiPrediction();
         value.id = id;
         value.userId = 5L;
         value.sampleId = sampleId;
@@ -368,22 +368,20 @@ class AiShadowEvaluationServiceImplTest {
         value.actionBucket = value.action;
         value.targetDirection = direction;
         value.predictedAt = LocalDateTime.of(2026, 7, 10, 16, 0);
-        PREDICTION_DB.putIfAbsent(value.id, JSON.convertValue(value, AiPredictionV2.class));
+        PREDICTION_DB.putIfAbsent(value.id, JSON.convertValue(value, AiPrediction.class));
         return value;
     }
 
-    private static AiLabelV2 label(Long id, AiPredictionV2 prediction, String excessReturn) {
-        AiLabelV2 value = new AiLabelV2();
+    private static AiSampleLabel label(Long id, AiPrediction prediction, String excessReturn) {
+        AiSampleLabel value = new AiSampleLabel();
         value.id = id;
-        value.userId = prediction.userId;
-        value.predictionId = prediction.id;
         value.sampleId = prediction.sampleId;
         value.stockCode = prediction.stockCode;
-        value.horizonDays = prediction.horizonDays;
+        value.horizonTradingDays = prediction.horizonDays;
         value.excessReturn = new BigDecimal(excessReturn);
-        value.labelStatus = "VERIFIED";
-        value.hitDirection = 1;
-        LABEL_DB.putIfAbsent(value.id, JSON.convertValue(value, AiLabelV2.class));
+        value.labelStatus = "MATURED";
+        value.executionStatus = "EXECUTED";
+        LABEL_DB.putIfAbsent(value.id, JSON.convertValue(value, AiSampleLabel.class));
         return value;
     }
 
@@ -393,8 +391,8 @@ class AiShadowEvaluationServiceImplTest {
         AiShadowEvaluationMapper evaluationMapper = mock(AiShadowEvaluationMapper.class);
         AiShadowEvaluationItemMapper itemMapper = mock(AiShadowEvaluationItemMapper.class);
         AiStrategyReleaseMapper releaseMapper = mock(AiStrategyReleaseMapper.class);
-        AiPredictionV2Mapper predictionMapper = mock(AiPredictionV2Mapper.class);
-        AiLabelV2Mapper labelMapper = mock(AiLabelV2Mapper.class);
+        AiPredictionMapper predictionMapper = mock(AiPredictionMapper.class);
+        AiSampleLabelMapper labelMapper = mock(AiSampleLabelMapper.class);
         AiDriftEventMapper driftMapper = mock(AiDriftEventMapper.class);
         AiStrategyGovernanceService governanceService = mock(AiStrategyGovernanceService.class);
         AiStrategyRelease champion = release(1L, "CHAMPION", "ACTIVE", 11L);
@@ -510,8 +508,8 @@ class AiShadowEvaluationServiceImplTest {
             AiShadowEvaluationMapper evaluationMapper,
             AiShadowEvaluationItemMapper itemMapper,
             AiStrategyReleaseMapper releaseMapper,
-            AiPredictionV2Mapper predictionMapper,
-            AiLabelV2Mapper labelMapper,
+            AiPredictionMapper predictionMapper,
+            AiSampleLabelMapper labelMapper,
             AiDriftEventMapper driftMapper,
             AiStrategyGovernanceService governanceService,
             AiStrategyRelease champion,

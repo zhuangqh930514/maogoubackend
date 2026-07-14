@@ -1,15 +1,15 @@
-package com.maogou.stock.service.impl.v2;
+package com.maogou.stock.service.impl.research;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.maogou.stock.domain.entity.v2.AiModelVersion;
-import com.maogou.stock.domain.entity.v2.AiTrainingDataset;
-import com.maogou.stock.domain.entity.v2.AiTrainingDatasetItem;
-import com.maogou.stock.domain.entity.v2.AiTrainingDatasetSource;
-import com.maogou.stock.mapper.v2.AiModelVersionMapper;
-import com.maogou.stock.mapper.v2.AiTrainingDatasetItemMapper;
-import com.maogou.stock.mapper.v2.AiTrainingDatasetMapper;
-import com.maogou.stock.service.v2.AiTrainingDatasetService;
+import com.maogou.stock.domain.entity.research.AiModelVersion;
+import com.maogou.stock.domain.entity.research.AiTrainingDataset;
+import com.maogou.stock.domain.entity.research.AiTrainingDatasetItem;
+import com.maogou.stock.domain.entity.research.AiTrainingDatasetSource;
+import com.maogou.stock.mapper.research.AiModelVersionMapper;
+import com.maogou.stock.mapper.research.AiTrainingDatasetItemMapper;
+import com.maogou.stock.mapper.research.AiTrainingDatasetMapper;
+import com.maogou.stock.service.research.AiTrainingDatasetService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 

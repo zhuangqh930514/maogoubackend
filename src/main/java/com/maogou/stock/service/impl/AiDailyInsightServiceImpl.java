@@ -28,7 +28,7 @@ import com.maogou.stock.mapper.AiPredictionSampleMapper;
 import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.AiDailyInsightService;
 import com.maogou.stock.service.TradingCalendarService;
-import com.maogou.stock.service.v2.AiDailyInsightV2Projector;
+import com.maogou.stock.service.research.AiDailyDecisionProjector;
 import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -69,7 +69,7 @@ public class AiDailyInsightServiceImpl implements AiDailyInsightService {
     private final AiLearningJobLogMapper jobLogMapper;
     private final TradingCalendarService tradingCalendarService;
     private final ObjectMapper objectMapper;
-    private final AiDailyInsightV2Projector v2Projector;
+    private final AiDailyDecisionProjector v2Projector;
 
     public AiDailyInsightServiceImpl(
             AiDailyInsightSnapshotMapper snapshotMapper,
@@ -84,7 +84,7 @@ public class AiDailyInsightServiceImpl implements AiDailyInsightService {
             AiLearningJobLogMapper jobLogMapper,
             TradingCalendarService tradingCalendarService,
             ObjectMapper objectMapper,
-            AiDailyInsightV2Projector v2Projector
+            AiDailyDecisionProjector v2Projector
     ) {
         this.snapshotMapper = snapshotMapper;
         this.itemMapper = itemMapper;
@@ -267,7 +267,7 @@ public class AiDailyInsightServiceImpl implements AiDailyInsightService {
         return pipelineStatus == null
                 || pipelineStatus.isBlank()
                 || "MANUAL".equalsIgnoreCase(pipelineStatus)
-                || "LEGACY".equalsIgnoreCase(pipelineStatus);
+                || "MIGRATED".equalsIgnoreCase(pipelineStatus);
     }
 
     private AiDailyInsightItem buildItem(

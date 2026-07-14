@@ -6,13 +6,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.maogou.stock.domain.entity.AiDailyInsightItem;
 import com.maogou.stock.domain.entity.AiDailyInsightSnapshot;
 import com.maogou.stock.domain.entity.TradeRecord;
-import com.maogou.stock.domain.entity.v2.AiResearchDailyReport;
+import com.maogou.stock.domain.entity.research.AiResearchDailyReport;
 import com.maogou.stock.dto.ai.AiResearchDailyReportPayloads;
-import com.maogou.stock.mapper.v2.AiResearchDailyReportMapper;
+import com.maogou.stock.mapper.research.AiResearchDailyReportMapper;
 import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.AiResearchDailyReportService;
 import com.maogou.stock.service.TradingCalendarService;
-import com.maogou.stock.service.v2.AiResearchDailyReportSource;
+import com.maogou.stock.service.research.AiResearchDailyReportSource;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 

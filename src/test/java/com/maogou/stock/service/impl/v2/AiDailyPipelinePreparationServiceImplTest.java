@@ -1,10 +1,10 @@
-package com.maogou.stock.service.impl.v2;
+package com.maogou.stock.service.impl.research;
 
-import com.maogou.stock.domain.entity.v2.AiDataBatch;
-import com.maogou.stock.domain.entity.v2.AiStrategyRelease;
-import com.maogou.stock.mapper.v2.AiStrategyReleaseMapper;
-import com.maogou.stock.service.v2.AiDailyPipelinePreparationService;
-import com.maogou.stock.service.v2.AiSampleSnapshotService;
+import com.maogou.stock.domain.entity.research.AiDataBatch;
+import com.maogou.stock.domain.entity.research.AiStrategyRelease;
+import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
+import com.maogou.stock.service.research.AiGlobalResearchPreparationService;
+import com.maogou.stock.service.research.AiSampleSnapshotService;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;
@@ -16,7 +16,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-class AiDailyPipelinePreparationServiceImplTest {
+class AiGlobalResearchPreparationServiceImplTest {
 
     @Test
     void preparesARealBatchAndUsesTheActiveChampion() {
@@ -32,10 +32,10 @@ class AiDailyPipelinePreparationServiceImplTest {
         release.status = "ACTIVE";
         release.releaseRole = "CHAMPION";
         when(releaseMapper.selectActiveChampionForUpdate(5L)).thenReturn(release);
-        AiDailyPipelinePreparationService service = new AiDailyPipelinePreparationServiceImpl(
+        AiGlobalResearchPreparationService service = new AiGlobalResearchPreparationServiceImpl(
                 snapshotService, releaseMapper);
 
-        AiDailyPipelinePreparationService.PreparedPipeline prepared = service.prepare(
+        AiGlobalResearchPreparationService.PreparedPipeline prepared = service.prepare(
                 5L,
                 LocalDate.of(2026, 7, 10),
                 LocalDateTime.of(2026, 7, 10, 16, 0),
@@ -60,7 +60,7 @@ class AiDailyPipelinePreparationServiceImplTest {
         release.status = "ACTIVE";
         release.releaseRole = "CHAMPION";
         when(releaseMapper.selectActiveChampionForUpdate(5L)).thenReturn(release);
-        AiDailyPipelinePreparationService service = new AiDailyPipelinePreparationServiceImpl(
+        AiGlobalResearchPreparationService service = new AiGlobalResearchPreparationServiceImpl(
                 snapshotService, releaseMapper);
 
         service.prepare(5L, LocalDate.of(2026, 7, 10),
@@ -94,10 +94,10 @@ class AiDailyPipelinePreparationServiceImplTest {
             release.id = 92L;
             return 1;
         });
-        AiDailyPipelinePreparationService service = new AiDailyPipelinePreparationServiceImpl(
+        AiGlobalResearchPreparationService service = new AiGlobalResearchPreparationServiceImpl(
                 snapshotService, releaseMapper);
 
-        AiDailyPipelinePreparationService.PreparedPipeline prepared = service.prepare(
+        AiGlobalResearchPreparationService.PreparedPipeline prepared = service.prepare(
                 5L,
                 LocalDate.of(2026, 7, 10),
                 LocalDateTime.of(2026, 7, 10, 16, 0),

@@ -1,16 +1,16 @@
-package com.maogou.stock.service.impl.v2;
+package com.maogou.stock.service.impl.research;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.maogou.stock.config.AppProperties;
-import com.maogou.stock.domain.entity.v2.AiModelVersion;
-import com.maogou.stock.domain.entity.v2.AiStrategyRelease;
-import com.maogou.stock.domain.entity.v2.AiTrainingDataset;
-import com.maogou.stock.domain.entity.v2.AiTrainingSourceSummary;
-import com.maogou.stock.mapper.v2.AiStrategyReleaseMapper;
-import com.maogou.stock.mapper.v2.AiTrainingDatasetItemMapper;
-import com.maogou.stock.service.v2.AiEvolutionAutomationService;
-import com.maogou.stock.service.v2.AiModelTrainer;
-import com.maogou.stock.service.v2.AiTrainingDatasetService;
+import com.maogou.stock.domain.entity.research.AiModelVersion;
+import com.maogou.stock.domain.entity.research.AiStrategyRelease;
+import com.maogou.stock.domain.entity.research.AiTrainingDataset;
+import com.maogou.stock.domain.entity.research.AiTrainingSourceSummary;
+import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
+import com.maogou.stock.mapper.research.AiTrainingDatasetItemMapper;
+import com.maogou.stock.service.research.AiEvolutionAutomationService;
+import com.maogou.stock.service.research.AiModelTrainer;
+import com.maogou.stock.service.research.AiTrainingDatasetService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
@@ -48,7 +48,7 @@ class AiMonthlyTrainingRunnerImplTest {
         assertThat(result.status()).isEqualTo("SKIPPED");
         assertThat(result.message()).contains("120 / 1000");
         verify(fixture.datasetItemMapper).selectDominantSourceSummary(
-                5L, "LABEL_V2.2", 3, now());
+                5L, "LABEL/1.0.0", 3, now());
         verify(fixture.datasetService, never()).buildDataset(any());
         verify(fixture.modelTrainer, never()).train(any());
     }

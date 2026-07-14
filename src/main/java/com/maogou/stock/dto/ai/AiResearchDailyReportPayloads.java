@@ -2,7 +2,7 @@ package com.maogou.stock.dto.ai;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
-import com.maogou.stock.domain.entity.v2.AiResearchDailyReport;
+import com.maogou.stock.domain.entity.research.AiResearchDailyReport;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;

@@ -1,11 +1,11 @@
-package com.maogou.stock.service.impl.v2;
+package com.maogou.stock.service.impl.research;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.maogou.stock.domain.entity.v2.AiStrategyGovernanceEvent;
-import com.maogou.stock.domain.entity.v2.AiStrategyRelease;
-import com.maogou.stock.mapper.v2.AiStrategyGovernanceEventMapper;
-import com.maogou.stock.mapper.v2.AiStrategyReleaseMapper;
-import com.maogou.stock.service.v2.AiStrategyGovernanceService;
+import com.maogou.stock.domain.entity.research.AiStrategyGovernanceEvent;
+import com.maogou.stock.domain.entity.research.AiStrategyRelease;
+import com.maogou.stock.mapper.research.AiStrategyGovernanceEventMapper;
+import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
+import com.maogou.stock.service.research.AiStrategyGovernanceService;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
