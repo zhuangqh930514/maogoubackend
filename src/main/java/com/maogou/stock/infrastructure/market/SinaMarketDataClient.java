@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -792,6 +793,12 @@ public class SinaMarketDataClient implements MarketDataClient, ResearchMarketDat
                 ? fetchA50Kline(period, limit)
                 : fetchSinaKline(symbol, period, limit);
         boolean closingBarAvailable = !asOfTime.toLocalTime().isBefore(LocalTime.of(15, 5));
+        boolean intradayAggregated = false;
+        if (!a50 && closingBarAvailable && isDailyPeriod(period)
+                && loaded.stream().noneMatch(point -> point.tradeDate().isEqual(asOfTime.toLocalDate()))) {
+            loaded = appendCompletedIntradayDailyBar(symbol, loaded, asOfTime.toLocalDate());
+            intradayAggregated = true;
+        }
         List<KlinePointResponse> pointInTime = loaded.stream()
                 .filter(point -> point.tradeDate().isBefore(asOfTime.toLocalDate())
                         || (closingBarAvailable && point.tradeDate().isEqual(asOfTime.toLocalDate())))
@@ -802,7 +809,7 @@ public class SinaMarketDataClient implements MarketDataClient, ResearchMarketDat
                 symbol,
                 normalizedPeriod,
                 "NONE",
-                "SINA",
+                intradayAggregated ? "SINA_60M_AGGREGATED" : "SINA",
                 asOfTime,
                 fetchedAt,
                 pointInTime
@@ -817,13 +824,23 @@ public class SinaMarketDataClient implements MarketDataClient, ResearchMarketDat
             default -> "240";
         };
         int dataLength = Math.max(1, Math.min(limit, 240));
+        return fetchSinaKlinePayload(
+                sinaSymbol, scale, dataLength, this::parseSinaKlinePayload);
+    }
+
+    private <T> T fetchSinaKlinePayload(
+            String sinaSymbol,
+            String scale,
+            int dataLength,
+            Function<String, T> parser
+    ) {
         URI jsonUri = URI.create("https://quotes.sina.cn/cn/api/json_v2.php/"
                 + "CN_MarketDataService.getKLineData?symbol=" + sinaSymbol
                 + "&scale=" + scale
                 + "&ma=no&datalen=" + dataLength);
         RuntimeException jsonFailure;
         try {
-            return fetchSinaKlineChannel(jsonUri, "JSON");
+            return fetchSinaKlineChannel(jsonUri, "JSON", parser);
         } catch (RuntimeException exception) {
             jsonFailure = exception;
         }
@@ -833,21 +850,20 @@ public class SinaMarketDataClient implements MarketDataClient, ResearchMarketDat
                 + "&scale=" + scale
                 + "&ma=no&datalen=" + dataLength);
         try {
-            return fetchSinaKlineChannel(jsonpUri, "JSONP");
+            return fetchSinaKlineChannel(jsonpUri, "JSONP", parser);
         } catch (RuntimeException exception) {
             exception.addSuppressed(jsonFailure);
-            throw new IllegalStateException("获取新浪 K 线行情失败：" + symbol
+            throw new IllegalStateException("获取新浪 K 线行情失败：" + sinaSymbol
                     + "；" + failureSummary(jsonFailure)
                     + "；" + failureSummary(exception), exception);
         }
     }
 
-    private List<KlinePointResponse> fetchSinaKlineChannel(URI uri, String channel) {
+    private <T> T fetchSinaKlineChannel(URI uri, String channel, Function<String, T> parser) {
         RuntimeException lastError = null;
         for (int attempt = 0; attempt < 2; attempt++) {
             try {
-                return parseSinaKlinePayload(getText(
-                        uri, StandardCharsets.UTF_8, "https://finance.sina.com.cn/"));
+                return parser.apply(getText(uri, StandardCharsets.UTF_8, "https://finance.sina.com.cn/"));
             } catch (RuntimeException exception) {
                 lastError = exception;
                 if (attempt == 0) {
@@ -876,6 +892,82 @@ public class SinaMarketDataClient implements MarketDataClient, ResearchMarketDat
     }
 
     private List<KlinePointResponse> parseSinaKlinePayload(String payload) {
+        JsonNode points = parseSinaKlineArray(payload);
+        List<KlinePointResponse> result = new ArrayList<>();
+        for (JsonNode point : points) {
+            result.add(new KlinePointResponse(
+                    LocalDate.parse(point.path("day").asText()),
+                    bd(point.path("open").asText("0")),
+                    bd(point.path("close").asText("0")),
+                    bd(point.path("low").asText("0")),
+                    bd(point.path("high").asText("0")),
+                    point.path("volume").asLong(0),
+                    nullableDecimal(point.path("amount"))
+            ));
+        }
+        if (result.isEmpty()) {
+            throw new IllegalStateException("新浪 K 线返回为空");
+        }
+        return result;
+    }
+
+    private List<KlinePointResponse> appendCompletedIntradayDailyBar(
+            String symbol,
+            List<KlinePointResponse> daily,
+            LocalDate tradeDate
+    ) {
+        String sinaSymbol = toSinaSymbol(symbol);
+        List<IntradayKlinePoint> intraday = fetchSinaKlinePayload(
+                sinaSymbol, "60", 8, this::parseSinaIntradayKlinePayload);
+        Map<LocalTime, IntradayKlinePoint> bars = new LinkedHashMap<>();
+        intraday.stream()
+                .filter(point -> point.time().toLocalDate().isEqual(tradeDate))
+                .forEach(point -> bars.put(point.time().toLocalTime(), point));
+        List<LocalTime> expectedTimes = List.of(
+                LocalTime.of(10, 30), LocalTime.of(11, 30),
+                LocalTime.of(14, 0), LocalTime.of(15, 0));
+        if (!bars.keySet().containsAll(expectedTimes)) {
+            throw new IllegalStateException("新浪 60 分钟 K 线未覆盖完整交易时段：" + tradeDate);
+        }
+        List<IntradayKlinePoint> completed = expectedTimes.stream().map(bars::get).toList();
+        BigDecimal high = completed.stream().map(IntradayKlinePoint::high).max(BigDecimal::compareTo).orElseThrow();
+        BigDecimal low = completed.stream().map(IntradayKlinePoint::low).min(BigDecimal::compareTo).orElseThrow();
+        long volume = completed.stream().mapToLong(IntradayKlinePoint::volume).sum();
+        KlinePointResponse synthesized = new KlinePointResponse(
+                tradeDate,
+                completed.get(0).open(),
+                completed.get(completed.size() - 1).close(),
+                low,
+                high,
+                volume,
+                null
+        );
+        List<KlinePointResponse> result = new ArrayList<>(daily);
+        result.add(synthesized);
+        result.sort(java.util.Comparator.comparing(KlinePointResponse::tradeDate));
+        return result;
+    }
+
+    private List<IntradayKlinePoint> parseSinaIntradayKlinePayload(String payload) {
+        JsonNode points = parseSinaKlineArray(payload);
+        List<IntradayKlinePoint> result = new ArrayList<>();
+        for (JsonNode point : points) {
+            result.add(new IntradayKlinePoint(
+                    LocalDateTime.parse(point.path("day").asText(), NEWS_TIME),
+                    bd(point.path("open").asText("0")),
+                    bd(point.path("close").asText("0")),
+                    bd(point.path("low").asText("0")),
+                    bd(point.path("high").asText("0")),
+                    point.path("volume").asLong(0)
+            ));
+        }
+        if (result.isEmpty()) {
+            throw new IllegalStateException("新浪分钟 K 线返回为空");
+        }
+        return result;
+    }
+
+    private JsonNode parseSinaKlineArray(String payload) {
         String normalized = payload == null ? "" : payload.strip();
         if (normalized.startsWith("\uFEFF")) {
             normalized = normalized.substring(1).stripLeading();
@@ -899,22 +991,12 @@ public class SinaMarketDataClient implements MarketDataClient, ResearchMarketDat
         if (!points.isArray()) {
             throw new IllegalStateException("新浪 K 线返回格式异常");
         }
-        List<KlinePointResponse> result = new ArrayList<>();
-        for (JsonNode point : points) {
-            result.add(new KlinePointResponse(
-                    LocalDate.parse(point.path("day").asText()),
-                    bd(point.path("open").asText("0")),
-                    bd(point.path("close").asText("0")),
-                    bd(point.path("low").asText("0")),
-                    bd(point.path("high").asText("0")),
-                    point.path("volume").asLong(0),
-                    nullableDecimal(point.path("amount"))
-            ));
-        }
-        if (result.isEmpty()) {
-            throw new IllegalStateException("新浪 K 线返回为空");
-        }
-        return result;
+        return points;
+    }
+
+    private static boolean isDailyPeriod(String period) {
+        return period == null || period.isBlank() || "day".equalsIgnoreCase(period)
+                || "daily".equalsIgnoreCase(period);
     }
 
     private List<KlinePointResponse> fetchA50Kline(String period, int limit) {
@@ -1519,6 +1601,16 @@ public class SinaMarketDataClient implements MarketDataClient, ResearchMarketDat
     }
 
     private record Quote(String name, BigDecimal price, BigDecimal change, BigDecimal percent) {
+    }
+
+    private record IntradayKlinePoint(
+            LocalDateTime time,
+            BigDecimal open,
+            BigDecimal close,
+            BigDecimal low,
+            BigDecimal high,
+            long volume
+    ) {
     }
 
     private static class KlineAccumulator {

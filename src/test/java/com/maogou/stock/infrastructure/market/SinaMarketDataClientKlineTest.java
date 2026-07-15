@@ -8,6 +8,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestTemplate;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
@@ -117,6 +118,47 @@ class SinaMarketDataClientKlineTest {
                 .hasMessageContaining("JSON通道失败")
                 .hasMessageContaining("JSONP通道失败")
                 .hasMessageContaining("返回格式异常");
+        server.verify();
+    }
+
+    @Test
+    void pointInTimeKlineBuildsTheCompletedDailyBarFromFourHourlyBars() {
+        RestTemplate restTemplate = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
+        server.expect(request -> {
+                    assertThat(request.getURI().getQuery()).contains("symbol=sh600519");
+                    assertThat(request.getURI().getQuery()).contains("scale=240");
+                })
+                .andRespond(withSuccess("""
+                        [{"day":"2026-07-14","open":"10","close":"11","low":"9","high":"12","volume":"100"}]
+                        """, MediaType.APPLICATION_JSON));
+        server.expect(request -> {
+                    assertThat(request.getURI().getQuery()).contains("symbol=sh600519");
+                    assertThat(request.getURI().getQuery()).contains("scale=60");
+                    assertThat(request.getURI().getQuery()).contains("datalen=8");
+                })
+                .andRespond(withSuccess("""
+                        [
+                          {"day":"2026-07-15 10:30:00","open":"11","close":"12","low":"10","high":"13","volume":"100"},
+                          {"day":"2026-07-15 11:30:00","open":"12","close":"11","low":"9","high":"14","volume":"200"},
+                          {"day":"2026-07-15 14:00:00","open":"11","close":"13","low":"10","high":"15","volume":"300"},
+                          {"day":"2026-07-15 15:00:00","open":"13","close":"14","low":"12","high":"16","volume":"400"}
+                        ]
+                        """, MediaType.APPLICATION_JSON));
+        SinaMarketDataClient client = new SinaMarketDataClient(
+                restTemplate, new ObjectMapper().findAndRegisterModules(), new AppProperties());
+
+        KlineSeriesSnapshot snapshot = client.fetchKlineAt(
+                "600519", "day", 100, LocalDateTime.of(2026, 7, 15, 16, 0));
+
+        assertThat(snapshot.points()).hasSize(2);
+        assertThat(snapshot.source()).isEqualTo("SINA_60M_AGGREGATED");
+        assertThat(snapshot.points().get(1).tradeDate()).isEqualTo(LocalDate.of(2026, 7, 15));
+        assertThat(snapshot.points().get(1).open()).isEqualByComparingTo(new BigDecimal("11"));
+        assertThat(snapshot.points().get(1).close()).isEqualByComparingTo(new BigDecimal("14"));
+        assertThat(snapshot.points().get(1).low()).isEqualByComparingTo(new BigDecimal("9"));
+        assertThat(snapshot.points().get(1).high()).isEqualByComparingTo(new BigDecimal("16"));
+        assertThat(snapshot.points().get(1).volume()).isEqualTo(1_000L);
         server.verify();
     }
 }
