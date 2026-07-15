@@ -60,14 +60,16 @@ public class PersistentMarketSourceHealthRegistry implements MarketSourceHealthR
                 ? 1 : Math.min(30, existing.consecutiveFailureCount + 1);
         long baseSeconds = Math.max(1, properties.getMarket().getSourceCooldownBaseSeconds());
         long maxSeconds = Math.max(baseSeconds, properties.getMarket().getSourceCooldownMaxSeconds());
-        long multiplier = 1L << Math.min(20, failures - 1);
+        int threshold = Math.max(1, properties.getMarket().getSourceCooldownFailureThreshold());
+        int cooldownFailureIndex = Math.max(0, failures - threshold);
+        long multiplier = 1L << Math.min(20, cooldownFailureIndex);
         long cooldownSeconds = Math.min(maxSeconds, baseSeconds * multiplier);
 
         AiSourceHealth health = base(provider, endpoint, attemptedAt);
         health.sourceStatus = ResearchSourceStatus.UNAVAILABLE.name();
         health.lastSuccessAt = existing == null ? null : existing.lastSuccessAt;
         health.consecutiveFailureCount = failures;
-        health.cooldownUntil = attemptedAt.plusSeconds(cooldownSeconds);
+        health.cooldownUntil = failures >= threshold ? attemptedAt.plusSeconds(cooldownSeconds) : null;
         health.lastErrorMessage = truncate(errorMessage, 1024);
         health.lastResponseFingerprint = existing == null ? null : existing.lastResponseFingerprint;
         mapper.upsert(health);

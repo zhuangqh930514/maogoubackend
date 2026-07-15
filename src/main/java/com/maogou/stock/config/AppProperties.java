@@ -46,6 +46,7 @@ public class AppProperties {
         private String benchmarkSymbol = "000300";
         private long sourceCooldownBaseSeconds = 30;
         private long sourceCooldownMaxSeconds = 900;
+        private int sourceCooldownFailureThreshold = 3;
         private BigDecimal sourcePriceTolerancePct = new BigDecimal("0.005");
         private BigDecimal sourceVolumeTolerancePct = new BigDecimal("0.15");
         private BigDecimal sourceMaxDailyChangePct = new BigDecimal("0.35");
@@ -145,6 +146,14 @@ public class AppProperties {
 
         public void setSourceCooldownMaxSeconds(long sourceCooldownMaxSeconds) {
             this.sourceCooldownMaxSeconds = sourceCooldownMaxSeconds;
+        }
+
+        public int getSourceCooldownFailureThreshold() {
+            return sourceCooldownFailureThreshold;
+        }
+
+        public void setSourceCooldownFailureThreshold(int sourceCooldownFailureThreshold) {
+            this.sourceCooldownFailureThreshold = sourceCooldownFailureThreshold;
         }
 
         public BigDecimal getSourcePriceTolerancePct() {

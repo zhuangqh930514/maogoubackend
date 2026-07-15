@@ -821,11 +821,10 @@ public class SinaMarketDataClient implements MarketDataClient, ResearchMarketDat
                 + "CN_MarketDataService.getKLineData?symbol=" + sinaSymbol
                 + "&scale=" + scale
                 + "&ma=no&datalen=" + dataLength);
-        Exception jsonFailure;
+        RuntimeException jsonFailure;
         try {
-            return parseSinaKlinePayload(getText(
-                    jsonUri, StandardCharsets.UTF_8, "https://finance.sina.com.cn/"));
-        } catch (Exception exception) {
+            return fetchSinaKlineChannel(jsonUri, "JSON");
+        } catch (RuntimeException exception) {
             jsonFailure = exception;
         }
 
@@ -834,12 +833,46 @@ public class SinaMarketDataClient implements MarketDataClient, ResearchMarketDat
                 + "&scale=" + scale
                 + "&ma=no&datalen=" + dataLength);
         try {
-            return parseSinaKlinePayload(getText(
-                    jsonpUri, StandardCharsets.UTF_8, "https://finance.sina.com.cn/"));
-        } catch (Exception exception) {
+            return fetchSinaKlineChannel(jsonpUri, "JSONP");
+        } catch (RuntimeException exception) {
             exception.addSuppressed(jsonFailure);
-            throw new IllegalStateException("获取新浪 K 线行情失败：" + symbol + "，" + exception.getMessage(), exception);
+            throw new IllegalStateException("获取新浪 K 线行情失败：" + symbol
+                    + "；" + failureSummary(jsonFailure)
+                    + "；" + failureSummary(exception), exception);
         }
+    }
+
+    private List<KlinePointResponse> fetchSinaKlineChannel(URI uri, String channel) {
+        RuntimeException lastError = null;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try {
+                return parseSinaKlinePayload(getText(
+                        uri, StandardCharsets.UTF_8, "https://finance.sina.com.cn/"));
+            } catch (RuntimeException exception) {
+                lastError = exception;
+                if (attempt == 0) {
+                    sleepBeforeRetry(attempt);
+                }
+            }
+        }
+        throw new IllegalStateException("新浪 K 线" + channel + "通道失败："
+                + rootFailureMessage(lastError), lastError);
+    }
+
+    private static String failureSummary(RuntimeException exception) {
+        return exception == null ? "未知通道失败" : exception.getMessage();
+    }
+
+    private static String rootFailureMessage(Throwable throwable) {
+        if (throwable == null) {
+            return "未知错误";
+        }
+        Throwable root = throwable;
+        while (root.getCause() != null && root.getCause() != root) {
+            root = root.getCause();
+        }
+        return root.getMessage() == null || root.getMessage().isBlank()
+                ? root.getClass().getSimpleName() : root.getMessage();
     }
 
     private List<KlinePointResponse> parseSinaKlinePayload(String payload) {
