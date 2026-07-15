@@ -45,6 +45,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HexFormat;
@@ -158,7 +159,7 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         Long snapshotId = requiredCheckpointId(context, "SNAPSHOT_UNIVERSE", "universeSnapshotId");
         AiResearchUniverseSnapshot snapshot = requiredSnapshot(snapshotId);
         List<AiResearchUniverseItem> items = includedItems(snapshotId);
-        LocalDateTime fetchStartedAt = LocalDateTime.now();
+        LocalDateTime fetchStartedAt = LocalDateTime.now().truncatedTo(ChronoUnit.MILLIS);
         AiDataBatch batch = sampleSnapshotService.startOrGetBatch(
                 snapshotId, context.tradeDate(), "AFTER_CLOSE", fetchStartedAt,
                 batchIdempotencyKey(context));

@@ -98,6 +98,21 @@ class AiSampleSnapshotServiceImplTest {
         verify(batchMapper, never()).insert(any(AiDataBatch.class));
     }
 
+    @Test
+    void storesBatchCaptureTimeAtDatabaseMillisecondPrecision() {
+        AiDataBatchMapper batchMapper = mock(AiDataBatchMapper.class);
+        when(batchMapper.selectOne(any())).thenReturn(null);
+        AiSampleSnapshotService service = service(mock(AiSampleMapper.class), batchMapper);
+        LocalDateTime capturedAt = LocalDateTime.of(2026, 7, 10, 16, 0, 0, 336_723_875);
+
+        AiDataBatch result = service.startOrGetBatch(
+                5L, LocalDate.of(2026, 7, 10), "AFTER_CLOSE", capturedAt, "GLOBAL:2026-07-10");
+
+        assertThat(result.asOfTime).isEqualTo(LocalDateTime.of(2026, 7, 10, 16, 0, 0, 336_000_000));
+        assertThat(result.startedAt).isEqualTo(result.asOfTime);
+        verify(batchMapper).insert(result);
+    }
+
     private static AiSampleSnapshotService service(AiSampleMapper sampleMapper, AiDataBatchMapper batchMapper) {
         return new AiSampleSnapshotServiceImpl(sampleMapper, batchMapper, new ObjectMapper().findAndRegisterModules());
     }

@@ -30,6 +30,7 @@ import com.maogou.stock.service.research.BenchmarkSeriesService;
 import com.maogou.stock.service.research.IndustryMembershipService;
 import com.maogou.stock.service.research.NewsSentimentFeatureService;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
@@ -82,6 +83,39 @@ class GlobalDailyResearchExecutorTest {
         verify(fixture.marketDataService, times(1)).stockDetailAt(
                 org.mockito.ArgumentMatchers.eq("000001"), any());
         verify(fixture.marketDataService, times(2)).stockDetailAt(anyString(), any());
+    }
+
+    @Test
+    void usesOneMillisecondPrecisionCaptureTimeForTheWholeSourceBatch() {
+        Fixture fixture = fixture();
+        when(fixture.snapshotMapper.selectById(91L)).thenReturn(snapshot());
+        when(fixture.itemMapper.selectList(any())).thenReturn(List.of(
+                item(1L, "600519", "WATCHLIST:USER:5")));
+        when(fixture.snapshotService.startOrGetBatch(any(), any(), anyString(), any(), anyString()))
+                .thenReturn(batch());
+        when(fixture.marketDataService.stockDetailAt(anyString(), any()))
+                .thenAnswer(invocation -> detail(invocation.getArgument(0), invocation.getArgument(1)));
+
+        fixture.executor.execute("FETCH_SOURCE_DATA", context(Map.of(
+                "SNAPSHOT_UNIVERSE", "{\"universeSnapshotId\":91}")));
+
+        ArgumentCaptor<LocalDateTime> batchTime = ArgumentCaptor.forClass(LocalDateTime.class);
+        ArgumentCaptor<LocalDateTime> benchmarkTime = ArgumentCaptor.forClass(LocalDateTime.class);
+        ArgumentCaptor<LocalDateTime> stockTime = ArgumentCaptor.forClass(LocalDateTime.class);
+        verify(fixture.snapshotService).startOrGetBatch(
+                org.mockito.ArgumentMatchers.eq(91L),
+                org.mockito.ArgumentMatchers.eq(TRADE_DATE),
+                org.mockito.ArgumentMatchers.eq("AFTER_CLOSE"),
+                batchTime.capture(), anyString());
+        verify(fixture.resilientMarketDataClient).fetchKlineAt(
+                org.mockito.ArgumentMatchers.eq("000300.SH"),
+                org.mockito.ArgumentMatchers.eq("day"),
+                org.mockito.ArgumentMatchers.eq(80),
+                benchmarkTime.capture());
+        verify(fixture.marketDataService).stockDetailAt(
+                org.mockito.ArgumentMatchers.eq("600519"), stockTime.capture());
+        assertThat(batchTime.getValue()).isEqualTo(benchmarkTime.getValue()).isEqualTo(stockTime.getValue());
+        assertThat(batchTime.getValue().getNano() % 1_000_000).isZero();
     }
 
     @Test

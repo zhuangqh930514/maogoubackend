@@ -22,6 +22,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -61,6 +62,7 @@ public class AiSampleSnapshotServiceImpl implements AiSampleSnapshotService {
         require(universeSnapshotId, "universeSnapshotId");
         require(tradeDate, "tradeDate");
         require(asOfTime, "asOfTime");
+        LocalDateTime persistedAsOfTime = asOfTime.truncatedTo(ChronoUnit.MILLIS);
         String normalizedKey = requireText(idempotencyKey, "idempotencyKey");
         AiDataBatch existing = findBatch(normalizedKey);
         if (existing != null) {
@@ -71,7 +73,7 @@ public class AiSampleSnapshotServiceImpl implements AiSampleSnapshotService {
         batch.universeSnapshotId = universeSnapshotId;
         batch.tradeDate = tradeDate;
         batch.samplePhase = normalize(samplePhase, "AFTER_CLOSE");
-        batch.asOfTime = asOfTime;
+        batch.asOfTime = persistedAsOfTime;
         batch.idempotencyKey = normalizedKey;
         batch.sourceStatus = "PENDING";
         batch.qualityScore = BigDecimal.ZERO;
@@ -80,7 +82,7 @@ public class AiSampleSnapshotServiceImpl implements AiSampleSnapshotService {
         batch.successCount = 0;
         batch.failedCount = 0;
         batch.status = "RUNNING";
-        batch.startedAt = asOfTime;
+        batch.startedAt = persistedAsOfTime;
         batch.createdAt = LocalDateTime.now();
         try {
             batchMapper.insert(batch);
