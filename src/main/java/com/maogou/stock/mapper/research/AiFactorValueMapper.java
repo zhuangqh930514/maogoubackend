@@ -76,7 +76,19 @@ public interface AiFactorValueMapper extends BaseMapper<AiFactorValue> {
     );
 
     @Select("""
-            SELECT *
+            SELECT id,
+                   factor_code AS factorCode,
+                   factor_version AS versionNo,
+                   factor_name AS factorName,
+                   factor_group AS factorGroup,
+                   direction,
+                   formula_desc AS formulaDesc,
+                   required_fields_json AS requiredFieldsJson,
+                   default_weight AS defaultWeight,
+                   enabled,
+                   seed_version AS seedVersion,
+                   created_at AS createdAt,
+                   updated_at AS updatedAt
             FROM ai_factor_definition
             WHERE factor_version = #{factorVersion} AND enabled = 1
             ORDER BY factor_code
