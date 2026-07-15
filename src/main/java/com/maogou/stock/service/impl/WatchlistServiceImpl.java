@@ -45,7 +45,7 @@ public class WatchlistServiceImpl implements WatchlistService {
             wrapper.eq("group_name", groupName);
         }
         List<WatchStock> stocks = watchStockMapper.selectList(wrapper);
-        Map<String, StockQuoteResponse> quotes = marketDataService.quotes(stocks.stream()
+        Map<String, StockQuoteResponse> quotes = marketDataService.quotesFast(stocks.stream()
                 .map(entity -> entity.stockCode)
                 .toList());
         return stocks.stream()

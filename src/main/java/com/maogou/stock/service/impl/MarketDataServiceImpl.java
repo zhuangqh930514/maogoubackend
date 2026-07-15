@@ -7,6 +7,7 @@ import com.maogou.stock.infrastructure.market.MockMarketDataClient;
 import com.maogou.stock.infrastructure.market.ResearchMarketDataClient;
 import com.maogou.stock.infrastructure.market.ResearchSourceResult;
 import com.maogou.stock.service.MarketDataService;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -18,8 +19,13 @@ import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 
 @Service
@@ -42,6 +48,13 @@ public class MarketDataServiceImpl implements MarketDataService {
     private final ConcurrentMap<String, CacheEntry<List<SectorHotStockResponse>>> hotStocksCache = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, CacheEntry<List<IntradayPointResponse>>> intradayCache = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, CacheEntry<List<KlinePointResponse>>> klineCache = new ConcurrentHashMap<>();
+    private final Set<String> pendingFastQuoteCodes = ConcurrentHashMap.newKeySet();
+    private final AtomicBoolean fastQuoteRefreshRunning = new AtomicBoolean();
+    private final ExecutorService fastQuoteRefreshExecutor = Executors.newSingleThreadExecutor(task -> {
+        Thread thread = new Thread(task, "market-quote-refresh");
+        thread.setDaemon(true);
+        return thread;
+    });
     private volatile long batchQuoteSourceUnavailableUntilMillis = 0;
     private volatile long sectorSourceUnavailableUntilMillis = 0;
 
@@ -394,6 +407,68 @@ public class MarketDataServiceImpl implements MarketDataService {
             result.put(code, fallbackQuote);
         }
         return result;
+    }
+
+    @Override
+    public Map<String, StockQuoteResponse> quotesFast(List<String> codes) {
+        Map<String, StockQuoteResponse> cachedQuotes = new LinkedHashMap<>();
+        if (codes == null || codes.isEmpty()) {
+            return cachedQuotes;
+        }
+        long now = System.currentTimeMillis();
+        List<String> refreshCodes = codes.stream()
+                .map(MarketDataServiceImpl::normalizeCode)
+                .filter(code -> !code.isBlank())
+                .distinct()
+                .filter(code -> {
+                    CacheEntry<StockQuoteResponse> cached = quoteCache.get(code);
+                    if (cached != null) {
+                        cachedQuotes.put(code, cached.value);
+                    }
+                    return cached == null || cached.expiresAtMillis <= now;
+                })
+                .toList();
+        scheduleFastQuoteRefresh(refreshCodes);
+        return cachedQuotes;
+    }
+
+    private void scheduleFastQuoteRefresh(List<String> codes) {
+        if (codes != null) {
+            pendingFastQuoteCodes.addAll(codes);
+        }
+        if (pendingFastQuoteCodes.isEmpty() || !fastQuoteRefreshRunning.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            fastQuoteRefreshExecutor.execute(this::drainFastQuoteRefreshes);
+        } catch (RejectedExecutionException exception) {
+            fastQuoteRefreshRunning.set(false);
+            log.debug("fast quote refresh executor rejected task", exception);
+        }
+    }
+
+    private void drainFastQuoteRefreshes() {
+        try {
+            while (!pendingFastQuoteCodes.isEmpty()) {
+                List<String> codes = List.copyOf(pendingFastQuoteCodes);
+                pendingFastQuoteCodes.removeAll(codes);
+                try {
+                    quotes(codes);
+                } catch (RuntimeException exception) {
+                    log.warn("background quote refresh failed, codes={}", codes, exception);
+                }
+            }
+        } finally {
+            fastQuoteRefreshRunning.set(false);
+            if (!pendingFastQuoteCodes.isEmpty()) {
+                scheduleFastQuoteRefresh(List.of());
+            }
+        }
+    }
+
+    @PreDestroy
+    void shutdownFastQuoteRefreshExecutor() {
+        fastQuoteRefreshExecutor.shutdownNow();
     }
 
     @Override

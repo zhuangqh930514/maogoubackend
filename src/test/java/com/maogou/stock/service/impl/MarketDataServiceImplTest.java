@@ -8,12 +8,16 @@ import com.maogou.stock.dto.market.FinanceSnapshotResponse;
 import com.maogou.stock.dto.market.KlinePointResponse;
 import com.maogou.stock.dto.market.KlineSeriesSnapshot;
 import com.maogou.stock.dto.market.StockDetailResponse;
+import com.maogou.stock.dto.market.StockQuoteResponse;
 import com.maogou.stock.infrastructure.market.MockMarketDataClient;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -73,6 +77,28 @@ class MarketDataServiceImplTest {
         assertThat(detail.kline()).extracting(KlinePointResponse::tradeDate)
                 .containsExactly(java.time.LocalDate.of(2026, 7, 9), java.time.LocalDate.of(2026, 7, 10));
         assertThat(detail.intraday()).isEmpty();
+    }
+
+    @Test
+    void fastQuotesNeverWaitForASlowExternalSourceAndPopulateTheCacheInBackground() throws Exception {
+        BlockingQuoteClient client = new BlockingQuoteClient();
+        MarketDataServiceImpl service = new MarketDataServiceImpl(client, new AppProperties());
+
+        long startedAt = System.nanoTime();
+        Map<String, StockQuoteResponse> first = service.quotesFast(List.of("600519"));
+        long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
+
+        assertThat(first).isEmpty();
+        assertThat(elapsedMillis).isLessThan(200);
+        assertThat(client.started.await(1, TimeUnit.SECONDS)).isTrue();
+        client.release.countDown();
+        assertThat(client.completed.await(1, TimeUnit.SECONDS)).isTrue();
+        Map<String, StockQuoteResponse> cached = Map.of();
+        for (int attempt = 0; attempt < 20 && !cached.containsKey("600519"); attempt++) {
+            Thread.sleep(10);
+            cached = service.quotesFast(List.of("600519"));
+        }
+        assertThat(cached).containsKey("600519");
     }
 
     private static class FailingSectorMarketClient extends MockMarketDataClient {
@@ -147,6 +173,26 @@ class MarketDataServiceImplTest {
         @Override
         public FinanceSnapshotResponse fetchFinanceAt(String stockCode, LocalDateTime requestedAsOf) {
             return FinanceSnapshotResponse.empty();
+        }
+    }
+
+    private static class BlockingQuoteClient extends MockMarketDataClient {
+        private final CountDownLatch started = new CountDownLatch(1);
+        private final CountDownLatch release = new CountDownLatch(1);
+        private final CountDownLatch completed = new CountDownLatch(1);
+
+        @Override
+        public Map<String, StockQuoteResponse> fetchQuotes(List<String> stockCodes) {
+            started.countDown();
+            try {
+                release.await(1, TimeUnit.SECONDS);
+                return super.fetchQuotes(stockCodes);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("interrupted", exception);
+            } finally {
+                completed.countDown();
+            }
         }
     }
 }

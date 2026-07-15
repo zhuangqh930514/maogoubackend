@@ -39,6 +39,10 @@ public interface MarketDataService {
 
     Map<String, StockQuoteResponse> quotes(List<String> codes);
 
+    default Map<String, StockQuoteResponse> quotesFast(List<String> codes) {
+        return quotes(codes);
+    }
+
     FinanceSnapshotResponse finance(String code);
 
     FinanceSnapshotResponse financeAt(String code, LocalDateTime asOfTime);

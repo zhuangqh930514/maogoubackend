@@ -31,7 +31,9 @@ CREATE TABLE IF NOT EXISTS watch_stock (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_watch_stock_user_code (user_id, stock_code),
-    KEY idx_watch_stock_group (user_id, group_name)
+    KEY idx_watch_stock_group (user_id, group_name),
+    KEY idx_watch_stock_user_list (user_id, deleted, priority ASC, created_at DESC),
+    KEY idx_watch_stock_user_group_list (user_id, deleted, group_name, priority ASC, created_at DESC)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 
 CREATE TABLE IF NOT EXISTS trade_record (
@@ -48,7 +50,8 @@ CREATE TABLE IF NOT EXISTS trade_record (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_trade_record_user_time (user_id, traded_at),
-    KEY idx_trade_record_stock (user_id, stock_code)
+    KEY idx_trade_record_stock (user_id, stock_code),
+    KEY idx_trade_record_user_list (user_id, deleted, traded_at)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 
 CREATE TABLE IF NOT EXISTS ai_model_config (
@@ -341,6 +344,8 @@ CREATE TABLE IF NOT EXISTS ai_sample (
     KEY idx_sample_batch (data_batch_id),
     KEY idx_sample_trade_stock (trade_date, stock_code, quality_status),
     KEY idx_sample_stock_time (stock_code, as_of_time),
+    KEY idx_sample_analysis_lookup (stock_code, sample_phase, trade_date, as_of_time),
+    KEY idx_sample_lab_list (trade_date, id),
     KEY idx_sample_universe_item (universe_item_id),
     CONSTRAINT fk_sample_batch FOREIGN KEY (data_batch_id) REFERENCES ai_data_batch (id),
     CONSTRAINT fk_sample_universe_item
@@ -962,6 +967,7 @@ CREATE TABLE IF NOT EXISTS ai_pipeline_run (
     UNIQUE KEY uk_pipeline_run_idempotency (idempotency_key),
     KEY idx_pipeline_scope_trade_status (scope_type, trade_date, status),
     KEY idx_pipeline_owner_trade (owner_user_id, trade_date, pipeline_type, status),
+    KEY idx_pipeline_owner_type_time (owner_user_id, scope_type, pipeline_type, created_at, id),
     KEY idx_pipeline_run_retry_lease (status, next_retry_at, lease_until),
     KEY idx_pipeline_parent (parent_run_id, scope_type, status),
     KEY idx_pipeline_batch (data_batch_id),

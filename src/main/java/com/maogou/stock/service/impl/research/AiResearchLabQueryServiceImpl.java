@@ -154,6 +154,9 @@ public class AiResearchLabQueryServiceImpl implements AiResearchLabQueryService 
         dates(query, filter, "trade_date");
         status(query, filter, "tradable_status");
         quality(query, filter, "quality_status");
+        query.select("id", "universe_item_id", "stock_code", "stock_name", "trade_date",
+                "sample_phase", "as_of_time", "market_regime", "data_quality_score",
+                "quality_status", "tradable_status");
         AiSampleMapper sampleMapper = mapper(AiSampleMapper.class);
         long total = sampleMapper.selectCount(query);
         if (total == 0) {

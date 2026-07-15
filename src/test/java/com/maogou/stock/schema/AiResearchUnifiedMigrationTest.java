@@ -37,6 +37,7 @@ class AiResearchUnifiedMigrationTest {
     private static final String FRESH_SCHEMA = "db/schema.sql";
     private static final String H2_SCHEMA = "db/schema-h2-body.sql";
     private static final String MIGRATION = "db/20260714_ai_research_unified.sql";
+    private static final String PERFORMANCE_MIGRATION = "db/20260715_query_performance_indexes.sql";
     private static final String MATRIX = "/db/ai-research-table-matrix.txt";
     private static final String VERSION = "20260714-unified-1.1";
 
@@ -166,8 +167,10 @@ class AiResearchUnifiedMigrationTest {
             String migrationSql = readRequiredResource(MIGRATION);
             assertMigrationCoversMatrix(migrationSql);
             executeResource(connection, MIGRATION);
+            executeResource(connection, PERFORMANCE_MIGRATION);
 
             assertUnifiedTables(connection);
+            assertPerformanceIndexes(connection);
             assertProtectedBusinessRowsUnchanged(connection, protectedBefore);
             assertRowsUnchanged(connection, keepBefore);
             assertBaselineSeedIsRunnable(connection, 1001, true);
@@ -189,8 +192,10 @@ class AiResearchUnifiedMigrationTest {
             Map<String, List<Map<String, Object>>> keepBefore = snapshot(connection, KEEP_TABLES);
 
             executeResource(connection, MIGRATION);
+            executeResource(connection, PERFORMANCE_MIGRATION);
 
             assertUnifiedTables(connection);
+            assertPerformanceIndexes(connection);
             assertProtectedBusinessRowsUnchanged(connection, protectedBefore);
             assertRowsUnchanged(connection, keepBefore);
             assertThat(scalarLong(connection, "SELECT COUNT(*) FROM ai_trading_calendar")).isZero();
@@ -203,8 +208,11 @@ class AiResearchUnifiedMigrationTest {
     void freshMySqlSchemaBuildsTheSameRunnableResearchDomain() throws Exception {
         try (Connection connection = MYSQL.createConnection("")) {
             executeResource(connection, FRESH_SCHEMA);
+            executeResource(connection, PERFORMANCE_MIGRATION);
+            executeResource(connection, PERFORMANCE_MIGRATION);
 
             assertUnifiedTables(connection);
+            assertPerformanceIndexes(connection);
             assertThat(columnNames(connection, "user_account")).contains("system_role");
             assertThat(scalarLong(connection,
                     "SELECT COUNT(*) FROM user_account WHERE id = 1 AND system_role = 'USER'"))
@@ -392,6 +400,16 @@ class AiResearchUnifiedMigrationTest {
 
         Set<String> indexes = indexNames(connection);
         assertThat(indexes).containsAll(REQUIRED_INDEXES);
+    }
+
+    private static void assertPerformanceIndexes(Connection connection) throws SQLException {
+        assertThat(indexNames(connection)).contains(
+                "idx_watch_stock_user_list",
+                "idx_watch_stock_user_group_list",
+                "idx_trade_record_user_list",
+                "idx_sample_analysis_lookup",
+                "idx_sample_lab_list",
+                "idx_pipeline_owner_type_time");
     }
 
     private static void assertProtectedBusinessRowsUnchanged(

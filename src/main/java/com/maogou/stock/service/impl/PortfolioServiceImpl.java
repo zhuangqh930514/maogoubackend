@@ -94,7 +94,7 @@ public class PortfolioServiceImpl implements PortfolioService {
         List<AggregatedPosition> activePositions = grouped.values().stream()
                 .filter(position -> position.quantity > 0)
                 .toList();
-        Map<String, StockQuoteResponse> quotes = marketDataService.quotes(activePositions.stream()
+        Map<String, StockQuoteResponse> quotes = marketDataService.quotesFast(activePositions.stream()
                 .map(position -> position.code)
                 .toList());
         List<PositionResponse> positions = activePositions.stream()
