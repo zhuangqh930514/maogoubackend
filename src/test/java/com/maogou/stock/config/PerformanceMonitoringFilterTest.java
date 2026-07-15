@@ -5,6 +5,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 
+import java.nio.charset.StandardCharsets;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class PerformanceMonitoringFilterTest {
@@ -16,11 +18,14 @@ class PerformanceMonitoringFilterTest {
         request.addHeader("X-Request-Id", "client-request-42");
         MockHttpServletResponse response = new MockHttpServletResponse();
         FilterChain chain = (currentRequest, currentResponse) -> {
+            currentResponse.getOutputStream().write("ok".getBytes(StandardCharsets.UTF_8));
+            currentResponse.flushBuffer();
         };
 
         filter.doFilter(request, response, chain);
 
         assertThat(response.getHeader("X-Request-Id")).isEqualTo("client-request-42");
         assertThat(response.getHeader("Server-Timing")).startsWith("app;dur=");
+        assertThat(response.getContentAsString()).isEqualTo("ok");
     }
 }

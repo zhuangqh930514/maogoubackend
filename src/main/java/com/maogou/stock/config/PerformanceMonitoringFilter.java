@@ -12,6 +12,7 @@ import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.web.util.ContentCachingResponseWrapper;
 
 import java.io.IOException;
 import java.util.UUID;
@@ -45,18 +46,23 @@ public class PerformanceMonitoringFilter extends OncePerRequestFilter {
     ) throws ServletException, IOException {
         String requestId = resolveRequestId(request.getHeader("X-Request-Id"));
         long startedAt = System.nanoTime();
-        response.setHeader("X-Request-Id", requestId);
+        ContentCachingResponseWrapper wrappedResponse = new ContentCachingResponseWrapper(response);
+        wrappedResponse.setHeader("X-Request-Id", requestId);
         MDC.put("requestId", requestId);
         try {
-            filterChain.doFilter(request, response);
+            filterChain.doFilter(request, wrappedResponse);
         } finally {
             double durationMs = (System.nanoTime() - startedAt) / 1_000_000.0;
-            response.setHeader("Server-Timing", "app;dur=" + String.format(java.util.Locale.ROOT, "%.1f", durationMs));
+            wrappedResponse.setHeader(
+                    "Server-Timing",
+                    "app;dur=" + String.format(java.util.Locale.ROOT, "%.1f", durationMs)
+            );
             if (durationMs >= slowRequestThresholdMs) {
                 log.warn("slow api request, method={}, path={}, status={}, durationMs={}",
-                        request.getMethod(), request.getRequestURI(), response.getStatus(), Math.round(durationMs));
+                        request.getMethod(), request.getRequestURI(), wrappedResponse.getStatus(), Math.round(durationMs));
             }
             MDC.remove("requestId");
+            wrappedResponse.copyBodyToResponse();
         }
     }
 
