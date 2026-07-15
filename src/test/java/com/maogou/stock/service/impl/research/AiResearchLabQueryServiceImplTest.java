@@ -5,7 +5,13 @@ import com.maogou.stock.domain.entity.research.AiPipelineStep;
 import com.maogou.stock.domain.entity.research.AiResearchUniverseItem;
 import com.maogou.stock.domain.entity.research.AiSample;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.maogou.stock.dto.research.ResearchLabPayloads;
+import com.maogou.stock.mapper.research.AiSampleMapper;
 import org.junit.jupiter.api.Test;
+import org.apache.ibatis.session.SqlSession;
+
+import java.lang.reflect.Proxy;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -53,5 +59,49 @@ class AiResearchLabQueryServiceImplTest {
 
         assertThat(AiResearchLabQueryServiceImpl.sampleDisplayName(sample, universeItem))
                 .isEqualTo("佰维存储");
+    }
+
+    @Test
+    void sampleCountRunsBeforeTheSummaryColumnProjection() {
+        AtomicBoolean countObserved = new AtomicBoolean();
+        AtomicBoolean listObserved = new AtomicBoolean();
+        AiSampleMapper sampleMapper = (AiSampleMapper) Proxy.newProxyInstance(
+                AiSampleMapper.class.getClassLoader(),
+                new Class<?>[]{AiSampleMapper.class},
+                (proxy, method, arguments) -> {
+                    if ("selectCount".equals(method.getName())) {
+                        QueryWrapper<AiSample> query = (QueryWrapper<AiSample>) arguments[0];
+                        assertThat(query.getSqlSelect()).isNull();
+                        countObserved.set(true);
+                        return 1L;
+                    }
+                    if ("selectList".equals(method.getName())) {
+                        QueryWrapper<AiSample> query = (QueryWrapper<AiSample>) arguments[0];
+                        assertThat(query.getSqlSelect())
+                                .contains("id", "stock_code", "stock_name", "data_quality_score")
+                                .doesNotContain("feature_snapshot");
+                        listObserved.set(true);
+                        AiSample sample = new AiSample();
+                        sample.id = 1L;
+                        sample.stockCode = "688525";
+                        sample.stockName = "佰维存储";
+                        return java.util.List.of(sample);
+                    }
+                    return null;
+                });
+        SqlSession sqlSession = (SqlSession) Proxy.newProxyInstance(
+                SqlSession.class.getClassLoader(),
+                new Class<?>[]{SqlSession.class},
+                (proxy, method, arguments) -> "getMapper".equals(method.getName()) ? sampleMapper : null);
+
+        AiResearchLabQueryServiceImpl service = new AiResearchLabQueryServiceImpl(sqlSession);
+        ResearchLabPayloads.PageResult<ResearchLabPayloads.EvidenceItem> result = service.samples(
+                new ResearchLabPayloads.QueryFilter(1, 20, null, null, null,
+                        null, null, null, null));
+
+        assertThat(result.total()).isEqualTo(1L);
+        assertThat(result.items()).hasSize(1);
+        assertThat(countObserved).isTrue();
+        assertThat(listObserved).isTrue();
     }
 }
