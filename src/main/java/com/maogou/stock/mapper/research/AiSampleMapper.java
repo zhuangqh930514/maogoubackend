@@ -38,7 +38,7 @@ public interface AiSampleMapper extends BaseMapper<AiSample> {
     @Select("""
             SELECT * FROM ai_sample
             WHERE stock_code = #{stockCode} AND trade_date <= #{tradeDate}
-              AND sample_phase IN ('CLOSE', 'POST_CLOSE')
+              AND sample_phase = 'AFTER_CLOSE'
             ORDER BY trade_date DESC, as_of_time DESC LIMIT 1
             """)
     AiSample selectLatestForAnalysis(
