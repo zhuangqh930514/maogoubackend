@@ -151,6 +151,8 @@ class GlobalDailyResearchExecutorTest {
         assertThat(recovered.status()).isEqualTo("SUCCESS");
         assertThat(recovered.dataBatchId()).isEqualTo(55L);
         assertThat(batch.status).isEqualTo("READY");
+        assertThat(batch.completedAt).isNotNull();
+        assertThat(batch.completedAt.getNano() % 1_000_000).isZero();
     }
 
     @Test

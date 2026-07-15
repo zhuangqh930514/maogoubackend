@@ -387,6 +387,9 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         batch.successCount = ready;
         batch.failedCount = 0;
         batch.errorMessage = null;
+        if (batch.completedAt == null) {
+            batch.completedAt = LocalDateTime.now().truncatedTo(ChronoUnit.MILLIS);
+        }
         dataBatchMapper.updateById(batch);
         return success("WAIT_DATA_READY", expected, ready, 0, checkpoint, batchId, List.of());
     }
