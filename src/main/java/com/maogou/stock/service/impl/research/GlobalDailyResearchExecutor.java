@@ -426,6 +426,7 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
                                 marketRegime,
                                 membership == null ? null : membership.industryCode(),
                                 membership == null ? null : membership.industryName(),
+                                item.stockName,
                                 detail)));
             } catch (JsonProcessingException exception) {
                 errors.add(item.stockCode + ": 来源快照无法反序列化");

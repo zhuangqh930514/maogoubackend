@@ -118,7 +118,7 @@ public class AiSampleSnapshotServiceImpl implements AiSampleSnapshotService {
         sample.dataBatchId = command.dataBatchId();
         sample.universeItemId = command.universeItemId();
         sample.stockCode = stockCode;
-        sample.stockName = quote.name();
+        sample.stockName = resolveStockName(stockCode, quote.name(), command.stockName());
         sample.tradeDate = command.tradeDate();
         sample.samplePhase = samplePhase;
         sample.asOfTime = command.asOfTime();
@@ -143,6 +143,23 @@ public class AiSampleSnapshotServiceImpl implements AiSampleSnapshotService {
             }
             throw ex;
         }
+    }
+
+    static String resolveStockName(String stockCode, String quoteName, String universeName) {
+        if (isUsableStockName(stockCode, quoteName)) {
+            return quoteName.trim();
+        }
+        if (isUsableStockName(stockCode, universeName)) {
+            return universeName.trim();
+        }
+        return stockCode;
+    }
+
+    private static boolean isUsableStockName(String stockCode, String stockName) {
+        return stockName != null
+                && !stockName.isBlank()
+                && !stockName.trim().equalsIgnoreCase(stockCode)
+                && !"未知股票".equals(stockName.trim());
     }
 
     @Override

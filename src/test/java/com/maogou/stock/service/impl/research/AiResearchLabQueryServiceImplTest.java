@@ -2,6 +2,8 @@ package com.maogou.stock.service.impl.research;
 
 import com.maogou.stock.domain.entity.research.AiPipelineRun;
 import com.maogou.stock.domain.entity.research.AiPipelineStep;
+import com.maogou.stock.domain.entity.research.AiResearchUniverseItem;
+import com.maogou.stock.domain.entity.research.AiSample;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import org.junit.jupiter.api.Test;
 
@@ -38,5 +40,18 @@ class AiResearchLabQueryServiceImplTest {
         assertThat(query.getCustomSqlSegment()).contains("id", "scope_type", "owner_user_id");
         assertThat(query.getParamNameValuePairs().values())
                 .contains(91L, "GLOBAL", "USER", 5L);
+    }
+
+    @Test
+    void sampleNameFallsBackToTheImmutableUniverseSnapshot() {
+        AiSample sample = new AiSample();
+        sample.stockCode = "688525";
+        sample.stockName = "688525";
+        AiResearchUniverseItem universeItem = new AiResearchUniverseItem();
+        universeItem.stockCode = "688525";
+        universeItem.stockName = "佰维存储";
+
+        assertThat(AiResearchLabQueryServiceImpl.sampleDisplayName(sample, universeItem))
+                .isEqualTo("佰维存储");
     }
 }

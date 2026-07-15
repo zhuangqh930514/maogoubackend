@@ -33,6 +33,7 @@ public interface AiSampleSnapshotService {
             String marketRegime,
             String sectorCode,
             String sectorName,
+            String stockName,
             StockDetailResponse detail
     ) {
     }

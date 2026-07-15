@@ -64,6 +64,19 @@ class AiSampleSnapshotServiceImplTest {
     }
 
     @Test
+    void usesTheUniverseNameWhenTheQuoteProviderReturnsTheStockCodeAsName() {
+        AiSampleMapper sampleMapper = mock(AiSampleMapper.class);
+        when(sampleMapper.selectOne(any())).thenReturn(null);
+        AiSampleSnapshotService service = service(sampleMapper, mock(AiDataBatchMapper.class));
+        LocalDateTime asOf = LocalDateTime.of(2026, 7, 10, 16, 5);
+        StockDetailResponse detail = withQuoteName(freshDetail(asOf), "600519");
+
+        AiSample result = service.createOrGetSnapshot(command(asOf, detail));
+
+        assertThat(result.stockName).isEqualTo("贵州茅台");
+    }
+
+    @Test
     void marksSnapshotUnavailableWhenQuoteIsStale() {
         AiSampleMapper sampleMapper = mock(AiSampleMapper.class);
         when(sampleMapper.selectOne(any())).thenReturn(null);
@@ -127,8 +140,17 @@ class AiSampleSnapshotServiceImplTest {
                 "RANGE",
                 "BK0475",
                 "白酒",
+                "贵州茅台",
                 detail
         );
+    }
+
+    private static StockDetailResponse withQuoteName(StockDetailResponse detail, String stockName) {
+        StockQuoteResponse quote = detail.quote();
+        return new StockDetailResponse(new StockQuoteResponse(
+                quote.code(), stockName, quote.price(), quote.change(), quote.percent(),
+                quote.volumeRatio(), quote.market(), quote.source(), quote.fetchedAt()),
+                detail.finance(), detail.intraday(), detail.kline(), detail.aiAdvice(), detail.aiScore());
     }
 
     private static StockDetailResponse freshDetail(LocalDateTime quoteTime) {

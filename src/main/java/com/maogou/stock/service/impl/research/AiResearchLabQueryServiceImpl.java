@@ -154,12 +154,23 @@ public class AiResearchLabQueryServiceImpl implements AiResearchLabQueryService 
         dates(query, filter, "trade_date");
         status(query, filter, "tradable_status");
         quality(query, filter, "quality_status");
-        return page(mapper(AiSampleMapper.class), query, filter, "sample", "trade_date", "id");
+        AiSampleMapper sampleMapper = mapper(AiSampleMapper.class);
+        long total = sampleMapper.selectCount(query);
+        if (total == 0) {
+            return ResearchLabPayloads.PageResult.empty(filter.page(), filter.pageSize());
+        }
+        query.orderByDesc("trade_date", "id");
+        query.last("LIMIT " + filter.offset() + ", " + filter.pageSize());
+        List<AiSample> records = sampleMapper.selectList(query);
+        hydrateSampleNames(records);
+        return new ResearchLabPayloads.PageResult<>(items("sample", records),
+                total, filter.page(), filter.pageSize());
     }
 
     @Override
     public ResearchLabPayloads.Detail sample(Long id) {
         AiSample sample = required(mapper(AiSampleMapper.class).selectById(id), "样本不存在");
+        hydrateSampleNames(List.of(sample));
         Map<String, List<ResearchLabPayloads.EvidenceItem>> related = new LinkedHashMap<>();
         related.put("factors", items("factorValue", mapper(AiFactorValueMapper.class).selectList(
                 new QueryWrapper<AiFactorValue>().eq("sample_id", id).orderByAsc("factor_definition_id"))));
@@ -175,6 +186,45 @@ public class AiResearchLabQueryServiceImpl implements AiResearchLabQueryService 
                 new QueryWrapper<AiPrediction>().eq("sample_id", id)
                         .orderByAsc("horizon_trading_days").orderByDesc("predicted_at"))));
         return detail("sample", sample, related);
+    }
+
+    private void hydrateSampleNames(List<AiSample> samples) {
+        List<Long> itemIds = safe(samples).stream()
+                .map(sample -> sample.universeItemId)
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .toList();
+        if (itemIds.isEmpty()) {
+            return;
+        }
+        Map<Long, AiResearchUniverseItem> itemsById = new LinkedHashMap<>();
+        for (AiResearchUniverseItem item : safe(mapper(AiResearchUniverseItemMapper.class)
+                .selectBatchIds(itemIds))) {
+            itemsById.put(item.id, item);
+        }
+        for (AiSample sample : safe(samples)) {
+            sample.stockName = sampleDisplayName(sample, itemsById.get(sample.universeItemId));
+        }
+    }
+
+    static String sampleDisplayName(AiSample sample, AiResearchUniverseItem universeItem) {
+        if (sample == null) {
+            return null;
+        }
+        if (isUsableStockName(sample.stockCode, sample.stockName)) {
+            return sample.stockName.trim();
+        }
+        if (universeItem != null && isUsableStockName(sample.stockCode, universeItem.stockName)) {
+            return universeItem.stockName.trim();
+        }
+        return sample.stockCode;
+    }
+
+    private static boolean isUsableStockName(String stockCode, String stockName) {
+        return stockName != null
+                && !stockName.isBlank()
+                && !stockName.trim().equalsIgnoreCase(stockCode)
+                && !"未知股票".equals(stockName.trim());
     }
 
     @Override
