@@ -132,6 +132,54 @@ class SettingsControllerTest {
     }
 
     @Test
+    void schedulerStatusPrefersNewerUnifiedUserPipelineOverStaleLegacyStatus() {
+        ModelConfigService modelConfigService = mock(ModelConfigService.class);
+        AiPipelineRunMapper pipelineRunMapper = mock(AiPipelineRunMapper.class);
+        TradingCalendarService tradingCalendarService = mock(TradingCalendarService.class);
+        AiResearchDailyReportService reportService = mock(AiResearchDailyReportService.class);
+        AutoClosePipelineService pipelineService = mock(AutoClosePipelineService.class);
+
+        AiModelConfig entity = new AiModelConfig();
+        entity.autoClosePipelineEnabled = 1;
+        entity.autoClosePipelineLastStatus = "FAILED";
+        entity.autoClosePipelineLastMessage = "预测批次不能为空";
+        entity.autoClosePipelineLastRunAt = LocalDateTime.of(2026, 7, 13, 16, 0);
+        entity.autoClosePipelineLastFinishedAt = LocalDateTime.of(2026, 7, 15, 16, 0);
+        when(modelConfigService.currentEntity()).thenReturn(entity);
+        when(modelConfigService.current()).thenReturn(new ModelConfigResponse(
+                "http://localhost:11434/v1", "qwen3.6", "***", 60000,
+                BigDecimal.valueOf(0.2), 2048, 30, "15:30", "全部自选股", "prompt"));
+        when(tradingCalendarService.nextTradingDateTime(any(), eq(16), eq(0)))
+                .thenReturn(LocalDateTime.of(2026, 7, 16, 16, 0));
+
+        AiPipelineRun latest = new AiPipelineRun();
+        latest.id = 3L;
+        latest.scopeType = "USER";
+        latest.ownerUserId = 5L;
+        latest.pipelineType = "USER_DAILY_PROJECTION";
+        latest.status = "SUCCESS";
+        latest.processedCount = 32;
+        latest.successCount = 32;
+        latest.failedCount = 0;
+        latest.startedAt = LocalDateTime.of(2026, 7, 15, 17, 12);
+        latest.finishedAt = LocalDateTime.of(2026, 7, 15, 17, 13);
+        latest.updatedAt = latest.finishedAt;
+        when(pipelineRunMapper.selectOne(any(QueryWrapper.class))).thenReturn(latest);
+
+        SettingsController controller = new SettingsController(
+                modelConfigService, pipelineRunMapper, new AppProperties(),
+                tradingCalendarService, reportService, pipelineService);
+
+        SchedulerStatusResponse response = AuthContext.callAs(
+                5L, () -> controller.schedulerStatus().data());
+
+        assertThat(response.autoClosePipelineLastStatus()).isEqualTo("SUCCESS");
+        assertThat(response.autoClosePipelineLastMessage()).isEqualTo("用户投研日报投影流水线 #3 已完成");
+        assertThat(response.autoClosePipelineLastRunAt()).isEqualTo("2026-07-15 17:12:00");
+        assertThat(response.autoClosePipelineLastFinishedAt()).isEqualTo("2026-07-15 17:13:00");
+    }
+
+    @Test
     void manualClosePipelineEndpointRunsTheSameBackendPipeline() {
         ModelConfigService modelConfigService = mock(ModelConfigService.class);
         AiPipelineRunMapper pipelineRunMapper = mock(AiPipelineRunMapper.class);

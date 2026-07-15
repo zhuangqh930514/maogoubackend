@@ -79,7 +79,9 @@ public class SettingsController {
         AiModelConfig entity = modelConfigService.currentEntity();
         ModelConfigResponse config = modelConfigService.current();
         AppProperties.Scheduler scheduler = properties.getScheduler();
-        AiResearchDailyReportService.ReportView latestDailyReport = aiResearchDailyReportService.latestOrNull(AuthContext.currentUserIdOrDefault());
+        Long userId = AuthContext.currentUserIdOrDefault();
+        AiResearchDailyReportService.ReportView latestDailyReport = aiResearchDailyReportService.latestOrNull(userId);
+        PipelineStatusView pipelineStatus = latestPipelineStatus(userId, entity);
         return ApiResponse.ok(new SchedulerStatusResponse(
                 scheduler.isEnabled(),
                 scheduler.getNewsFixedRateMs(),
@@ -92,13 +94,13 @@ public class SettingsController {
                 nextCloseAnalysisTime(config.closeTime()),
                 "交易日 16:10",
                 entity.autoClosePipelineEnabled != null && entity.autoClosePipelineEnabled == 1,
-                "RUNNING".equalsIgnoreCase(nullToEmpty(entity.autoClosePipelineLastStatus)),
+                "RUNNING".equalsIgnoreCase(pipelineStatus.status()),
                 scheduler.getAutoClosePipelineCron(),
                 nextAutoClosePipelineTime(),
-                formatDateTime(entity.autoClosePipelineLastRunAt),
-                formatDateTime(entity.autoClosePipelineLastFinishedAt),
-                nullToEmpty(entity.autoClosePipelineLastStatus),
-                nullToEmpty(entity.autoClosePipelineLastMessage),
+                formatDateTime(pipelineStatus.startedAt()),
+                formatDateTime(pipelineStatus.finishedAt()),
+                pipelineStatus.status(),
+                pipelineStatus.message(),
                 scheduler.getWeeklyEvolutionCron(),
                 nextCronTime(scheduler.getWeeklyEvolutionCron()),
                 scheduler.getMonthlyTrainingCron(),
@@ -116,6 +118,28 @@ public class SettingsController {
                         latestDailyReport.freshnessStatus()
                 )
         ));
+    }
+
+    private PipelineStatusView latestPipelineStatus(Long userId, AiModelConfig config) {
+        PipelineStatusView configured = new PipelineStatusView(
+                nullToEmpty(config.autoClosePipelineLastStatus),
+                nullToEmpty(config.autoClosePipelineLastMessage),
+                config.autoClosePipelineLastRunAt,
+                config.autoClosePipelineLastFinishedAt);
+        AiPipelineRun latest = pipelineRunMapper.selectOne(new QueryWrapper<AiPipelineRun>()
+                .eq("scope_type", "USER")
+                .eq("owner_user_id", userId)
+                .eq("pipeline_type", "USER_DAILY_PROJECTION")
+                .orderByDesc("created_at", "id")
+                .last("LIMIT 1"));
+        if (latest == null || isBefore(latest.updatedAt, latest.finishedAt, configured.finishedAt(), configured.startedAt())) {
+            return configured;
+        }
+        return new PipelineStatusView(
+                nullToEmpty(latest.status),
+                pipelineRunMessage(latest),
+                latest.startedAt == null ? latest.createdAt : latest.startedAt,
+                latest.finishedAt);
     }
 
     @GetMapping("/scheduler/job-logs")
@@ -187,6 +211,37 @@ public class SettingsController {
 
     private static String nullToEmpty(String value) {
         return value == null ? "" : value;
+    }
+
+    private static boolean isBefore(
+            LocalDateTime first,
+            LocalDateTime second,
+            LocalDateTime configuredFinishedAt,
+            LocalDateTime configuredStartedAt
+    ) {
+        LocalDateTime pipelineAt = first == null ? second : first;
+        LocalDateTime configuredAt = configuredFinishedAt == null ? configuredStartedAt : configuredFinishedAt;
+        return pipelineAt == null || configuredAt != null && pipelineAt.isBefore(configuredAt);
+    }
+
+    private static String pipelineRunMessage(AiPipelineRun run) {
+        if (run.errorMessage != null && !run.errorMessage.isBlank()) {
+            return run.errorMessage;
+        }
+        return switch (nullToEmpty(run.status)) {
+            case "SUCCESS" -> "用户投研日报投影流水线 #" + run.id + " 已完成";
+            case "PARTIAL_SUCCESS" -> "用户投研日报投影流水线 #" + run.id + " 部分完成";
+            case "RUNNING", "PENDING" -> "用户投研日报投影流水线 #" + run.id + " 正在执行";
+            default -> "用户投研日报投影流水线 #" + run.id + " 状态：" + nullToEmpty(run.status);
+        };
+    }
+
+    private record PipelineStatusView(
+            String status,
+            String message,
+            LocalDateTime startedAt,
+            LocalDateTime finishedAt
+    ) {
     }
 
     private static String pipelineName(String type) {
