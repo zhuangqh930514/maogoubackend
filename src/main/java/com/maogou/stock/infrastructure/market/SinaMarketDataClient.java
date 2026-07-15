@@ -1,5 +1,6 @@
 package com.maogou.stock.infrastructure.market;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.maogou.stock.config.AppProperties;
@@ -773,39 +774,7 @@ public class SinaMarketDataClient implements MarketDataClient, ResearchMarketDat
         } catch (Exception ignored) {
             // 保留新浪 K 线作为备源。
         }
-        String sinaSymbol = toSinaSymbol(symbol);
-        String scale = switch (period == null ? "day" : period.toLowerCase(Locale.ROOT)) {
-            case "week", "weekly" -> "1200";
-            case "month", "monthly" -> "7200";
-            default -> "240";
-        };
-        URI uri = URI.create("https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20_" + sinaSymbol + "_" + scale
-                + "=/CN_MarketDataService.getKLineData?symbol=" + sinaSymbol
-                + "&scale=" + scale
-                + "&ma=no&datalen=" + Math.max(1, Math.min(limit, 240)));
-        try {
-            String text = getText(uri, StandardCharsets.UTF_8, "https://finance.sina.com.cn/");
-            Matcher matcher = JSONP_ARRAY_PATTERN.matcher(text);
-            if (!matcher.find()) {
-                throw new IllegalStateException("新浪 K 线返回格式异常");
-            }
-            JsonNode points = objectMapper.readTree(matcher.group(1));
-            List<KlinePointResponse> result = new ArrayList<>();
-            for (JsonNode point : points) {
-                result.add(new KlinePointResponse(
-                        LocalDate.parse(point.path("day").asText()),
-                        bd(point.path("open").asText("0")),
-                        bd(point.path("close").asText("0")),
-                        bd(point.path("low").asText("0")),
-                        bd(point.path("high").asText("0")),
-                        point.path("volume").asLong(0),
-                        BigDecimal.ZERO
-                ));
-            }
-            return result;
-        } catch (Exception ex) {
-            throw new IllegalStateException("获取新浪 K 线行情失败：" + symbol + "，" + ex.getMessage(), ex);
-        }
+        return fetchSinaKline(symbol, period, limit);
     }
 
     @Override
@@ -847,36 +816,72 @@ public class SinaMarketDataClient implements MarketDataClient, ResearchMarketDat
             case "month", "monthly" -> "7200";
             default -> "240";
         };
-        URI uri = URI.create("https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20_" + sinaSymbol + "_" + scale
+        int dataLength = Math.max(1, Math.min(limit, 240));
+        URI jsonUri = URI.create("https://quotes.sina.cn/cn/api/json_v2.php/"
+                + "CN_MarketDataService.getKLineData?symbol=" + sinaSymbol
+                + "&scale=" + scale
+                + "&ma=no&datalen=" + dataLength);
+        Exception jsonFailure;
+        try {
+            return parseSinaKlinePayload(getText(
+                    jsonUri, StandardCharsets.UTF_8, "https://finance.sina.com.cn/"));
+        } catch (Exception exception) {
+            jsonFailure = exception;
+        }
+
+        URI jsonpUri = URI.create("https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20_" + sinaSymbol + "_" + scale
                 + "=/CN_MarketDataService.getKLineData?symbol=" + sinaSymbol
                 + "&scale=" + scale
-                + "&ma=no&datalen=" + Math.max(1, Math.min(limit, 240)));
+                + "&ma=no&datalen=" + dataLength);
         try {
-            String text = getText(uri, StandardCharsets.UTF_8, "https://finance.sina.com.cn/");
-            Matcher matcher = JSONP_ARRAY_PATTERN.matcher(text);
+            return parseSinaKlinePayload(getText(
+                    jsonpUri, StandardCharsets.UTF_8, "https://finance.sina.com.cn/"));
+        } catch (Exception exception) {
+            exception.addSuppressed(jsonFailure);
+            throw new IllegalStateException("获取新浪 K 线行情失败：" + symbol + "，" + exception.getMessage(), exception);
+        }
+    }
+
+    private List<KlinePointResponse> parseSinaKlinePayload(String payload) {
+        String normalized = payload == null ? "" : payload.strip();
+        if (normalized.startsWith("\uFEFF")) {
+            normalized = normalized.substring(1).stripLeading();
+        }
+        String json;
+        if (normalized.startsWith("[")) {
+            json = normalized;
+        } else {
+            Matcher matcher = JSONP_ARRAY_PATTERN.matcher(normalized);
             if (!matcher.find()) {
                 throw new IllegalStateException("新浪 K 线返回格式异常");
             }
-            JsonNode points = objectMapper.readTree(matcher.group(1));
-            List<KlinePointResponse> result = new ArrayList<>();
-            for (JsonNode point : points) {
-                result.add(new KlinePointResponse(
-                        LocalDate.parse(point.path("day").asText()),
-                        bd(point.path("open").asText("0")),
-                        bd(point.path("close").asText("0")),
-                        bd(point.path("low").asText("0")),
-                        bd(point.path("high").asText("0")),
-                        point.path("volume").asLong(0),
-                        nullableDecimal(point.path("amount"))
-                ));
-            }
-            if (result.isEmpty()) {
-                throw new IllegalStateException("新浪 K 线返回为空");
-            }
-            return result;
-        } catch (Exception exception) {
-            throw new IllegalStateException("获取新浪 K 线行情失败：" + symbol + "，" + exception.getMessage(), exception);
+            json = matcher.group(1);
         }
+        JsonNode points;
+        try {
+            points = objectMapper.readTree(json);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("新浪 K 线 JSON 无法解析", exception);
+        }
+        if (!points.isArray()) {
+            throw new IllegalStateException("新浪 K 线返回格式异常");
+        }
+        List<KlinePointResponse> result = new ArrayList<>();
+        for (JsonNode point : points) {
+            result.add(new KlinePointResponse(
+                    LocalDate.parse(point.path("day").asText()),
+                    bd(point.path("open").asText("0")),
+                    bd(point.path("close").asText("0")),
+                    bd(point.path("low").asText("0")),
+                    bd(point.path("high").asText("0")),
+                    point.path("volume").asLong(0),
+                    nullableDecimal(point.path("amount"))
+            ));
+        }
+        if (result.isEmpty()) {
+            throw new IllegalStateException("新浪 K 线返回为空");
+        }
+        return result;
     }
 
     private List<KlinePointResponse> fetchA50Kline(String period, int limit) {
