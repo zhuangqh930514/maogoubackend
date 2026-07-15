@@ -171,6 +171,42 @@ class GlobalDailyResearchExecutorTest {
         verify(fixture.resilientMarketDataClient, never()).fetchKlineAt(anyString(), anyString(), any(Integer.class), any());
     }
 
+    @Test
+    void waitingSourceRetryUsesANewImmutableBatchRevisionAndRefetches() {
+        Fixture fixture = fixture();
+        AiDataBatch retryBatch = batch();
+        retryBatch.id = 56L;
+        when(fixture.snapshotMapper.selectById(91L)).thenReturn(snapshot());
+        when(fixture.itemMapper.selectList(any())).thenReturn(List.of(
+                item(1L, "600519", "WATCHLIST:USER:5")));
+        when(fixture.snapshotService.startOrGetBatch(any(), any(), anyString(), any(), anyString()))
+                .thenReturn(retryBatch);
+        when(fixture.observationMapper.selectList(any())).thenReturn(List.of());
+        when(fixture.marketDataService.stockDetailAt(anyString(), any()))
+                .thenAnswer(invocation -> detail(invocation.getArgument(0), invocation.getArgument(1)));
+        clearInvocations(fixture.resilientMarketDataClient, fixture.marketDataService);
+
+        AiGlobalDailyResearchExecutor.StepOutcome outcome = fixture.executor.execute(
+                "FETCH_SOURCE_DATA", context(1, Map.of(
+                        "SNAPSHOT_UNIVERSE", "{\"universeSnapshotId\":91}")));
+
+        assertThat(outcome.dataBatchId()).isEqualTo(56L);
+        assertThat(outcome.checkpointJson()).doesNotContain("reusedPersistedEvidence");
+        verify(fixture.snapshotService).startOrGetBatch(
+                org.mockito.ArgumentMatchers.eq(91L),
+                org.mockito.ArgumentMatchers.eq(TRADE_DATE),
+                org.mockito.ArgumentMatchers.eq("AFTER_CLOSE"),
+                any(),
+                org.mockito.ArgumentMatchers.argThat(key -> key.startsWith("BATCH:") && key.length() == 70));
+        verify(fixture.marketDataService).stockDetailAt(
+                org.mockito.ArgumentMatchers.eq("600519"), any());
+        verify(fixture.resilientMarketDataClient).fetchKlineAt(
+                org.mockito.ArgumentMatchers.eq("000300"),
+                org.mockito.ArgumentMatchers.eq("day"),
+                org.mockito.ArgumentMatchers.eq(80),
+                any());
+    }
+
     private static Fixture fixture() {
         AiResearchUniverseItemMapper itemMapper = mock(AiResearchUniverseItemMapper.class);
         ResearchMarketDataClient researchMarketDataClient = mock(ResearchMarketDataClient.class);
@@ -204,10 +240,17 @@ class GlobalDailyResearchExecutorTest {
     }
 
     private static AiGlobalDailyResearchExecutor.PipelineContext context(Map<String, String> checkpoints) {
+        return context(0, checkpoints);
+    }
+
+    private static AiGlobalDailyResearchExecutor.PipelineContext context(
+            int attemptNo,
+            Map<String, String> checkpoints
+    ) {
         return new AiGlobalDailyResearchExecutor.PipelineContext(
                 4001L, TRADE_DATE, 1L, null,
                 "GLOBAL_DAILY:2026-07-14", "input-fingerprint", STARTED_AT,
-                checkpoints, () -> { });
+                attemptNo, checkpoints, () -> { });
     }
 
     private static AiResearchUniverseSnapshot snapshot() {

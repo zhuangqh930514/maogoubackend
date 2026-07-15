@@ -22,6 +22,7 @@ class GlobalDailyResearchRecoveryTest {
                         "GLOBAL_DAILY:2026-07-14",
                         "input-fingerprint",
                         LocalDateTime.of(2026, 7, 14, 16, 0),
+                        0,
                         Map.of(
                                 "SNAPSHOT_UNIVERSE", "{\"universeSnapshotId\":91}",
                                 "FETCH_SOURCE_DATA", "{\"dataBatchId\":55}"

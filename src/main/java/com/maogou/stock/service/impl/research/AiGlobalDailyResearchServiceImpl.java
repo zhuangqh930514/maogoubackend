@@ -125,7 +125,8 @@ public class AiGlobalDailyResearchServiceImpl implements AiGlobalDailyResearchSe
                     heartbeat.assertHealthy();
                     renewLease(run.id, owner);
                     if (outcome.dataBatchId() != null) {
-                        if (run.dataBatchId != null && !Objects.equals(run.dataBatchId, outcome.dataBatchId())) {
+                        if (run.dataBatchId != null && !Objects.equals(run.dataBatchId, outcome.dataBatchId())
+                                && !"FETCH_SOURCE_DATA".equals(step.stepKey)) {
                             throw new IllegalStateException("恢复流水线时数据批次发生变化");
                         }
                         run.dataBatchId = outcome.dataBatchId();
@@ -243,7 +244,7 @@ public class AiGlobalDailyResearchServiceImpl implements AiGlobalDailyResearchSe
         return new AiGlobalDailyResearchExecutor.PipelineContext(
                 run.id, request.tradeDate(), request.strategyReleaseId(), request.modelVersionId(),
                 request.idempotencyKey(), request.inputFingerprint(), run.startedAt,
-                checkpoints, () -> renewLease(run.id, owner));
+                value(run.retryCount), checkpoints, () -> renewLease(run.id, owner));
     }
 
     private void beginStep(AiPipelineRun run, AiPipelineStep step, String owner) {

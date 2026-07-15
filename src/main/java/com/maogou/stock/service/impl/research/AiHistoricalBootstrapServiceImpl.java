@@ -187,7 +187,7 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
                     new AiGlobalDailyResearchExecutor.PipelineContext(
                             run.id, tradeDate, request.strategyReleaseId(), request.modelVersionId(),
                             request.idempotencyKey() + ":" + tradeDate,
-                            evidence.sourceFingerprint(), evidence.asOfTime(), sourceCheckpoints,
+                            evidence.sourceFingerprint(), evidence.asOfTime(), value(run.retryCount), sourceCheckpoints,
                             () -> renewLease(run.id, owner));
             for (String replayStep : REPLAY_STEPS) {
                 renewLease(run.id, owner);

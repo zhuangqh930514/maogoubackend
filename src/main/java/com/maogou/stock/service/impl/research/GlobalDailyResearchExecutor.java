@@ -161,7 +161,7 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         LocalDateTime fetchStartedAt = LocalDateTime.now();
         AiDataBatch batch = sampleSnapshotService.startOrGetBatch(
                 snapshotId, context.tradeDate(), "AFTER_CLOSE", fetchStartedAt,
-                context.idempotencyKey() + ":BATCH");
+                batchIdempotencyKey(context));
         List<AiSourceObservation> existingObservations = observations(batch.id);
         if (!existingObservations.isEmpty()) {
             return resumeExistingSourceData(batch, items, existingObservations);
@@ -726,6 +726,11 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         }
         return series.points().stream().map(KlinePointResponse::tradeDate)
                 .filter(Objects::nonNull).max(Comparator.naturalOrder());
+    }
+
+    private static String batchIdempotencyKey(PipelineContext context) {
+        return "BATCH:" + fingerprint(
+                context.pipelineRunId(), context.idempotencyKey(), context.tradeDate(), context.attemptNo());
     }
 
     private static String marketRegime(KlineSeriesSnapshot series) {

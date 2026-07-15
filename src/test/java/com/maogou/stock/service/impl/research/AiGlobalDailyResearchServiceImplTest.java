@@ -64,17 +64,23 @@ class AiGlobalDailyResearchServiceImplTest {
     }
 
     @Test
-    void waitingSourcePersistsRetryAndResumesSameRunSnapshotAndBatchAfterRestart() {
+    void waitingSourcePersistsRetryAndResumesSameRunWithANewImmutableBatchRevision() {
         Fixture fixture = fixture();
         Map<String, Integer> calls = new LinkedHashMap<>();
+        List<Integer> fetchAttempts = new ArrayList<>();
         when(fixture.executor.execute(anyString(), any())).thenAnswer(invocation -> {
             String key = invocation.getArgument(0);
+            AiGlobalDailyResearchExecutor.PipelineContext context = invocation.getArgument(1);
             calls.merge(key, 1, Integer::sum);
             if ("SNAPSHOT_UNIVERSE".equals(key)) {
                 return outcome("SUCCESS", key, "{\"universeSnapshotId\":91}", null, null);
             }
             if ("FETCH_SOURCE_DATA".equals(key)) {
-                return outcome("SUCCESS", key, "{\"universeSnapshotId\":91,\"dataBatchId\":55}", 55L, null);
+                fetchAttempts.add(context.attemptNo());
+                long batchId = context.attemptNo() == 0 ? 55L : 56L;
+                return outcome("SUCCESS", key,
+                        "{\"universeSnapshotId\":91,\"dataBatchId\":" + batchId + "}",
+                        batchId, null);
             }
             if ("WAIT_DATA_READY".equals(key) && calls.get(key) == 1) {
                 return outcome("WAITING_SOURCE", key,
@@ -101,8 +107,9 @@ class AiGlobalDailyResearchServiceImplTest {
         AiGlobalDailyResearchService.PipelineResult completed = restartedService.run(request());
 
         assertThat(completed.run().id).isEqualTo(waiting.run().id);
-        assertThat(completed.run().dataBatchId).isEqualTo(55L);
+        assertThat(completed.run().dataBatchId).isEqualTo(56L);
         assertThat(completed.run().status).isEqualTo("SUCCESS");
+        assertThat(fetchAttempts).containsExactly(0, 1);
         assertThat(calls.get("SNAPSHOT_UNIVERSE")).isEqualTo(1);
         assertThat(calls.get("FETCH_SOURCE_DATA")).isEqualTo(2);
         assertThat(calls.get("WAIT_DATA_READY")).isEqualTo(2);

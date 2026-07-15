@@ -24,6 +24,7 @@ public interface AiGlobalDailyResearchExecutor {
             String idempotencyKey,
             String inputFingerprint,
             LocalDateTime startedAt,
+            int attemptNo,
             Map<String, String> checkpoints,
             LeaseGuard leaseGuard
     ) {
@@ -37,10 +38,11 @@ public interface AiGlobalDailyResearchExecutor {
                 LocalDateTime startedAt
         ) {
             this(pipelineRunId, tradeDate, strategyReleaseId, modelVersionId,
-                    idempotencyKey, inputFingerprint, startedAt, Map.of(), LeaseGuard.NOOP);
+                    idempotencyKey, inputFingerprint, startedAt, 0, Map.of(), LeaseGuard.NOOP);
         }
 
         public PipelineContext {
+            attemptNo = Math.max(0, attemptNo);
             checkpoints = checkpoints == null ? Map.of() : Map.copyOf(checkpoints);
             leaseGuard = leaseGuard == null ? LeaseGuard.NOOP : leaseGuard;
         }
