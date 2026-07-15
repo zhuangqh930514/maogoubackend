@@ -398,12 +398,22 @@ public class AiResearchLabQueryServiceImpl implements AiResearchLabQueryService 
     }
 
     @Override
-    public ResearchLabPayloads.Detail pipelineRun(Long id) {
-        AiPipelineRun run = required(mapper(AiPipelineRunMapper.class).selectOne(
-                new QueryWrapper<AiPipelineRun>().eq("id", id).eq("scope_type", "GLOBAL")), "全局流水线不存在");
+    public ResearchLabPayloads.Detail pipelineRun(Long id, Long authenticatedUserId) {
+        QueryWrapper<AiPipelineRun> query = pipelineRunScope(id, authenticatedUserId);
+        AiPipelineRun run = required(mapper(AiPipelineRunMapper.class).selectOne(query), "流水线不存在或无权查看");
         List<AiPipelineStep> steps = mapper(AiPipelineStepMapper.class).selectList(
                 new QueryWrapper<AiPipelineStep>().eq("pipeline_run_id", id).orderByAsc("step_order", "id"));
         return detail("pipelineRun", run, Map.of("steps", items("pipelineStep", steps)));
+    }
+
+    static QueryWrapper<AiPipelineRun> pipelineRunScope(Long id, Long authenticatedUserId) {
+        if (authenticatedUserId == null || authenticatedUserId <= 0) {
+            throw new IllegalArgumentException("查询流水线缺少认证用户");
+        }
+        return new QueryWrapper<AiPipelineRun>().eq("id", id)
+                .and(scope -> scope.eq("scope_type", "GLOBAL")
+                        .or(user -> user.eq("scope_type", "USER")
+                                .eq("owner_user_id", authenticatedUserId)));
     }
 
     private void predictionRelation(QueryWrapper<AiPredictionEvaluation> query, ResearchLabPayloads.QueryFilter filter) {

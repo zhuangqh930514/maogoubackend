@@ -2,6 +2,7 @@ package com.maogou.stock.controller;
 
 import com.maogou.stock.common.ApiResponse;
 import com.maogou.stock.dto.research.ResearchLabPayloads;
+import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.research.AiResearchLabQueryService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ModelAttribute;
@@ -158,6 +159,8 @@ public class ResearchLabController {
 
     @GetMapping("/pipeline-runs/{id}")
     public ApiResponse<ResearchLabPayloads.Detail> pipelineRun(@PathVariable Long id) {
-        return ApiResponse.ok(queryService.pipelineRun(id));
+        Long userId = AuthContext.currentUserId().orElseThrow(() ->
+                new org.springframework.security.access.AccessDeniedException("请先登录"));
+        return ApiResponse.ok(queryService.pipelineRun(id, userId));
     }
 }

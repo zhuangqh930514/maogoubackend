@@ -52,5 +52,5 @@ public interface AiResearchLabQueryService {
 
     ResearchLabPayloads.PageResult<ResearchLabPayloads.EvidenceItem> pipelineRuns(ResearchLabPayloads.QueryFilter filter);
 
-    ResearchLabPayloads.Detail pipelineRun(Long id);
+    ResearchLabPayloads.Detail pipelineRun(Long id, Long authenticatedUserId);
 }

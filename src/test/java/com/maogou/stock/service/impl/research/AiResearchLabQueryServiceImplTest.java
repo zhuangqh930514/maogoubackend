@@ -2,6 +2,7 @@ package com.maogou.stock.service.impl.research;
 
 import com.maogou.stock.domain.entity.research.AiPipelineRun;
 import com.maogou.stock.domain.entity.research.AiPipelineStep;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -28,5 +29,14 @@ class AiResearchLabQueryServiceImplTest {
                 .doesNotContainKeys("ownerUserId", "executionOwner", "leaseUntil");
         assertThat(AiResearchLabQueryServiceImpl.evidenceFields(audit))
                 .doesNotContainKeys("leaseUntil", "checkpointJson");
+    }
+
+    @Test
+    void pipelineDetailAllowsGlobalRunsOrTheAuthenticatedUsersOwnProjectionRun() {
+        QueryWrapper<AiPipelineRun> query = AiResearchLabQueryServiceImpl.pipelineRunScope(91L, 5L);
+
+        assertThat(query.getCustomSqlSegment()).contains("id", "scope_type", "owner_user_id");
+        assertThat(query.getParamNameValuePairs().values())
+                .contains(91L, "GLOBAL", "USER", 5L);
     }
 }
