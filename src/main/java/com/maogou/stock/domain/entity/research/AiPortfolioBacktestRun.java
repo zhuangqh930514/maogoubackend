@@ -1,6 +1,7 @@
 package com.maogou.stock.domain.entity.research;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 
@@ -12,7 +13,6 @@ import java.time.LocalDateTime;
 public class AiPortfolioBacktestRun {
     @TableId(type = IdType.AUTO)
     public Long id;
-    public Long userId;
     public Long trainingDatasetId;
     public Long walkForwardRunId;
     public Long strategyReleaseId;
@@ -24,6 +24,7 @@ public class AiPortfolioBacktestRun {
     public Long randomSeed;
     public LocalDate startTradeDate;
     public LocalDate endTradeDate;
+    @TableField("horizon_trading_days")
     public Integer horizonDays;
     public Integer topK;
     public String rebalanceFrequency;

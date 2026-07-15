@@ -59,7 +59,7 @@ public class AiWalkForwardServiceImpl implements AiWalkForwardService {
         List<SplitPlan> plans = createPlans(request, dates);
         AiWalkForwardRun expectedRun = buildRun(request, plans);
         runMapper.insertImmutable(expectedRun);
-        AiWalkForwardRun run = runMapper.selectByRunKeyForShare(request.userId(), request.runKey());
+        AiWalkForwardRun run = runMapper.selectByRunKeyForShare(request.runKey());
         if (run == null) {
             throw new IllegalStateException("Walk-forward 运行写入后未读取到记录");
         }
@@ -99,11 +99,12 @@ public class AiWalkForwardServiceImpl implements AiWalkForwardService {
     private List<SplitPlan> createPlans(WalkForwardRequest request, List<LocalDate> dates) {
         List<SplitPlan> plans = new ArrayList<>();
         WalkForwardConfig config = request.config();
+        int isolationDays = request.purgeDays() + request.embargoDays();
         for (int foldIndex = 0; foldIndex < request.foldCount(); foldIndex++) {
             int trainEndIndex = config.initialTrainDays() - 1 + foldIndex * config.stepDays();
-            int validationStartIndex = trainEndIndex + request.purgeDays() + 1;
+            int validationStartIndex = trainEndIndex + isolationDays + 1;
             int validationEndIndex = validationStartIndex + config.validationDays() - 1;
-            int testStartIndex = validationEndIndex + request.embargoDays() + 1;
+            int testStartIndex = validationEndIndex + isolationDays + 1;
             int testEndIndex = testStartIndex + config.testDays() - 1;
             if (testEndIndex >= dates.size()) {
                 throw new IllegalArgumentException("交易日数量不足以生成请求的 Walk-forward 窗口");
@@ -135,20 +136,22 @@ public class AiWalkForwardServiceImpl implements AiWalkForwardService {
 
     private AiWalkForwardRun buildRun(WalkForwardRequest request, List<SplitPlan> plans) {
         AiWalkForwardRun run = new AiWalkForwardRun();
-        run.userId = request.userId();
         run.trainingDatasetId = request.trainingDatasetId();
         run.strategyReleaseId = request.strategyReleaseId();
         run.modelVersionId = request.modelVersionId();
         run.runKey = request.runKey();
-        run.runVersion = request.runVersion();
-        run.objective = request.objective();
-        run.horizonDays = request.horizonDays();
-        run.purgeDays = request.purgeDays();
-        run.embargoDays = request.embargoDays();
-        run.foldCount = plans.size();
+        run.engineVersion = request.engineVersion();
+        run.purgeTradingDays = request.purgeDays();
+        run.embargoTradingDays = request.embargoDays();
         run.randomSeed = request.randomSeed();
         run.inputFingerprint = inputFingerprint(request);
-        run.configJson = json(request.config());
+        Map<String, Object> persistedConfig = new LinkedHashMap<>();
+        persistedConfig.put("objective", request.objective());
+        persistedConfig.put("horizonTradingDays", request.horizonDays());
+        persistedConfig.put("foldCount", plans.size());
+        persistedConfig.put("benchmarkCode", request.benchmarkCode());
+        persistedConfig.put("window", request.config());
+        run.configJson = json(persistedConfig);
         List<BigDecimal> foldReturns = plans.stream()
                 .map(plan -> compound(strategyDailyReturns(plan.test(), request.config().topK())))
                 .toList();
@@ -174,23 +177,20 @@ public class AiWalkForwardServiceImpl implements AiWalkForwardService {
         fold.validationEndDate = plan.validationEnd();
         fold.testStartDate = plan.testStart();
         fold.testEndDate = plan.testEnd();
-        fold.purgeDays = request.purgeDays();
-        fold.embargoDays = request.embargoDays();
         fold.trainSampleCount = plan.train().size();
         fold.validationSampleCount = plan.validation().size();
         fold.testSampleCount = plan.test().size();
         List<BigDecimal> candidateReturns = strategyDailyReturns(plan.test(), request.config().topK());
-        fold.metricsJson = json(Map.of(
-                "candidateTotalReturn", compound(candidateReturns),
-                "candidateMeanDailyReturn", average(candidateReturns),
-                "candidateHitRate", hitRate(candidateReturns),
-                "testTradingDayCount", candidateReturns.size()));
-        fold.confidenceIntervalJson = json(confidenceInterval(
+        Map<String, Object> metrics = new LinkedHashMap<>();
+        metrics.put("candidateTotalReturn", compound(candidateReturns));
+        metrics.put("candidateMeanDailyReturn", average(candidateReturns));
+        metrics.put("candidateHitRate", hitRate(candidateReturns));
+        metrics.put("testTradingDayCount", candidateReturns.size());
+        metrics.put("confidenceInterval", confidenceInterval(
                 candidateReturns, request.config().bootstrapIterations(),
                 request.randomSeed() + plan.foldNo()));
+        fold.metricsJson = json(metrics);
         fold.status = "COMPLETED";
-        fold.startedAt = request.evaluatedAt();
-        fold.completedAt = request.evaluatedAt();
         fold.createdAt = LocalDateTime.now();
         return fold;
     }
@@ -393,15 +393,14 @@ public class AiWalkForwardServiceImpl implements AiWalkForwardService {
     }
 
     private static void validate(WalkForwardRequest request) {
-        if (request == null || request.userId() == null || request.userId() <= 0
-                || request.trainingDatasetId() == null || request.trainingDatasetId() <= 0
+        if (request == null || request.trainingDatasetId() == null || request.trainingDatasetId() <= 0
                 || request.strategyReleaseId() == null || request.strategyReleaseId() <= 0
                 || request.runKey() == null || request.runKey().isBlank()
-                || request.runVersion() == null || request.runVersion().isBlank()
+                || request.engineVersion() == null || request.engineVersion().isBlank()
                 || request.objective() == null || request.objective().isBlank()
                 || request.horizonDays() == null || request.horizonDays() <= 0
-                || request.purgeDays() == null || request.purgeDays() < 0
-                || request.embargoDays() == null || request.embargoDays() < 0
+                || request.purgeDays() == null || request.purgeDays() < 5
+                || request.embargoDays() == null || request.embargoDays() < 5
                 || request.foldCount() == null || request.foldCount() <= 0
                 || request.randomSeed() == null || request.config() == null
                 || request.observations() == null || request.observations().isEmpty()
@@ -459,7 +458,7 @@ public class AiWalkForwardServiceImpl implements AiWalkForwardService {
                 .sorted(Comparator.comparing(BenchmarkPoint::tradeDate))
                 .map(item -> item.tradeDate() + ":" + item.sourceFingerprint())
                 .reduce((left, right) -> left + "|" + right).orElse("");
-        return sha256(String.join("|", request.runVersion(), request.objective(),
+        return sha256(String.join("|", request.engineVersion(), request.objective(),
                 String.valueOf(request.horizonDays()), String.valueOf(request.purgeDays()),
                 String.valueOf(request.embargoDays()), String.valueOf(request.foldCount()),
                 String.valueOf(request.randomSeed()), String.valueOf(request.config()),

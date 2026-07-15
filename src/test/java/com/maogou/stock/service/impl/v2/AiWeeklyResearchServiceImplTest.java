@@ -40,25 +40,29 @@ import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-class AiWeeklyEvolutionRunnerImplTest {
+class AiWeeklyResearchServiceImplTest {
 
     @Test
     void skipsCleanlyWhenNoChampionOrChallengerExists() {
         Fixture noChampion = fixture();
-        when(noChampion.releaseMapper.selectOne(any())).thenReturn(null);
+        when(noChampion.releaseMapper.selectGlobalActiveChampionForUpdate(anyString(), anyString()))
+                .thenReturn(null);
 
         AiEvolutionAutomationService.CycleResult first = runner(noChampion).run(5L, now());
 
         assertThat(first.status()).isEqualTo("SKIPPED");
         assertThat(first.message()).contains("Champion");
         Fixture noChallenger = fixture();
-        when(noChallenger.releaseMapper.selectOne(any())).thenReturn(champion());
-        when(noChallenger.releaseMapper.selectShadowChallengers(5L)).thenReturn(List.of());
+        when(noChallenger.releaseMapper.selectGlobalActiveChampionForUpdate(anyString(), anyString()))
+                .thenReturn(champion());
+        when(noChallenger.releaseMapper.selectShadowChallengers(10L, "A_SHARE_MULTI_HORIZON"))
+                .thenReturn(List.of());
 
         AiEvolutionAutomationService.CycleResult second = runner(noChallenger).run(5L, now());
 
@@ -71,8 +75,10 @@ class AiWeeklyEvolutionRunnerImplTest {
         Fixture fixture = fixture();
         AiStrategyRelease champion = champion();
         AiStrategyRelease challenger = challenger();
-        when(fixture.releaseMapper.selectOne(any())).thenReturn(champion);
-        when(fixture.releaseMapper.selectShadowChallengers(5L)).thenReturn(List.of(challenger));
+        when(fixture.releaseMapper.selectGlobalActiveChampionForUpdate(anyString(), anyString()))
+                .thenReturn(champion);
+        when(fixture.releaseMapper.selectShadowChallengers(10L, "A_SHARE_MULTI_HORIZON"))
+                .thenReturn(List.of(challenger));
         AiPrediction championPrediction = prediction(101L, 1001L, 11L, null, "CHAMPION", "0.55");
         AiPrediction challengerPrediction = prediction(
                 201L, 1001L, 12L, 81L, "CHALLENGER_SHADOW", "0.68");
@@ -102,8 +108,10 @@ class AiWeeklyEvolutionRunnerImplTest {
     @Test
     void challengerWithoutPairedSamplesIsSkippedRatherThanReportedAsSystemFailure() {
         Fixture fixture = fixture();
-        when(fixture.releaseMapper.selectOne(any())).thenReturn(champion());
-        when(fixture.releaseMapper.selectShadowChallengers(5L)).thenReturn(List.of(challenger()));
+        when(fixture.releaseMapper.selectGlobalActiveChampionForUpdate(anyString(), anyString()))
+                .thenReturn(champion());
+        when(fixture.releaseMapper.selectShadowChallengers(10L, "A_SHARE_MULTI_HORIZON"))
+                .thenReturn(List.of(challenger()));
         when(fixture.predictionMapper.selectList(any())).thenReturn(
                 List.of(prediction(101L, 1001L, 11L, null, "CHAMPION", "0.55")),
                 List.of(prediction(202L, 9999L, 12L, 81L, "CHALLENGER_SHADOW", "0.68")));
@@ -120,8 +128,10 @@ class AiWeeklyEvolutionRunnerImplTest {
     void runsWalkForwardAndRealIndexBacktestWhenThirtyTradingDaysOfEvidenceExist() {
         Fixture fixture = fixture();
         AiStrategyRelease challenger = challenger();
-        when(fixture.releaseMapper.selectOne(any())).thenReturn(champion());
-        when(fixture.releaseMapper.selectShadowChallengers(5L)).thenReturn(List.of(challenger));
+        when(fixture.releaseMapper.selectGlobalActiveChampionForUpdate(anyString(), anyString()))
+                .thenReturn(champion());
+        when(fixture.releaseMapper.selectShadowChallengers(10L, "A_SHARE_MULTI_HORIZON"))
+                .thenReturn(List.of(challenger));
         List<LocalDate> dates = IntStream.range(0, 35)
                 .mapToObj(index -> LocalDate.of(2026, 5, 1).plusDays(index))
                 .toList();
@@ -157,6 +167,7 @@ class AiWeeklyEvolutionRunnerImplTest {
             factor.normalizedValue = new BigDecimal("0.2");
             factor.missing = 0;
             factor.inputFingerprint = "factor-" + sampleId;
+            factor.calculatedAt = now();
             factors.add(factor);
             AiSample sample = new AiSample();
             sample.id = sampleId;
@@ -175,7 +186,7 @@ class AiWeeklyEvolutionRunnerImplTest {
         model.id = 81L;
         model.trainingDatasetId = 71L;
         when(fixture.modelMapper.selectById(81L)).thenReturn(model);
-        when(fixture.factorMapper.selectList(any())).thenReturn(factors);
+        when(fixture.factorMapper.selectBySamples(any(), anyString())).thenReturn(factors);
         when(fixture.sampleMapper.selectList(any())).thenReturn(samples);
         AiFactorPerformance performance = new AiFactorPerformance();
         performance.id = 5501L;
@@ -240,8 +251,8 @@ class AiWeeklyEvolutionRunnerImplTest {
         assertThat(evaluationRequest.getValue().governance().backtestRunId()).isEqualTo(701L);
     }
 
-    private static AiWeeklyEvolutionRunnerImpl runner(Fixture fixture) {
-        return new AiWeeklyEvolutionRunnerImpl(
+    private static AiWeeklyResearchServiceImpl runner(Fixture fixture) {
+        return new AiWeeklyResearchServiceImpl(
                 fixture.properties, fixture.releaseMapper, fixture.modelMapper,
                 fixture.predictionMapper, fixture.labelMapper, fixture.factorMapper,
                 fixture.sampleMapper, fixture.marketDataService, fixture.factorPerformanceService,
@@ -269,7 +280,8 @@ class AiWeeklyEvolutionRunnerImplTest {
     private static AiStrategyRelease champion() {
         AiStrategyRelease value = new AiStrategyRelease();
         value.id = 11L;
-        value.userId = 5L;
+        value.researchUniverseId = 10L;
+        value.modelFamily = "A_SHARE_MULTI_HORIZON";
         value.releaseRole = "CHAMPION";
         value.status = "ACTIVE";
         return value;
@@ -278,7 +290,8 @@ class AiWeeklyEvolutionRunnerImplTest {
     private static AiStrategyRelease challenger() {
         AiStrategyRelease value = new AiStrategyRelease();
         value.id = 12L;
-        value.userId = 5L;
+        value.researchUniverseId = 10L;
+        value.modelFamily = "A_SHARE_MULTI_HORIZON";
         value.modelVersionId = 81L;
         value.releaseRole = "CHALLENGER";
         value.status = "SHADOW";

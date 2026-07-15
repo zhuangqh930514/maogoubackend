@@ -12,7 +12,7 @@ public class AiTrainingDatasetItem {
     public Long id;
     public Long trainingDatasetId;
     public Long sampleId;
-    public Long labelId;
+    public Long sampleLabelId;
     public String splitType;
     public Integer sequenceNo;
     public LocalDateTime sampleAsOfTime;

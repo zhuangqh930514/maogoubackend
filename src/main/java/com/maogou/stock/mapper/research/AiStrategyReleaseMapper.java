@@ -45,17 +45,28 @@ public interface AiStrategyReleaseMapper extends BaseMapper<AiStrategyRelease> {
 
     @Select("""
             SELECT * FROM ai_strategy_release
-            WHERE user_id = #{userId} AND release_role = 'CHAMPION' AND status = 'ACTIVE'
+            WHERE research_universe_id = #{researchUniverseId}
+              AND model_family = #{modelFamily}
+              AND release_role = 'CHAMPION'
+              AND status = 'ACTIVE'
+            LIMIT 1
             FOR UPDATE
             """)
-    AiStrategyRelease selectActiveChampionForUpdate(@Param("userId") Long userId);
+    AiStrategyRelease selectActiveChampionForUpdate(
+            @Param("researchUniverseId") Long researchUniverseId,
+            @Param("modelFamily") String modelFamily
+    );
 
     @Select("""
             SELECT * FROM ai_strategy_release
-            WHERE user_id = #{userId}
+            WHERE research_universe_id = #{researchUniverseId}
+              AND model_family = #{modelFamily}
               AND release_role = 'CHALLENGER'
               AND status = 'SHADOW'
             ORDER BY created_at ASC, id ASC
             """)
-    List<AiStrategyRelease> selectShadowChallengers(@Param("userId") Long userId);
+    List<AiStrategyRelease> selectShadowChallengers(
+            @Param("researchUniverseId") Long researchUniverseId,
+            @Param("modelFamily") String modelFamily
+    );
 }

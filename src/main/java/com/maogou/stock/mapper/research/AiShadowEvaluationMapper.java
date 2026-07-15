@@ -12,7 +12,7 @@ public interface AiShadowEvaluationMapper extends BaseMapper<AiShadowEvaluation>
 
     @Insert("""
             INSERT INTO ai_shadow_evaluation (
-                user_id, pipeline_run_id, training_dataset_id, champion_release_id,
+                pipeline_run_id, training_dataset_id, champion_release_id,
                 challenger_release_id, champion_model_version_id, challenger_model_version_id,
                 window_start_date, window_end_date, evaluation_version, input_fingerprint,
                 sample_count, eligible_sample_count, coverage_rate, action_agreement_rate,
@@ -20,7 +20,7 @@ public interface AiShadowEvaluationMapper extends BaseMapper<AiShadowEvaluation>
                 challenger_excess_return, champion_max_drawdown, challenger_max_drawdown,
                 feature_drift_score, metrics_json, decision_status, evaluated_at, created_at
             ) VALUES (
-                #{item.userId}, #{item.pipelineRunId}, #{item.trainingDatasetId},
+                #{item.pipelineRunId}, #{item.trainingDatasetId},
                 #{item.championReleaseId}, #{item.challengerReleaseId},
                 #{item.championModelVersionId}, #{item.challengerModelVersionId},
                 #{item.windowStartDate}, #{item.windowEndDate}, #{item.evaluationVersion},
@@ -37,8 +37,7 @@ public interface AiShadowEvaluationMapper extends BaseMapper<AiShadowEvaluation>
 
     @Select("""
             SELECT * FROM ai_shadow_evaluation
-            WHERE user_id = #{userId}
-              AND champion_release_id = #{championReleaseId}
+            WHERE champion_release_id = #{championReleaseId}
               AND challenger_release_id = #{challengerReleaseId}
               AND window_start_date = #{windowStartDate}
               AND window_end_date = #{windowEndDate}
@@ -46,7 +45,6 @@ public interface AiShadowEvaluationMapper extends BaseMapper<AiShadowEvaluation>
             FOR SHARE
             """)
     AiShadowEvaluation selectWindowForShare(
-            @Param("userId") Long userId,
             @Param("championReleaseId") Long championReleaseId,
             @Param("challengerReleaseId") Long challengerReleaseId,
             @Param("windowStartDate") LocalDate windowStartDate,

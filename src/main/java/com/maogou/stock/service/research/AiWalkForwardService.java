@@ -44,12 +44,11 @@ public interface AiWalkForwardService {
     }
 
     record WalkForwardRequest(
-            Long userId,
             Long trainingDatasetId,
             Long strategyReleaseId,
             Long modelVersionId,
             String runKey,
-            String runVersion,
+            String engineVersion,
             String objective,
             Integer horizonDays,
             Integer purgeDays,

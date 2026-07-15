@@ -67,7 +67,7 @@ public class AiPortfolioBacktestServiceImpl implements AiPortfolioBacktestServic
         Simulation simulation = simulate(request);
         AiPortfolioBacktestRun expectedRun = buildRun(request, simulation);
         runMapper.insertImmutable(expectedRun);
-        AiPortfolioBacktestRun run = runMapper.selectByRunKeyForShare(request.userId(), request.runKey());
+        AiPortfolioBacktestRun run = runMapper.selectByRunKeyForShare(request.runKey());
         if (run == null) {
             throw new IllegalStateException("组合回测运行写入后未读取到记录");
         }
@@ -458,7 +458,6 @@ public class AiPortfolioBacktestServiceImpl implements AiPortfolioBacktestServic
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         AiPortfolioBacktestRun run = new AiPortfolioBacktestRun();
-        run.userId = request.userId();
         run.trainingDatasetId = request.trainingDatasetId();
         run.walkForwardRunId = request.walkForwardRunId();
         run.strategyReleaseId = request.strategyReleaseId();
@@ -576,8 +575,7 @@ public class AiPortfolioBacktestServiceImpl implements AiPortfolioBacktestServic
     }
 
     private static void validate(BacktestRequest request) {
-        if (request == null || request.userId() == null || request.userId() <= 0
-                || request.trainingDatasetId() == null || request.trainingDatasetId() <= 0
+        if (request == null || request.trainingDatasetId() == null || request.trainingDatasetId() <= 0
                 || request.strategyReleaseId() == null || request.strategyReleaseId() <= 0
                 || request.runKey() == null || request.runKey().isBlank()
                 || request.engineVersion() == null || request.engineVersion().isBlank()

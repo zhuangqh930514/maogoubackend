@@ -47,7 +47,6 @@ public interface AiShadowEvaluationService {
     }
 
     record EvaluationRequest(
-            Long userId,
             Long pipelineRunId,
             Long trainingDatasetId,
             Long championReleaseId,

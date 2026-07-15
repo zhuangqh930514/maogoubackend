@@ -12,7 +12,6 @@ import java.time.LocalDateTime;
 public class AiDriftEvent {
     @TableId(type = IdType.AUTO)
     public Long id;
-    public Long userId;
     public Long factorPerformanceId;
     public Long modelVersionId;
     public Long strategyReleaseId;

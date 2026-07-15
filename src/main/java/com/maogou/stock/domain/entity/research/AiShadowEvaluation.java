@@ -12,7 +12,6 @@ import java.time.LocalDateTime;
 public class AiShadowEvaluation {
     @TableId(type = IdType.AUTO)
     public Long id;
-    public Long userId;
     public Long pipelineRunId;
     public Long trainingDatasetId;
     public Long championReleaseId;

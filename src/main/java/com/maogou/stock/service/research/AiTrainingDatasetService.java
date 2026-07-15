@@ -16,9 +16,10 @@ public interface AiTrainingDatasetService {
     AiModelVersion registerModel(ModelRegistration registration);
 
     record DatasetBuildRequest(
-            Long userId,
+            Long researchUniverseId,
             String datasetKey,
             String versionNo,
+            String modelFamily,
             String purpose,
             String featureVersion,
             String labelVersion,
@@ -31,6 +32,8 @@ public interface AiTrainingDatasetService {
             LocalDate testStartDate,
             LocalDate testEndDate,
             Integer maxHorizonDays,
+            Integer purgeTradingDays,
+            Integer embargoTradingDays,
             Path artifactPath
     ) {
     }
@@ -42,8 +45,8 @@ public interface AiTrainingDatasetService {
     }
 
     record ModelRegistration(
-            Long userId,
             Long trainingDatasetId,
+            String modelFamily,
             String modelKey,
             String versionNo,
             String modelType,

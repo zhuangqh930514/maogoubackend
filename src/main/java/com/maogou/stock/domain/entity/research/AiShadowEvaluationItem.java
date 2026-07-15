@@ -2,6 +2,7 @@ package com.maogou.stock.domain.entity.research;
 
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableName;
 
 import java.math.BigDecimal;
@@ -15,7 +16,9 @@ public class AiShadowEvaluationItem {
     public Long sampleId;
     public Long championPredictionId;
     public Long challengerPredictionId;
+    @TableField("sample_label_id")
     public Long labelId;
+    @TableField("horizon_trading_days")
     public Integer horizonDays;
     public Integer actionAgreement;
     public BigDecimal scoreDelta;

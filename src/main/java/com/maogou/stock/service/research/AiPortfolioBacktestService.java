@@ -53,7 +53,6 @@ public interface AiPortfolioBacktestService {
     }
 
     record BacktestRequest(
-            Long userId,
             Long trainingDatasetId,
             Long walkForwardRunId,
             Long strategyReleaseId,

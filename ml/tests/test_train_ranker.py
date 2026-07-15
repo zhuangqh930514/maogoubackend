@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import joblib
 
 from ml.train_ranker import _export_onnx, load_dataset, train_ranker
 
@@ -74,8 +75,10 @@ def test_train_ranker_exports_calibrated_baseline_manifest_metrics_and_optional_
     assert metrics["randomSeed"] == 930514
     assert metrics["parameters"]
     assert metrics["calibration"]["method"] == "sigmoid"
+    assert metrics["calibration"]["fitSplit"] == "TRAIN"
     assert "coefficient" in metrics["calibration"]
     assert "intercept" in metrics["calibration"]
+    assert metrics["actionThresholds"]["fitSplit"] == "TRAIN"
     assert set(metrics["splits"]) == {"train", "validation", "test"}
     assert all("brierScore" in metrics["splits"][name] for name in metrics["splits"])
     onnx_dependencies_available = importlib.util.find_spec("skl2onnx") is not None and (
@@ -89,6 +92,44 @@ def test_train_ranker_exports_calibrated_baseline_manifest_metrics_and_optional_
         assert manifest["onnxOutput"]["kind"] in {"PROBABILITY_UP", "RAW_SCORE"}
         assert manifest["calibration"] == metrics["calibration"]
         assert metrics["artifacts"]["onnxSha256"]
+
+
+def test_validation_and_test_extremes_cannot_change_train_fitted_state(tmp_path: Path) -> None:
+    original_path = tmp_path / "original.jsonl"
+    changed_path = tmp_path / "changed.jsonl"
+    _write_dataset(original_path)
+    rows = [json.loads(line) for line in original_path.read_text(encoding="utf-8").splitlines()]
+    for row in rows:
+        if row["split"] != "TRAIN":
+            row["features"]["momentum"] *= 1_000_000
+            row["features"]["futureOnlyFeature"] = 999_999_999
+    changed_path.write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8"
+    )
+
+    original = train_ranker(
+        original_path, tmp_path / "original", enable_lightgbm=False, export_onnx=False
+    )
+    changed = train_ranker(
+        changed_path, tmp_path / "changed", enable_lightgbm=False, export_onnx=False
+    )
+
+    original_bundle = joblib.load(original.model_path)
+    changed_bundle = joblib.load(changed.model_path)
+    original_metrics = json.loads(original.metrics_path.read_text(encoding="utf-8"))
+    changed_metrics = json.loads(changed.metrics_path.read_text(encoding="utf-8"))
+    assert original_bundle["featureNames"] == changed_bundle["featureNames"]
+    assert "futureOnlyFeature" not in changed_bundle["featureNames"]
+    np.testing.assert_allclose(
+        original_bundle["model"].named_steps["imputer"].statistics_,
+        changed_bundle["model"].named_steps["imputer"].statistics_,
+    )
+    np.testing.assert_allclose(
+        original_bundle["model"].named_steps["scaler"].mean_,
+        changed_bundle["model"].named_steps["scaler"].mean_,
+    )
+    assert original_metrics["calibration"] == changed_metrics["calibration"]
+    assert original_metrics["actionThresholds"] == changed_metrics["actionThresholds"]
 
 
 def test_rejects_overlapping_sample_ids_across_splits(tmp_path: Path) -> None:

@@ -104,7 +104,7 @@ class AiTrainingDatasetServiceImplTest {
         Fixture fixture = fixture();
         AiTrainingDatasetSource source = source(
                 1L, 11L, "2026-01-02", "2026-01-06T15:00:00", "10.1");
-        source.horizonDays = 3;
+        source.horizonTradingDays = 3;
         fixture.sources.add(source);
 
         assertThatThrownBy(() -> service(fixture).buildDataset(request(tempDir.resolve("wrong-horizon.jsonl"))))
@@ -195,7 +195,7 @@ class AiTrainingDatasetServiceImplTest {
         fixture.datasets.add(readyDataset(88L));
         AiTrainingDatasetService.ModelRegistration valid = modelRegistration(88L, true);
         AiTrainingDatasetService.ModelRegistration forged = new AiTrainingDatasetService.ModelRegistration(
-                valid.userId(), valid.trainingDatasetId(), valid.modelKey(), valid.versionNo(),
+                valid.trainingDatasetId(), valid.modelFamily(), valid.modelKey(), valid.versionNo(),
                 valid.modelType(), valid.algorithm(), valid.featureVersion(), valid.trainerVersion(),
                 valid.randomSeed(), valid.artifactUri(), "forged-checksum", valid.featureManifestUri(),
                 valid.featureManifestChecksum(), valid.parametersJson(), valid.metricsJson(),
@@ -214,13 +214,13 @@ class AiTrainingDatasetServiceImplTest {
 
     private AiTrainingDatasetService.DatasetBuildRequest request(Path artifactPath) {
         return new AiTrainingDatasetService.DatasetBuildRequest(
-                7L, "ranker", "2026-07-v1", "RANKING",
+                7L, "ranker", "2026-07-v1", "A_SHARE_MULTI_HORIZON", "RANKING",
                 "SAMPLE_V2_1", "LABEL_V2_1", "CN_A_V1",
                 LocalDateTime.of(2026, 4, 10, 18, 0),
                 LocalDate.of(2026, 1, 1), LocalDate.of(2026, 1, 31),
                 LocalDate.of(2026, 2, 1), LocalDate.of(2026, 2, 28),
                 LocalDate.of(2026, 3, 1), LocalDate.of(2026, 3, 31),
-                5, artifactPath);
+                5, 5, 5, artifactPath);
     }
 
     private AiTrainingDatasetService.ModelRegistration modelRegistration(
@@ -251,7 +251,7 @@ class AiTrainingDatasetServiceImplTest {
                     + "\",\"onnxSha256\":\"" + artifactChecksum
                     + "\",\"onnxExported\":true}}";
         return new AiTrainingDatasetService.ModelRegistration(
-                7L, trainingDatasetId, "ranker", "2026-07-v1", "RANKER",
+                trainingDatasetId, "A_SHARE_MULTI_HORIZON", "ranker", "2026-07-v1", "RANKER",
                 "LOGISTIC_REGRESSION", "SAMPLE_V2_1", "TRAINER_V2_1", 930514L,
                 artifact.toUri().toString(), artifactChecksum,
                 manifest.toUri().toString(), manifestChecksum,
@@ -280,8 +280,7 @@ class AiTrainingDatasetServiceImplTest {
     ) {
         AiTrainingDatasetSource source = new AiTrainingDatasetSource();
         source.sampleId = sampleId;
-        source.labelId = labelId;
-        source.userId = 7L;
+        source.sampleLabelId = labelId;
         source.stockCode = "60000" + sampleId;
         source.tradeDate = LocalDate.parse(tradeDate);
         source.sampleAsOfTime = source.tradeDate.atTime(15, 0);
@@ -289,14 +288,14 @@ class AiTrainingDatasetServiceImplTest {
         source.featureVersion = "SAMPLE_V2_1";
         source.labelVersion = "LABEL_V2_1";
         source.calendarVersion = "CN_A_V1";
-        source.horizonDays = 5;
+        source.horizonTradingDays = 5;
         source.featureSnapshot = "{\"asOfTime\":\"" + source.sampleAsOfTime + "\","
                 + "\"quote\":{\"price\":" + price + ",\"fetchedAt\":\""
                 + source.sampleAsOfTime.minusMinutes(1) + "\"}}";
         source.netReturn = new BigDecimal("0.03");
         source.excessReturn = new BigDecimal("0.02");
-        source.labelScore = new BigDecimal("80");
-        source.hitDirection = 1;
+        source.actualDirection = "UP";
+        source.executionStatus = "EXECUTED";
         source.featureFingerprint = "sample-" + sampleId;
         source.labelFingerprint = "label-" + labelId;
         return source;
@@ -305,9 +304,10 @@ class AiTrainingDatasetServiceImplTest {
     private static AiTrainingDataset readyDataset(long id) {
         AiTrainingDataset dataset = new AiTrainingDataset();
         dataset.id = id;
-        dataset.userId = 7L;
+        dataset.researchUniverseId = 7L;
         dataset.datasetKey = "ranker";
         dataset.versionNo = "2026-07-v1";
+        dataset.modelFamily = "A_SHARE_MULTI_HORIZON";
         dataset.featureVersion = "SAMPLE_V2_1";
         dataset.trainStartDate = LocalDate.of(2026, 1, 1);
         dataset.trainEndDate = LocalDate.of(2026, 1, 31);
@@ -333,8 +333,7 @@ class AiTrainingDatasetServiceImplTest {
         when(itemMapper.selectEligibleSources(any())).thenAnswer(invocation -> List.copyOf(sources));
         when(datasetMapper.insertImmutable(any())).thenAnswer(invocation -> {
             AiTrainingDataset candidate = invocation.getArgument(0);
-            boolean exists = datasets.stream().anyMatch(item -> item.userId.equals(candidate.userId)
-                    && item.datasetKey.equals(candidate.datasetKey)
+            boolean exists = datasets.stream().anyMatch(item -> item.datasetKey.equals(candidate.datasetKey)
                     && item.versionNo.equals(candidate.versionNo));
             if (!exists) {
                 candidate.id = ids.incrementAndGet();
@@ -342,10 +341,9 @@ class AiTrainingDatasetServiceImplTest {
             }
             return 1;
         });
-        when(datasetMapper.selectByVersionForShare(any(), any(), any())).thenAnswer(invocation ->
-                datasets.stream().filter(item -> item.userId.equals(invocation.getArgument(0))
-                                && item.datasetKey.equals(invocation.getArgument(1))
-                                && item.versionNo.equals(invocation.getArgument(2)))
+        when(datasetMapper.selectByVersionForShare(any(), any())).thenAnswer(invocation ->
+                datasets.stream().filter(item -> item.datasetKey.equals(invocation.getArgument(0))
+                                && item.versionNo.equals(invocation.getArgument(1)))
                         .findFirst().orElse(null));
         when(datasetMapper.selectById(any())).thenAnswer(invocation -> datasets.stream()
                 .filter(item -> item.id.equals(invocation.getArgument(0))).findFirst().orElse(null));
@@ -353,7 +351,8 @@ class AiTrainingDatasetServiceImplTest {
             List<AiTrainingDatasetItem> candidates = invocation.getArgument(0);
             candidates.forEach(candidate -> {
                 boolean exists = items.stream().anyMatch(item -> item.trainingDatasetId.equals(candidate.trainingDatasetId)
-                        && item.sampleId.equals(candidate.sampleId) && item.labelId.equals(candidate.labelId));
+                        && item.sampleId.equals(candidate.sampleId)
+                        && item.sampleLabelId.equals(candidate.sampleLabelId));
                 if (!exists) {
                     candidate.id = ids.incrementAndGet();
                     items.add(candidate);
@@ -365,7 +364,7 @@ class AiTrainingDatasetServiceImplTest {
                 .filter(item -> item.trainingDatasetId.equals(invocation.getArgument(0))).toList());
         when(modelMapper.insertImmutable(any())).thenAnswer(invocation -> {
             AiModelVersion candidate = invocation.getArgument(0);
-            boolean exists = models.stream().anyMatch(item -> item.userId.equals(candidate.userId)
+            boolean exists = models.stream().anyMatch(item -> item.modelFamily.equals(candidate.modelFamily)
                     && item.modelKey.equals(candidate.modelKey) && item.versionNo.equals(candidate.versionNo));
             if (!exists) {
                 candidate.id = ids.incrementAndGet();
@@ -374,7 +373,7 @@ class AiTrainingDatasetServiceImplTest {
             return 1;
         });
         when(modelMapper.selectByVersionForShare(any(), any(), any())).thenAnswer(invocation -> models.stream()
-                .filter(item -> item.userId.equals(invocation.getArgument(0))
+                .filter(item -> item.modelFamily.equals(invocation.getArgument(0))
                         && item.modelKey.equals(invocation.getArgument(1))
                         && item.versionNo.equals(invocation.getArgument(2))).findFirst().orElse(null));
         return new Fixture(datasetMapper, itemMapper, modelMapper, sources, datasets);

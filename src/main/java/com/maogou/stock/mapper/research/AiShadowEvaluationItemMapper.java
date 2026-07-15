@@ -14,7 +14,7 @@ public interface AiShadowEvaluationItemMapper extends BaseMapper<AiShadowEvaluat
             <script>
             INSERT INTO ai_shadow_evaluation_item (
                 shadow_evaluation_id, sample_id, champion_prediction_id, challenger_prediction_id,
-                label_id, horizon_days, action_agreement, score_delta, confidence_delta,
+                sample_label_id, horizon_trading_days, action_agreement, score_delta, confidence_delta,
                 challenger_excess_return, evaluation_status, created_at
             ) VALUES
             <foreach collection="items" item="item" separator=",">
@@ -33,7 +33,7 @@ public interface AiShadowEvaluationItemMapper extends BaseMapper<AiShadowEvaluat
     @Select("""
             SELECT * FROM ai_shadow_evaluation_item
             WHERE shadow_evaluation_id = #{shadowEvaluationId}
-            ORDER BY sample_id, horizon_days
+            ORDER BY sample_id, horizon_trading_days
             FOR SHARE
             """)
     List<AiShadowEvaluationItem> selectByEvaluationForShare(

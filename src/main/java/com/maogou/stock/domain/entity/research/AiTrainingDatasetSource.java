@@ -6,8 +6,7 @@ import java.time.LocalDateTime;
 
 public class AiTrainingDatasetSource {
     public Long sampleId;
-    public Long labelId;
-    public Long userId;
+    public Long sampleLabelId;
     public String stockCode;
     public LocalDate tradeDate;
     public LocalDateTime sampleAsOfTime;
@@ -15,12 +14,12 @@ public class AiTrainingDatasetSource {
     public String featureVersion;
     public String labelVersion;
     public String calendarVersion;
-    public Integer horizonDays;
+    public Integer horizonTradingDays;
     public String featureSnapshot;
     public BigDecimal netReturn;
     public BigDecimal excessReturn;
-    public BigDecimal labelScore;
-    public Integer hitDirection;
+    public String actualDirection;
+    public String executionStatus;
     public String featureFingerprint;
     public String labelFingerprint;
 }

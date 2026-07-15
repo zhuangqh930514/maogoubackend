@@ -100,7 +100,7 @@ class AiPortfolioBacktestServiceImplTest {
                 new BigDecimal("10"), new BigDecimal("10"), new BigDecimal("10"),
                 0L, false, "suspended"));
         AiPortfolioBacktestService.BacktestRequest blocked = new AiPortfolioBacktestService.BacktestRequest(
-                original.userId(), original.trainingDatasetId(), original.walkForwardRunId(),
+                original.trainingDatasetId(), original.walkForwardRunId(),
                 original.strategyReleaseId(), original.modelVersionId(), original.runKey(),
                 original.engineVersion(), original.randomSeed(), original.startTradeDate(),
                 original.endTradeDate(), original.horizonDays(), original.topK(),
@@ -152,7 +152,7 @@ class AiPortfolioBacktestServiceImplTest {
                 new BigDecimal("8.1"), new BigDecimal("8.1"), new BigDecimal("9"),
                 1000L, false, "locked-limit-down"));
         AiPortfolioBacktestService.BacktestRequest blocked = new AiPortfolioBacktestService.BacktestRequest(
-                original.userId(), original.trainingDatasetId(), original.walkForwardRunId(),
+                original.trainingDatasetId(), original.walkForwardRunId(),
                 original.strategyReleaseId(), original.modelVersionId(), original.runKey(),
                 original.engineVersion(), original.randomSeed(), original.startTradeDate(),
                 original.endTradeDate(), original.horizonDays(), original.topK(),
@@ -176,7 +176,7 @@ class AiPortfolioBacktestServiceImplTest {
         List<AiPortfolioBacktestService.Signal> duplicated = new ArrayList<>(original.signals());
         duplicated.add(signal(999L, 1, "600001", "99"));
         AiPortfolioBacktestService.BacktestRequest invalid = new AiPortfolioBacktestService.BacktestRequest(
-                original.userId(), original.trainingDatasetId(), original.walkForwardRunId(),
+                original.trainingDatasetId(), original.walkForwardRunId(),
                 original.strategyReleaseId(), original.modelVersionId(), original.runKey(),
                 original.engineVersion(), original.randomSeed(), original.startTradeDate(),
                 original.endTradeDate(), original.horizonDays(), original.topK(),
@@ -221,7 +221,7 @@ class AiPortfolioBacktestServiceImplTest {
                 "ZERO_COST", BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
                 BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
         return new AiPortfolioBacktestService.BacktestRequest(
-                5L, 11L, 31L, 21L, null, "BT-202607", "BACKTEST_V2_1",
+                11L, 31L, 21L, null, "BT-202607", "BACKTEST_V2_1",
                 930514L, date(1), date(4), 3, 2, "DAILY",
                 new BigDecimal("100000"), zeroCost, signals, bars,
                 "000300", benchmark, LocalDateTime.of(2026, 7, 31, 16, 0));
@@ -232,7 +232,7 @@ class AiPortfolioBacktestServiceImplTest {
             AiPortfolioBacktestService.CostModel costs
     ) {
         return new AiPortfolioBacktestService.BacktestRequest(
-                original.userId(), original.trainingDatasetId(), original.walkForwardRunId(),
+                original.trainingDatasetId(), original.walkForwardRunId(),
                 original.strategyReleaseId(), original.modelVersionId(), original.runKey(),
                 original.engineVersion(), original.randomSeed(), original.startTradeDate(),
                 original.endTradeDate(), original.horizonDays(), original.topK(),
@@ -297,15 +297,17 @@ class AiPortfolioBacktestServiceImplTest {
                 .thenAnswer(invocation -> {
                     AiPortfolioBacktestRun item = invocation.getArgument(0);
                     boolean exists = runs.stream().anyMatch(existing ->
-                            existing.userId.equals(item.userId) && existing.runKey.equals(item.runKey));
+                            existing.runKey.equals(item.runKey));
                     if (!exists) {
                         item.id = ids.incrementAndGet();
                         runs.add(item);
                     }
                     return 1;
                 });
-        when(runMapper.selectByRunKeyForShare(anyLong(), anyString()))
-                .thenAnswer(invocation -> runs.isEmpty() ? null : runs.get(0));
+        when(runMapper.selectByRunKeyForShare(anyString()))
+                .thenAnswer(invocation -> runs.stream()
+                        .filter(item -> item.runKey.equals(invocation.getArgument(0)))
+                        .findFirst().orElse(null));
         when(dailyMapper.insertBatchImmutable(anyList())).thenAnswer(invocation -> {
             List<AiPortfolioBacktestDaily> items = invocation.getArgument(0);
             items.forEach(item -> {

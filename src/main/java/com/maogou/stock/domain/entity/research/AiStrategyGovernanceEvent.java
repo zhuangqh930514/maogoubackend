@@ -10,7 +10,6 @@ import java.time.LocalDateTime;
 public class AiStrategyGovernanceEvent {
     @TableId(type = IdType.AUTO)
     public Long id;
-    public Long userId;
     public Long strategyReleaseId;
     public Long previousChampionReleaseId;
     public Long walkForwardRunId;
@@ -21,7 +20,7 @@ public class AiStrategyGovernanceEvent {
     public String decisionStatus;
     public String policyVersion;
     public String actorType;
-    public Long actorId;
+    public Long actorUserId;
     public String reason;
     public String thresholdSnapshotJson;
     public String evidenceJson;

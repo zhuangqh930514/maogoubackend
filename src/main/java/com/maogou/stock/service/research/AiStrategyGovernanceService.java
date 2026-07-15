@@ -28,11 +28,18 @@ public interface AiStrategyGovernanceService {
 
     record PromotionEvidence(
             Integer shadowTradingDays,
-            Integer sampleCount,
+            Integer eligibleSampleCount,
+            BigDecimal coverageRate,
             Integer tradeCount,
             Integer foldCount,
-            BigDecimal challengerExcessReturn,
-            BigDecimal maxDrawdown,
+            BigDecimal championNetExcessReturn,
+            BigDecimal challengerNetExcessReturn,
+            BigDecimal championMaxDrawdown,
+            BigDecimal challengerMaxDrawdown,
+            BigDecimal championCalibrationError,
+            BigDecimal challengerCalibrationError,
+            BigDecimal championWilsonLowerBound,
+            BigDecimal challengerWilsonLowerBound,
             BigDecimal maxSingleStockContribution,
             BigDecimal confidenceIntervalLowerExcessReturn,
             Integer criticalDriftCount,
@@ -41,7 +48,6 @@ public interface AiStrategyGovernanceService {
     }
 
     record AssessmentRequest(
-            Long userId,
             Long challengerReleaseId,
             Long currentChampionReleaseId,
             Long walkForwardRunId,
@@ -63,7 +69,6 @@ public interface AiStrategyGovernanceService {
     }
 
     record ConfirmationRequest(
-            Long userId,
             Long challengerReleaseId,
             String assessmentEventKey,
             Long actorId,
@@ -81,7 +86,6 @@ public interface AiStrategyGovernanceService {
     }
 
     record RollbackRequest(
-            Long userId,
             Long currentChampionReleaseId,
             Long previousChampionReleaseId,
             Long shadowEvaluationId,

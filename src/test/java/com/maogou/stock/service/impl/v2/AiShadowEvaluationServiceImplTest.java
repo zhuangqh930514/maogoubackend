@@ -66,7 +66,7 @@ class AiShadowEvaluationServiceImplTest {
         assertThat(result.evaluation().challengerExcessReturn).isEqualByComparingTo("0.075000");
         assertThat(result.evaluation().championMaxDrawdown).isEqualByComparingTo("-0.050000");
         assertThat(result.evaluation().challengerMaxDrawdown).isEqualByComparingTo("0.000000");
-        assertThat(result.evaluation().decisionStatus).isEqualTo("PROMOTION_CANDIDATE");
+        assertThat(result.evaluation().decisionStatus).isEqualTo("READY_FOR_REVIEW");
         assertThat(result.items()).hasSize(2);
         assertThat(result.items()).extracting(item -> item.sampleId).containsExactly(101L, 102L);
         assertThat(result.items()).allSatisfy(item -> {
@@ -131,7 +131,7 @@ class AiShadowEvaluationServiceImplTest {
                         source.governance().policyVersion());
         AiShadowEvaluationService.EvaluationRequest changed =
                 new AiShadowEvaluationService.EvaluationRequest(
-                        source.userId(), 72L, 82L, source.championReleaseId(),
+                        72L, 82L, source.championReleaseId(),
                         source.challengerReleaseId(), source.windowStartDate(), source.windowEndDate(),
                         source.evaluationVersion(), source.windowSampleCount(), source.pairs(),
                         source.featureDriftScore(), source.thresholds(), changedGovernance,
@@ -222,7 +222,7 @@ class AiShadowEvaluationServiceImplTest {
         AiShadowEvaluationService service = service(fixture);
         AiShadowEvaluationService.EvaluationRequest source = passingRequest(new BigDecimal("0.30"));
         AiShadowEvaluationService.EvaluationRequest request = new AiShadowEvaluationService.EvaluationRequest(
-                source.userId(), null, null, source.championReleaseId(), source.challengerReleaseId(),
+                null, null, source.championReleaseId(), source.challengerReleaseId(),
                 source.windowStartDate(), source.windowEndDate(), source.evaluationVersion(),
                 source.windowSampleCount(), source.pairs(), source.featureDriftScore(),
                 source.thresholds(), null, source.evaluatedAt());
@@ -250,9 +250,9 @@ class AiShadowEvaluationServiceImplTest {
         assertThat(evidence.shadowEvaluationId()).isEqualTo(result.evaluation().id);
         assertThat(evidence.currentChampionReleaseId()).isEqualTo(1L);
         assertThat(evidence.challengerReleaseId()).isEqualTo(2L);
-        assertThat(evidence.evidence().sampleCount()).isEqualTo(2);
-        assertThat(evidence.evidence().challengerExcessReturn()).isEqualByComparingTo("0.075000");
-        assertThat(evidence.evidence().maxDrawdown()).isEqualByComparingTo("0.000000");
+        assertThat(evidence.evidence().eligibleSampleCount()).isEqualTo(2);
+        assertThat(evidence.evidence().challengerNetExcessReturn()).isEqualByComparingTo("0.075000");
+        assertThat(evidence.evidence().challengerMaxDrawdown()).isEqualByComparingTo("0.000000");
         assertThat(evidence.evidence().criticalDriftCount()).isZero();
         verify(fixture.governanceService, never())
                 .confirmPromotion(any(AiStrategyGovernanceService.ConfirmationRequest.class));
@@ -274,7 +274,7 @@ class AiShadowEvaluationServiceImplTest {
                         source.governance().confidenceIntervalLowerExcessReturn(),
                         source.governance().policyVersion());
         AiShadowEvaluationService.EvaluationRequest request = new AiShadowEvaluationService.EvaluationRequest(
-                source.userId(), source.pipelineRunId(), source.trainingDatasetId(),
+                source.pipelineRunId(), source.trainingDatasetId(),
                 source.championReleaseId(), source.challengerReleaseId(), source.windowStartDate(),
                 source.windowEndDate(), source.evaluationVersion(), source.windowSampleCount(),
                 source.pairs(), source.featureDriftScore(), source.thresholds(), governance,
@@ -311,7 +311,7 @@ class AiShadowEvaluationServiceImplTest {
                 new AiShadowEvaluationService.PredictionPair(
                         championTwo, challengerTwo, label(402L, championTwo, "0.05")));
         return new AiShadowEvaluationService.EvaluationRequest(
-                5L, 71L, 81L, 1L, 2L,
+                71L, 81L, 1L, 2L,
                 LocalDate.of(2026, 7, 1), LocalDate.of(2026, 7, 31),
                 "SHADOW_V2_1", 3, pairs, driftScore,
                 new AiShadowEvaluationService.ShadowThresholds(
@@ -333,7 +333,7 @@ class AiShadowEvaluationServiceImplTest {
             List<AiShadowEvaluationService.PredictionPair> pairs
     ) {
         return new AiShadowEvaluationService.EvaluationRequest(
-                source.userId(), source.pipelineRunId(), source.trainingDatasetId(),
+                source.pipelineRunId(), source.trainingDatasetId(),
                 source.championReleaseId(), source.challengerReleaseId(),
                 source.windowStartDate(), source.windowEndDate(), source.evaluationVersion(),
                 source.windowSampleCount(), pairs, source.featureDriftScore(), source.thresholds(),
@@ -425,14 +425,13 @@ class AiShadowEvaluationServiceImplTest {
             return 0;
         });
         when(evaluationMapper.selectWindowForShare(
-                anyLong(), anyLong(), anyLong(), any(LocalDate.class), any(LocalDate.class),
+                anyLong(), anyLong(), any(LocalDate.class), any(LocalDate.class),
                 org.mockito.ArgumentMatchers.anyString())).thenAnswer(invocation -> evaluations.stream()
-                .filter(item -> item.userId.equals(invocation.getArgument(0))
-                        && item.championReleaseId.equals(invocation.getArgument(1))
-                        && item.challengerReleaseId.equals(invocation.getArgument(2))
-                        && item.windowStartDate.equals(invocation.getArgument(3))
-                        && item.windowEndDate.equals(invocation.getArgument(4))
-                        && item.evaluationVersion.equals(invocation.getArgument(5)))
+                .filter(item -> item.championReleaseId.equals(invocation.getArgument(0))
+                        && item.challengerReleaseId.equals(invocation.getArgument(1))
+                        && item.windowStartDate.equals(invocation.getArgument(2))
+                        && item.windowEndDate.equals(invocation.getArgument(3))
+                        && item.evaluationVersion.equals(invocation.getArgument(4)))
                 .findFirst().orElse(null));
         when(itemMapper.insertBatchImmutable(anyList())).thenAnswer(invocation -> {
             List<AiShadowEvaluationItem> candidates = invocation.getArgument(0);
@@ -461,8 +460,8 @@ class AiShadowEvaluationServiceImplTest {
             }
             return candidates.size();
         });
-        when(driftMapper.selectByFingerprintsForShare(anyLong(), anyList())).thenAnswer(invocation -> {
-            List<String> fingerprints = invocation.getArgument(1);
+        when(driftMapper.selectByFingerprintsForShare(anyList())).thenAnswer(invocation -> {
+            List<String> fingerprints = invocation.getArgument(0);
             return driftEvents.stream().filter(item -> fingerprints.contains(item.eventFingerprint)).toList();
         });
         when(governanceService.assess(any(AiStrategyGovernanceService.AssessmentRequest.class)))
@@ -472,7 +471,7 @@ class AiShadowEvaluationServiceImplTest {
                     event.id = ids.incrementAndGet();
                     event.shadowEvaluationId = request.shadowEvaluationId();
                     event.eventType = "PROMOTION_CANDIDATE_READY";
-                    event.decisionStatus = "AWAITING_HUMAN_CONFIRMATION";
+                    event.decisionStatus = "READY_FOR_REVIEW";
                     return new AiStrategyGovernanceService.Assessment(
                             event.decisionStatus, List.of(), challenger, event);
                 });
@@ -481,8 +480,7 @@ class AiShadowEvaluationServiceImplTest {
     }
 
     private static boolean sameWindow(AiShadowEvaluation left, AiShadowEvaluation right) {
-        return left.userId.equals(right.userId)
-                && left.championReleaseId.equals(right.championReleaseId)
+        return left.championReleaseId.equals(right.championReleaseId)
                 && left.challengerReleaseId.equals(right.challengerReleaseId)
                 && left.windowStartDate.equals(right.windowStartDate)
                 && left.windowEndDate.equals(right.windowEndDate)
@@ -497,7 +495,8 @@ class AiShadowEvaluationServiceImplTest {
     ) {
         AiStrategyRelease value = new AiStrategyRelease();
         value.id = id;
-        value.userId = 5L;
+        value.researchUniverseId = 10L;
+        value.modelFamily = "A_SHARE_MULTI_HORIZON";
         value.modelVersionId = modelVersionId;
         value.releaseRole = role;
         value.status = status;

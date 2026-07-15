@@ -19,15 +19,10 @@ public class AiWalkForwardFold {
     public LocalDate validationEndDate;
     public LocalDate testStartDate;
     public LocalDate testEndDate;
-    public Integer purgeDays;
-    public Integer embargoDays;
     public Integer trainSampleCount;
     public Integer validationSampleCount;
     public Integer testSampleCount;
     public String metricsJson;
-    public String confidenceIntervalJson;
     public String status;
-    public LocalDateTime startedAt;
-    public LocalDateTime completedAt;
     public LocalDateTime createdAt;
 }

@@ -85,7 +85,7 @@ public class AiFactorPerformanceServiceImpl implements AiFactorPerformanceServic
         }
         performanceMapper.insertBatchImmutable(candidates);
         List<AiFactorPerformance> persisted = performanceMapper.selectWindowForShare(
-                batch.userId(), batch.factorVersion(), batch.horizonDays(), batch.marketRegime(),
+                batch.factorVersion(), batch.horizonDays(), batch.marketRegime(),
                 batch.windowType(), batch.windowStartDate(), batch.windowEndDate());
         Map<String, AiFactorPerformance> persistedByFactor = new HashMap<>();
         persisted.forEach(item -> persistedByFactor.put(item.factorCode, item));
@@ -108,7 +108,7 @@ public class AiFactorPerformanceServiceImpl implements AiFactorPerformanceServic
                     byFactor.getOrDefault(performance.factorCode, List.of()),
                     baselineByFactor.getOrDefault(performance.factorCode, List.of())));
         }
-        List<AiDriftEvent> driftEvents = persistDriftEvents(batch.userId(), driftCandidates);
+        List<AiDriftEvent> driftEvents = persistDriftEvents(driftCandidates);
         List<String> reweightEligible = result.stream()
                 .filter(performance -> !"LOW_SAMPLE".equals(performance.confidenceLevel))
                 .filter(performance -> !"CRITICAL".equals(performance.driftStatus))
@@ -132,7 +132,7 @@ public class AiFactorPerformanceServiceImpl implements AiFactorPerformanceServic
         List<BigDecimal> dailyIc = dailyRankIc(observations);
 
         AiFactorPerformance value = new AiFactorPerformance();
-        value.userId = batch.userId();
+        value.factorDefinitionId = observations.get(0).factor().factorDefinitionId;
         value.factorCode = factorCode;
         value.factorVersion = batch.factorVersion();
         value.horizonDays = batch.horizonDays();
@@ -213,7 +213,6 @@ public class AiFactorPerformanceServiceImpl implements AiFactorPerformanceServic
             Map<String, Object> evidence
     ) {
         AiDriftEvent event = new AiDriftEvent();
-        event.userId = batch.userId();
         event.factorPerformanceId = performance.id;
         event.eventType = "FACTOR_DRIFT";
         event.subjectType = "FACTOR";
@@ -240,7 +239,7 @@ public class AiFactorPerformanceServiceImpl implements AiFactorPerformanceServic
         return event;
     }
 
-    private List<AiDriftEvent> persistDriftEvents(Long userId, List<AiDriftEvent> candidates) {
+    private List<AiDriftEvent> persistDriftEvents(List<AiDriftEvent> candidates) {
         if (candidates.isEmpty()) {
             return List.of();
         }
@@ -248,7 +247,7 @@ public class AiFactorPerformanceServiceImpl implements AiFactorPerformanceServic
                 .sorted(Comparator.comparing(event -> event.eventFingerprint)).toList();
         driftMapper.insertBatchImmutable(sorted);
         List<String> fingerprints = sorted.stream().map(event -> event.eventFingerprint).toList();
-        List<AiDriftEvent> persisted = driftMapper.selectByFingerprintsForShare(userId, fingerprints);
+        List<AiDriftEvent> persisted = driftMapper.selectByFingerprintsForShare(fingerprints);
         Map<String, AiDriftEvent> byFingerprint = new HashMap<>();
         persisted.forEach(event -> byFingerprint.put(event.eventFingerprint, event));
         List<AiDriftEvent> result = new ArrayList<>(sorted.size());
@@ -456,13 +455,12 @@ public class AiFactorPerformanceServiceImpl implements AiFactorPerformanceServic
     ) {
         if (observation == null || observation.sample() == null || observation.factor() == null
                 || observation.label() == null || observation.sample().id == null
-                || observation.factor().id == null || observation.label().id == null
+                || observation.factor().id == null || observation.factor().factorDefinitionId == null
+                || observation.label().id == null
                 || observation.sample().tradeDate == null
                 || observation.sample().sourceFingerprint == null
                 || observation.factor().inputFingerprint == null
                 || observation.label().inputFingerprint == null
-                || !Objects.equals(batch.userId(), observation.sample().userId)
-                || !Objects.equals(batch.userId(), observation.factor().userId)
                 || !Objects.equals(observation.sample().id, observation.factor().sampleId)
                 || !Objects.equals(observation.sample().id, observation.label().sampleId)
                 || !Objects.equals(observation.sample().stockCode, observation.factor().stockCode)
@@ -479,8 +477,8 @@ public class AiFactorPerformanceServiceImpl implements AiFactorPerformanceServic
         if (!currentWindow && !observation.sample().tradeDate.isBefore(batch.windowStartDate())) {
             throw new IllegalArgumentException("漂移基线必须早于当前统计窗口");
         }
-        if (observation.label().verifiedAt == null
-                || observation.label().verifiedAt.isAfter(batch.evaluatedAt())) {
+        LocalDateTime labelAvailableAt = labelAvailableAt(observation.label());
+        if (labelAvailableAt == null || labelAvailableAt.isAfter(batch.evaluatedAt())) {
             throw new IllegalArgumentException("标签在因子表现评估时点尚不可用");
         }
     }
@@ -512,8 +510,7 @@ public class AiFactorPerformanceServiceImpl implements AiFactorPerformanceServic
     }
 
     private static void validateBatch(PerformanceBatch batch) {
-        if (batch == null || batch.userId() == null || batch.userId() <= 0
-                || batch.factorVersion() == null || batch.factorVersion().isBlank()
+        if (batch == null || batch.factorVersion() == null || batch.factorVersion().isBlank()
                 || batch.horizonDays() == null || batch.horizonDays() <= 0
                 || batch.marketRegime() == null || batch.marketRegime().isBlank()
                 || batch.windowType() == null || batch.windowType().isBlank()
@@ -543,11 +540,21 @@ public class AiFactorPerformanceServiceImpl implements AiFactorPerformanceServic
     ) {
         String lineage = observationFingerprint(observations);
         String baselineLineage = observationFingerprint(baselineObservations);
-        return sha256(String.join("|", String.valueOf(batch.userId()), factorCode,
-                batch.factorVersion(), String.valueOf(batch.horizonDays()), batch.marketRegime(),
+        return sha256(String.join("|", factorCode, batch.factorVersion(),
+                String.valueOf(batch.horizonDays()), batch.marketRegime(),
                 batch.windowType(), String.valueOf(batch.windowStartDate()),
                 String.valueOf(batch.windowEndDate()), batch.detectorVersion(),
                 String.valueOf(batch.thresholds()), lineage, baselineLineage));
+    }
+
+    private static LocalDateTime labelAvailableAt(com.maogou.stock.domain.entity.research.AiSampleLabel label) {
+        if (label.labelAvailableAt != null) {
+            return label.labelAvailableAt;
+        }
+        if (label.maturedAt != null) {
+            return label.maturedAt;
+        }
+        return label.verifiedAt;
     }
 
     private static String observationFingerprint(List<Observation> observations) {

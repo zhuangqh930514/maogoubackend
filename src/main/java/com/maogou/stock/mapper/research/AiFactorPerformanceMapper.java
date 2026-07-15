@@ -14,7 +14,7 @@ public interface AiFactorPerformanceMapper extends BaseMapper<AiFactorPerformanc
     @Insert("""
             <script>
             INSERT INTO ai_factor_performance (
-                user_id, factor_code, factor_version, horizon_days, market_regime, window_type,
+                factor_definition_id, horizon_trading_days, market_regime, window_type,
                 window_start_date, window_end_date, input_fingerprint, sample_count, success_count,
                 success_rate, wilson_lower_bound, rank_ic, avg_excess_return, avg_adverse_return,
                 stability_score, psi_score, confidence_level, drift_status, evaluated_at,
@@ -22,7 +22,7 @@ public interface AiFactorPerformanceMapper extends BaseMapper<AiFactorPerformanc
             ) VALUES
             <foreach collection="items" item="item" separator=",">
                 (
-                    #{item.userId}, #{item.factorCode}, #{item.factorVersion}, #{item.horizonDays},
+                    #{item.factorDefinitionId}, #{item.horizonDays},
                     #{item.marketRegime}, #{item.windowType}, #{item.windowStartDate},
                     #{item.windowEndDate}, #{item.inputFingerprint}, #{item.sampleCount},
                     #{item.successCount}, #{item.successRate}, #{item.wilsonLowerBound},
@@ -37,18 +37,19 @@ public interface AiFactorPerformanceMapper extends BaseMapper<AiFactorPerformanc
     int insertBatchImmutable(@Param("items") List<AiFactorPerformance> items);
 
     @Select("""
-            SELECT * FROM ai_factor_performance
-            WHERE user_id = #{userId}
-              AND factor_version = #{factorVersion}
-              AND horizon_days = #{horizonDays}
-              AND market_regime = #{marketRegime}
-              AND window_type = #{windowType}
-              AND window_start_date = #{windowStartDate}
-              AND window_end_date = #{windowEndDate}
+            SELECT fp.*, d.factor_code AS factor_code, d.factor_name AS factor_name,
+                   d.factor_version AS factor_version
+            FROM ai_factor_performance fp
+            INNER JOIN ai_factor_definition d ON d.id = fp.factor_definition_id
+            WHERE d.factor_version = #{factorVersion}
+              AND fp.horizon_trading_days = #{horizonDays}
+              AND fp.market_regime = #{marketRegime}
+              AND fp.window_type = #{windowType}
+              AND fp.window_start_date = #{windowStartDate}
+              AND fp.window_end_date = #{windowEndDate}
             FOR SHARE
             """)
     List<AiFactorPerformance> selectWindowForShare(
-            @Param("userId") Long userId,
             @Param("factorVersion") String factorVersion,
             @Param("horizonDays") Integer horizonDays,
             @Param("marketRegime") String marketRegime,

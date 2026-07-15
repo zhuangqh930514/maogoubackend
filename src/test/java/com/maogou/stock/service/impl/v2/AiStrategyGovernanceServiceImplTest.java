@@ -28,12 +28,17 @@ class AiStrategyGovernanceServiceImplTest {
         Fixture fixture = fixture();
         AiStrategyGovernanceService service = service(fixture);
         AiStrategyRelease challenger = challenger();
+        fixture.releases.add(champion());
         fixture.releases.add(challenger);
 
         AiStrategyGovernanceService.Assessment result = service.assess(assessmentRequest(
                 new AiStrategyGovernanceService.PromotionEvidence(
-                        10, 80, 12, 2, new BigDecimal("0.03"),
-                        new BigDecimal("-0.08"), new BigDecimal("0.10"),
+                        10, 80, new BigDecimal("0.40"), 12, 2,
+                        new BigDecimal("0.02"), new BigDecimal("0.03"),
+                        new BigDecimal("-0.08"), new BigDecimal("-0.08"),
+                        new BigDecimal("0.12"), new BigDecimal("0.10"),
+                        new BigDecimal("0.55"), new BigDecimal("0.56"),
+                        new BigDecimal("0.10"),
                         new BigDecimal("0.02"), 0, "evidence-low-sample")));
 
         assertThat(result.decisionStatus()).isEqualTo("REJECTED");
@@ -59,13 +64,13 @@ class AiStrategyGovernanceServiceImplTest {
         AiStrategyGovernanceService.Assessment assessment = service.assess(assessmentRequest(
                 passingEvidence("evidence-pass")));
 
-        assertThat(assessment.decisionStatus()).isEqualTo("AWAITING_HUMAN_CONFIRMATION");
+        assertThat(assessment.decisionStatus()).isEqualTo("READY_FOR_REVIEW");
         assertThat(challenger.status).isEqualTo("SHADOW");
         assertThat(champion.status).isEqualTo("ACTIVE");
 
         AiStrategyGovernanceService.PromotionResult promoted = service.confirmPromotion(
                 new AiStrategyGovernanceService.ConfirmationRequest(
-                        5L, 2L, assessment.event().eventKey, 9001L,
+                        2L, assessment.event().eventKey, 9001L,
                         "GOVERNANCE_V2_1", "人工确认样本外结果达标",
                         LocalDateTime.of(2026, 8, 1, 10, 0)));
 
@@ -75,14 +80,14 @@ class AiStrategyGovernanceServiceImplTest {
         assertThat(promoted.champion().releaseRole).isEqualTo("CHAMPION");
         assertThat(promoted.event().eventType).isEqualTo("HUMAN_PROMOTION_CONFIRMED");
         assertThat(promoted.event().actorType).isEqualTo("HUMAN");
-        assertThat(promoted.event().actorId).isEqualTo(9001L);
+        assertThat(promoted.event().actorUserId).isEqualTo(9001L);
         assertThat(fixture.releases.stream()
                 .filter(item -> "CHAMPION".equals(item.releaseRole) && "ACTIVE".equals(item.status)))
                 .extracting(item -> item.id).containsExactly(2L);
 
         AiStrategyGovernanceService.PromotionResult repeated = service.confirmPromotion(
                 new AiStrategyGovernanceService.ConfirmationRequest(
-                        5L, 2L, assessment.event().eventKey, 9001L,
+                        2L, assessment.event().eventKey, 9001L,
                         "GOVERNANCE_V2_1", "人工确认样本外结果达标",
                         LocalDateTime.of(2026, 8, 1, 10, 0)));
         assertThat(repeated.event().id).isEqualTo(promoted.event().id);
@@ -105,7 +110,7 @@ class AiStrategyGovernanceServiceImplTest {
 
         AiStrategyGovernanceService.RollbackResult result = service.rollback(
                 new AiStrategyGovernanceService.RollbackRequest(
-                        5L, 2L, 1L, 301L, 2, "critical-drift-window",
+                        2L, 1L, 301L, 2, "critical-drift-window",
                         "GOVERNANCE_V2_1", "连续窗口出现严重漂移",
                         LocalDateTime.of(2026, 8, 15, 16, 0)));
 
@@ -125,16 +130,24 @@ class AiStrategyGovernanceServiceImplTest {
     void rejectsDrawdownConcentrationConfidenceAndCriticalDriftBreaches() {
         Fixture fixture = fixture();
         AiStrategyGovernanceService service = service(fixture);
+        fixture.releases.add(champion());
         fixture.releases.add(challenger());
 
         AiStrategyGovernanceService.Assessment result = service.assess(assessmentRequest(
                 new AiStrategyGovernanceService.PromotionEvidence(
-                        25, 300, 50, 5, new BigDecimal("0.06"),
-                        new BigDecimal("-0.20"), new BigDecimal("0.35"),
+                        25, 2500, new BigDecimal("0.80"), 50, 5,
+                        new BigDecimal("0.06"), new BigDecimal("0.05"),
+                        new BigDecimal("-0.10"), new BigDecimal("-0.20"),
+                        new BigDecimal("0.10"), new BigDecimal("0.14"),
+                        new BigDecimal("0.58"), new BigDecimal("0.52"),
+                        new BigDecimal("0.35"),
                         BigDecimal.ZERO, 1, "evidence-risk-breach")));
 
         assertThat(result.decisionStatus()).isEqualTo("REJECTED");
         assertThat(result.reasons()).anyMatch(reason -> reason.contains("最大回撤"));
+        assertThat(result.reasons()).anyMatch(reason -> reason.contains("净超额收益"));
+        assertThat(result.reasons()).anyMatch(reason -> reason.contains("校准误差"));
+        assertThat(result.reasons()).anyMatch(reason -> reason.contains("Wilson"));
         assertThat(result.reasons()).anyMatch(reason -> reason.contains("单票贡献"));
         assertThat(result.reasons()).anyMatch(reason -> reason.contains("置信区间"));
         assertThat(result.reasons()).anyMatch(reason -> reason.contains("CRITICAL"));
@@ -150,9 +163,9 @@ class AiStrategyGovernanceServiceImplTest {
             AiStrategyGovernanceService.PromotionEvidence evidence
     ) {
         return new AiStrategyGovernanceService.AssessmentRequest(
-                5L, 2L, 1L, 101L, 201L, 301L, "GOVERNANCE_V2_1",
+                2L, 1L, 101L, 201L, 301L, "GOVERNANCE_V2_1",
                 new AiStrategyGovernanceService.PromotionPolicy(
-                        20, 200, 30, 4, new BigDecimal("-0.15"),
+                        20, 2000, 30, 4, new BigDecimal("-0.15"),
                         new BigDecimal("0.20"), new BigDecimal("0.01")),
                 evidence, LocalDateTime.of(2026, 7, 31, 16, 0));
     }
@@ -160,7 +173,8 @@ class AiStrategyGovernanceServiceImplTest {
     private static AiStrategyRelease challenger() {
         AiStrategyRelease release = new AiStrategyRelease();
         release.id = 2L;
-        release.userId = 5L;
+        release.researchUniverseId = 10L;
+        release.modelFamily = "A_SHARE_T3";
         release.versionNo = "V2.0.0";
         release.title = "V2 Challenger";
         release.status = "SHADOW";
@@ -173,7 +187,8 @@ class AiStrategyGovernanceServiceImplTest {
     private static AiStrategyRelease champion() {
         AiStrategyRelease release = new AiStrategyRelease();
         release.id = 1L;
-        release.userId = 5L;
+        release.researchUniverseId = 10L;
+        release.modelFamily = "A_SHARE_T3";
         release.versionNo = "V1.0.0";
         release.title = "V1 Champion";
         release.status = "ACTIVE";
@@ -186,8 +201,12 @@ class AiStrategyGovernanceServiceImplTest {
 
     private static AiStrategyGovernanceService.PromotionEvidence passingEvidence(String fingerprint) {
         return new AiStrategyGovernanceService.PromotionEvidence(
-                25, 300, 50, 5, new BigDecimal("0.05"),
-                new BigDecimal("-0.10"), new BigDecimal("0.15"),
+                25, 2500, new BigDecimal("0.80"), 500, 5,
+                new BigDecimal("0.03"), new BigDecimal("0.05"),
+                new BigDecimal("-0.10"), new BigDecimal("-0.11"),
+                new BigDecimal("0.12"), new BigDecimal("0.10"),
+                new BigDecimal("0.55"), new BigDecimal("0.58"),
+                new BigDecimal("0.15"),
                 new BigDecimal("0.02"), 0, fingerprint);
     }
 
@@ -200,9 +219,11 @@ class AiStrategyGovernanceServiceImplTest {
         when(releaseMapper.selectByIdForUpdate(org.mockito.ArgumentMatchers.anyLong()))
                 .thenAnswer(invocation -> releases.stream()
                         .filter(item -> item.id.equals(invocation.getArgument(0))).findFirst().orElse(null));
-        when(releaseMapper.selectActiveChampionForUpdate(org.mockito.ArgumentMatchers.anyLong()))
+        when(releaseMapper.selectActiveChampionForUpdate(
+                org.mockito.ArgumentMatchers.anyLong(), anyString()))
                 .thenAnswer(invocation -> releases.stream()
-                        .filter(item -> item.userId.equals(invocation.getArgument(0))
+                        .filter(item -> item.researchUniverseId.equals(invocation.getArgument(0))
+                                && item.modelFamily.equals(invocation.getArgument(1))
                                 && "CHAMPION".equals(item.releaseRole)
                                 && "ACTIVE".equals(item.status)).findFirst().orElse(null));
         when(releaseMapper.updateById(org.mockito.ArgumentMatchers.any(AiStrategyRelease.class)))
@@ -214,10 +235,8 @@ class AiStrategyGovernanceServiceImplTest {
                     events.add(event);
                     return 1;
                 });
-        when(eventMapper.selectByEventKeyForShare(
-                org.mockito.ArgumentMatchers.anyLong(), anyString())).thenAnswer(invocation -> events.stream()
-                .filter(item -> item.userId.equals(invocation.getArgument(0))
-                        && item.eventKey.equals(invocation.getArgument(1))).findFirst().orElse(null));
+        when(eventMapper.selectByEventKeyForShare(anyString())).thenAnswer(invocation -> events.stream()
+                .filter(item -> item.eventKey.equals(invocation.getArgument(0))).findFirst().orElse(null));
         return new Fixture(releaseMapper, eventMapper, releases, events);
     }
 

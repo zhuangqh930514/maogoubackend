@@ -11,9 +11,10 @@ import java.time.LocalDateTime;
 public class AiTrainingDataset {
     @TableId(type = IdType.AUTO)
     public Long id;
-    public Long userId;
+    public Long researchUniverseId;
     public String datasetKey;
     public String versionNo;
+    public String modelFamily;
     public String purpose;
     public String featureVersion;
     public String labelVersion;
@@ -26,6 +27,8 @@ public class AiTrainingDataset {
     public LocalDate testStartDate;
     public LocalDate testEndDate;
     public Integer maxHorizonDays;
+    public Integer purgeTradingDays;
+    public Integer embargoTradingDays;
     public String sourceQueryJson;
     public String selectionPolicyJson;
     public String lineageFingerprint;

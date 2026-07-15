@@ -99,7 +99,8 @@ def load_dataset(dataset_path: str | Path) -> TrainingDataset:
         if not flattened:
             raise ValueError(f"sample {sample_id} has no numeric features")
         flattened_rows.append(flattened)
-        feature_names.update(flattened)
+        if split == "TRAIN":
+            feature_names.update(flattened)
         labels.append(_target(row))
         splits.append(split)
         sample_ids.append(sample_id)
@@ -111,13 +112,28 @@ def load_dataset(dataset_path: str | Path) -> TrainingDataset:
         for column_index, name in enumerate(ordered_features):
             if name in flattened:
                 matrix[row_index, column_index] = flattened[name]
+    split_values = np.asarray(splits, dtype=str)
+    train_matrix = matrix[split_values == "TRAIN"]
+    selected_columns = np.asarray(
+        [
+            np.isfinite(train_matrix[:, index]).any()
+            and float(np.nanvar(train_matrix[:, index])) > 0.0
+            for index in range(train_matrix.shape[1])
+        ],
+        dtype=bool,
+    )
+    if not np.any(selected_columns):
+        raise ValueError("TRAIN split requires at least one non-constant numeric feature")
+    selected_features = [
+        name for name, selected in zip(ordered_features, selected_columns) if selected
+    ]
     return TrainingDataset(
-        features=matrix,
+        features=matrix[:, selected_columns],
         labels=np.asarray(labels, dtype=np.int64),
-        splits=np.asarray(splits, dtype=str),
+        splits=split_values,
         sample_ids=np.asarray(sample_ids, dtype=np.int64),
         trade_dates=np.asarray(trade_dates, dtype=str),
-        feature_names=ordered_features,
+        feature_names=selected_features,
     )
 
 
@@ -171,17 +187,28 @@ def _calibration_contract(calibrator: LogisticRegression | None) -> dict[str, An
     if calibrator is None:
         return {
             "method": "sigmoid",
-            "fitSplit": "VALIDATION",
+            "fitSplit": "TRAIN",
             "fitted": False,
             "coefficient": 1.0,
             "intercept": 0.0,
         }
     return {
         "method": "sigmoid",
-        "fitSplit": "VALIDATION",
+        "fitSplit": "TRAIN",
         "fitted": True,
         "coefficient": float(calibrator.coef_[0][0]),
         "intercept": float(calibrator.intercept_[0]),
+    }
+
+
+def _action_threshold_contract(train_probability: np.ndarray) -> dict[str, Any]:
+    if train_probability.size == 0:
+        raise ValueError("TRAIN split requires probabilities for action thresholds")
+    return {
+        "fitSplit": "TRAIN",
+        "method": "TRAIN_PROBABILITY_QUANTILES",
+        "avoidUpperBound": float(np.quantile(train_probability, 0.30)),
+        "recommendLowerBound": float(np.quantile(train_probability, 0.70)),
     }
 
 
@@ -357,7 +384,7 @@ def train_ranker(
     baseline.fit(dataset.features[train_mask], dataset.labels[train_mask])
     baseline_scores = baseline.decision_function(dataset.features)
     baseline_calibrator = _fit_calibrator(
-        baseline_scores[validation_mask], dataset.labels[validation_mask], random_seed
+        baseline_scores[train_mask], dataset.labels[train_mask], random_seed
     )
     baseline_probability = _calibrated_probability(baseline_scores, baseline_calibrator)
     baseline_auc = _split_metrics(
@@ -384,7 +411,7 @@ def train_ranker(
     if lightgbm is not None:
         ranker, ranker_scores, ranker_parameters = lightgbm
         ranker_calibrator = _fit_calibrator(
-            ranker_scores[validation_mask], dataset.labels[validation_mask], random_seed
+            ranker_scores[train_mask], dataset.labels[train_mask], random_seed
         )
         ranker_probability = _calibrated_probability(ranker_scores, ranker_calibrator)
         ranker_auc = _split_metrics(
@@ -401,6 +428,7 @@ def train_ranker(
             parameters = ranker_parameters
 
     probability = _calibrated_probability(selected_scores, selected_calibrator)
+    action_thresholds = _action_threshold_contract(probability[train_mask])
     split_metrics = {
         split.lower(): _split_metrics(
             dataset.labels[dataset.splits == split], probability[dataset.splits == split]
@@ -416,6 +444,7 @@ def train_ranker(
             "featureNames": dataset.feature_names,
             "model": selected_model,
             "calibrator": selected_calibrator,
+            "actionThresholds": action_thresholds,
         },
         model_path,
     )
@@ -438,6 +467,7 @@ def train_ranker(
         "datasetSha256": _sha256(Path(dataset_path)),
         "onnxOutput": onnx_output,
         "calibration": calibration,
+        "actionThresholds": action_thresholds,
     }
     _write_json(manifest_path, manifest)
     metrics_path = output / "metrics.json"
@@ -447,6 +477,7 @@ def train_ranker(
         "randomSeed": random_seed,
         "parameters": parameters,
         "calibration": calibration,
+        "actionThresholds": action_thresholds,
         "splits": split_metrics,
         "candidates": candidates,
         "artifacts": {

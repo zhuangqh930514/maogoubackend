@@ -49,7 +49,7 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Service
-public class AiWeeklyEvolutionRunnerImpl implements AiWeeklyEvolutionRunner {
+public class AiWeeklyResearchServiceImpl implements AiWeeklyEvolutionRunner {
 
     private static final int HORIZON_DAYS = 3;
     private static final long RANDOM_SEED = 930514L;
@@ -68,7 +68,7 @@ public class AiWeeklyEvolutionRunnerImpl implements AiWeeklyEvolutionRunner {
     private final AiShadowEvaluationService shadowEvaluationService;
     private final ObjectMapper objectMapper;
 
-    public AiWeeklyEvolutionRunnerImpl(
+    public AiWeeklyResearchServiceImpl(
             AppProperties properties,
             AiStrategyReleaseMapper releaseMapper,
             AiModelVersionMapper modelMapper,
@@ -99,15 +99,15 @@ public class AiWeeklyEvolutionRunnerImpl implements AiWeeklyEvolutionRunner {
     }
 
     @Override
-    public AiEvolutionAutomationService.CycleResult run(Long userId, LocalDateTime triggeredAt) {
-        validate(userId, triggeredAt);
+    public AiEvolutionAutomationService.CycleResult run(Long ignoredUserId, LocalDateTime triggeredAt) {
+        validate(triggeredAt);
         int processed = 0;
         int success = 0;
         int challengerSuccess = 0;
         List<String> errors = new ArrayList<>();
         List<String> skipped = new ArrayList<>();
         try {
-            int factorCount = evaluateFactorPerformance(userId, triggeredAt);
+            int factorCount = evaluateFactorPerformance(triggeredAt);
             processed += factorCount;
             success += factorCount;
             if (factorCount > 0) {
@@ -119,16 +119,14 @@ public class AiWeeklyEvolutionRunnerImpl implements AiWeeklyEvolutionRunner {
             processed++;
             errors.add("因子表现评估：" + rootMessage(exception));
         }
-        AiStrategyRelease champion = releaseMapper.selectOne(new QueryWrapper<AiStrategyRelease>()
-                .eq("user_id", userId)
-                .eq("release_role", "CHAMPION")
-                .eq("status", "ACTIVE")
-                .last("LIMIT 1"));
+        AiStrategyRelease champion = releaseMapper.selectGlobalActiveChampionForUpdate(
+                AiResearchContract.SYSTEM_UNIVERSE_CODE, AiResearchContract.MODEL_FAMILY);
         if (champion == null) {
             skipped.add("缺少 active Champion，Challenger 评估未执行");
             return cycleResult(processed, success, errors, skipped);
         }
-        List<AiStrategyRelease> challengers = releaseMapper.selectShadowChallengers(userId);
+        List<AiStrategyRelease> challengers = releaseMapper.selectShadowChallengers(
+                champion.researchUniverseId, champion.modelFamily);
         if (challengers == null || challengers.isEmpty()) {
             skipped.add("当前没有 SHADOW Challenger，影子评估无需执行");
             return cycleResult(processed, success, errors, skipped);
@@ -136,7 +134,7 @@ public class AiWeeklyEvolutionRunnerImpl implements AiWeeklyEvolutionRunner {
         for (AiStrategyRelease challenger : challengers) {
             processed++;
             try {
-                evaluateChallenger(userId, champion, challenger, triggeredAt);
+                evaluateChallenger(champion, challenger, triggeredAt);
                 success++;
                 challengerSuccess++;
             } catch (InsufficientEvidenceException exception) {
@@ -151,11 +149,10 @@ public class AiWeeklyEvolutionRunnerImpl implements AiWeeklyEvolutionRunner {
         return cycleResult(processed, success, errors, skipped);
     }
 
-    private int evaluateFactorPerformance(Long userId, LocalDateTime now) {
+    private int evaluateFactorPerformance(LocalDateTime now) {
         LocalDate historyStart = now.toLocalDate().minusDays(
                 Math.max(180, properties.getScheduler().getWeeklyLookbackDays()));
         List<AiSample> samples = sampleMapper.selectList(new QueryWrapper<AiSample>()
-                .eq("user_id", userId)
                 .between("trade_date", historyStart, now.toLocalDate())
                 .le("as_of_time", now)
                 .orderByAsc("trade_date").orderByAsc("id"));
@@ -179,19 +176,16 @@ public class AiWeeklyEvolutionRunnerImpl implements AiWeeklyEvolutionRunner {
         List<AiSampleLabel> labels = new ArrayList<>();
         List<Long> orderedSampleIds = samplesById.keySet().stream().sorted().toList();
         for (List<Long> sampleIds : chunks(orderedSampleIds, 500)) {
-            factors.addAll(factorMapper.selectList(new QueryWrapper<AiFactorValue>()
-                    .eq("user_id", userId)
-                    .eq("factor_version", AiResearchContract.FACTOR_VERSION)
-                    .in("sample_id", sampleIds)
-                    .orderByAsc("sample_id").orderByAsc("factor_code")));
+            factors.addAll(factorMapper.selectBySamples(
+                    sampleIds, AiResearchContract.FACTOR_VERSION));
             labels.addAll(labelMapper.selectList(new QueryWrapper<AiSampleLabel>()
-                    .eq("user_id", userId)
                     .eq("label_version", AiResearchContract.LABEL_VERSION)
-                    .eq("horizon_days", HORIZON_DAYS)
-                    .eq("label_status", "VERIFIED")
-                    .le("verified_at", now)
+                    .eq("horizon_trading_days", HORIZON_DAYS)
+                    .eq("label_status", "MATURED")
+                    .eq("execution_status", "EXECUTED")
+                    .le("label_available_at", now)
                     .in("sample_id", sampleIds)
-                    .orderByDesc("verified_at").orderByDesc("id")));
+                    .orderByDesc("matured_at").orderByDesc("id")));
         }
         Map<Long, AiSampleLabel> labelBySample = labels.stream()
                 .filter(item -> item.sampleId != null)
@@ -224,7 +218,7 @@ public class AiWeeklyEvolutionRunnerImpl implements AiWeeklyEvolutionRunner {
                     .toList();
             AiFactorPerformanceService.EvaluationResult result = factorPerformanceService.evaluateAndStore(
                     new AiFactorPerformanceService.PerformanceBatch(
-                            userId, AiResearchContract.FACTOR_VERSION, HORIZON_DAYS,
+                            AiResearchContract.FACTOR_VERSION, HORIZON_DAYS,
                             entry.getKey(), "ROLLING_60D", windowStart, windowEnd,
                             current, baseline, "FACTOR_DRIFT_V2_1",
                             new AiFactorPerformanceService.DriftThresholds(
@@ -239,7 +233,6 @@ public class AiWeeklyEvolutionRunnerImpl implements AiWeeklyEvolutionRunner {
     }
 
     private void evaluateChallenger(
-            Long userId,
             AiStrategyRelease champion,
             AiStrategyRelease challenger,
             LocalDateTime now
@@ -247,9 +240,9 @@ public class AiWeeklyEvolutionRunnerImpl implements AiWeeklyEvolutionRunner {
         LocalDate windowEnd = now.toLocalDate();
         LocalDate windowStart = windowEnd.minusDays(Math.max(30, properties.getScheduler().getWeeklyLookbackDays()));
         List<AiPrediction> championPredictions = predictions(
-                userId, champion.id, windowStart, windowEnd, List.of("RULE_BASELINE", "CHAMPION"));
+                champion.id, windowStart, windowEnd, List.of("RULE_BASELINE", "CHAMPION"));
         List<AiPrediction> challengerPredictions = predictions(
-                userId, challenger.id, windowStart, windowEnd, List.of("CHALLENGER_SHADOW"));
+                challenger.id, windowStart, windowEnd, List.of("CHALLENGER_SHADOW"));
         Map<String, AiPrediction> championBySample = latestBySample(championPredictions);
         Map<String, AiPrediction> challengerBySample = latestBySample(challengerPredictions);
         List<String> pairKeys = championBySample.keySet().stream()
@@ -269,11 +262,11 @@ public class AiWeeklyEvolutionRunnerImpl implements AiWeeklyEvolutionRunner {
         AiModelVersion model = challenger.modelVersionId == null
                 ? null : modelMapper.selectById(challenger.modelVersionId);
         Long datasetId = model == null ? null : model.trainingDatasetId;
-        ResearchEvidence evidence = buildResearchEvidence(userId, challenger, model, pairs, now);
+        ResearchEvidence evidence = buildResearchEvidence(challenger, model, pairs, now);
         BigDecimal drift = predictionPsi(pairs);
         AiShadowEvaluationService.GovernanceContext governance = governance(evidence, pairs);
         shadowEvaluationService.evaluate(new AiShadowEvaluationService.EvaluationRequest(
-                userId, null, datasetId, champion.id, challenger.id,
+                null, datasetId, champion.id, challenger.id,
                 pairs.stream().map(pair -> pair.champion().tradeDate).min(LocalDate::compareTo).orElse(windowStart),
                 pairs.stream().map(pair -> pair.champion().tradeDate).max(LocalDate::compareTo).orElse(windowEnd),
                 "WEEKLY_SHADOW_V2_1:" + now.format(DateTimeFormatter.BASIC_ISO_DATE),
@@ -286,7 +279,6 @@ public class AiWeeklyEvolutionRunnerImpl implements AiWeeklyEvolutionRunner {
     }
 
     private ResearchEvidence buildResearchEvidence(
-            Long userId,
             AiStrategyRelease challenger,
             AiModelVersion model,
             List<AiShadowEvaluationService.PredictionPair> pairs,
@@ -304,28 +296,25 @@ public class AiWeeklyEvolutionRunnerImpl implements AiWeeklyEvolutionRunner {
             return ResearchEvidence.empty();
         }
         AiWalkForwardService.WalkForwardResult walkForward = runWalkForwardIfReady(
-                userId, challenger, model, labelled, now);
+                challenger, model, labelled, now);
         AiPortfolioBacktestService.BacktestResult backtest = runBacktestIfReady(
-                userId, challenger, model, walkForward, labelled, now);
+                challenger, model, walkForward, labelled, now);
         return new ResearchEvidence(walkForward, backtest);
     }
 
     private AiWalkForwardService.WalkForwardResult runWalkForwardIfReady(
-            Long userId,
             AiStrategyRelease challenger,
             AiModelVersion model,
             List<AiShadowEvaluationService.PredictionPair> pairs,
             LocalDateTime now
     ) {
         List<Long> sampleIds = pairs.stream().map(pair -> pair.champion().sampleId).distinct().toList();
-        Map<Long, AiFactorValue> momentum = factorMapper.selectList(new QueryWrapper<AiFactorValue>()
-                        .eq("user_id", userId)
-                        .eq("factor_code", "MOMENTUM_RETURN_5D")
-                        .in("sample_id", sampleIds)
-                        .eq("missing", 0)
-                        .isNotNull("normalized_value")
-                        .orderByDesc("calculated_at"))
-                .stream().collect(Collectors.toMap(
+        Map<Long, AiFactorValue> momentum = factorMapper.selectBySamples(
+                        sampleIds, AiResearchContract.FACTOR_VERSION).stream()
+                .filter(item -> "MOMENTUM_RETURN_5D".equals(item.factorCode))
+                .filter(item -> value(item.missing) == 0 && item.normalizedValue != null)
+                .sorted(Comparator.comparing((AiFactorValue item) -> item.calculatedAt).reversed())
+                .collect(Collectors.toMap(
                         item -> item.sampleId, Function.identity(), (left, right) -> left));
         List<AiWalkForwardService.Observation> observations = pairs.stream()
                 .filter(pair -> momentum.containsKey(pair.champion().sampleId))
@@ -366,9 +355,9 @@ public class AiWeeklyEvolutionRunnerImpl implements AiWeeklyEvolutionRunner {
         }
         String suffix = now.format(DateTimeFormatter.BASIC_ISO_DATE);
         return walkForwardService.runAndStore(new AiWalkForwardService.WalkForwardRequest(
-                userId, model.trainingDatasetId, challenger.id, model.id,
+                model.trainingDatasetId, challenger.id, model.id,
                 "WF:WEEKLY:" + challenger.id + ":" + suffix, "WALK_FORWARD_V2_1",
-                "MAXIMIZE_T3_EXCESS_RETURN", HORIZON_DAYS, HORIZON_DAYS, 1,
+                "MAXIMIZE_T3_EXCESS_RETURN", HORIZON_DAYS, 5, 5,
                 plan.foldCount(), RANDOM_SEED,
                 new AiWalkForwardService.WalkForwardConfig(
                         plan.initialTrainDays(), plan.validationDays(), plan.testDays(),
@@ -377,7 +366,6 @@ public class AiWeeklyEvolutionRunnerImpl implements AiWeeklyEvolutionRunner {
     }
 
     private AiPortfolioBacktestService.BacktestResult runBacktestIfReady(
-            Long userId,
             AiStrategyRelease challenger,
             AiModelVersion model,
             AiWalkForwardService.WalkForwardResult walkForward,
@@ -401,7 +389,7 @@ public class AiWeeklyEvolutionRunnerImpl implements AiWeeklyEvolutionRunner {
                 .filter(Objects::nonNull).map(label -> label.exitTradeDate)
                 .filter(Objects::nonNull).max(LocalDate::compareTo).orElse(start.plusDays(10));
         Set<String> codes = signals.stream().map(AiPortfolioBacktestService.Signal::stockCode).collect(Collectors.toSet());
-        Map<String, Boolean> stByCode = stFlags(userId, pairs);
+        Map<String, Boolean> stByCode = stFlags(pairs);
         List<AiPortfolioBacktestService.MarketBar> bars = marketBars(
                 codes, start, end, now, stByCode);
         if (bars.size() < signals.size()) {
@@ -413,7 +401,7 @@ public class AiWeeklyEvolutionRunnerImpl implements AiWeeklyEvolutionRunner {
         }
         String suffix = now.format(DateTimeFormatter.BASIC_ISO_DATE);
         return backtestService.runAndStore(new AiPortfolioBacktestService.BacktestRequest(
-                userId, model.trainingDatasetId,
+                model.trainingDatasetId,
                 walkForward == null ? null : walkForward.run().id,
                 challenger.id, model.id, "BT:WEEKLY:" + challenger.id + ":" + suffix,
                 "PORTFOLIO_BACKTEST_V2_1", RANDOM_SEED,
@@ -447,15 +435,14 @@ public class AiWeeklyEvolutionRunnerImpl implements AiWeeklyEvolutionRunner {
     }
 
     private List<AiPrediction> predictions(
-            Long userId,
             Long releaseId,
             LocalDate start,
             LocalDate end,
             List<String> modes
     ) {
         return predictionMapper.selectList(new QueryWrapper<AiPrediction>()
-                .eq("user_id", userId).eq("strategy_release_id", releaseId)
-                .eq("horizon_days", HORIZON_DAYS).in("inference_mode", modes)
+                .eq("strategy_release_id", releaseId)
+                .eq("horizon_trading_days", HORIZON_DAYS).in("inference_mode", modes)
                 .between("trade_date", start, end)
                 .orderByDesc("predicted_at").orderByDesc("id"));
     }
@@ -482,12 +469,11 @@ public class AiWeeklyEvolutionRunnerImpl implements AiWeeklyEvolutionRunner {
     }
 
     private Map<String, Boolean> stFlags(
-            Long userId,
             List<AiShadowEvaluationService.PredictionPair> pairs
     ) {
         List<Long> sampleIds = pairs.stream().map(pair -> pair.champion().sampleId).distinct().toList();
         return sampleMapper.selectList(new QueryWrapper<AiSample>()
-                        .eq("user_id", userId).in("id", sampleIds))
+                        .in("id", sampleIds))
                 .stream().collect(Collectors.toMap(
                         item -> item.stockCode,
                         item -> item.stockName != null && item.stockName.toUpperCase().contains("ST"),
@@ -711,9 +697,9 @@ public class AiWeeklyEvolutionRunnerImpl implements AiWeeklyEvolutionRunner {
         return result;
     }
 
-    private static void validate(Long userId, LocalDateTime triggeredAt) {
-        if (userId == null || userId <= 0 || triggeredAt == null) {
-            throw new IllegalArgumentException("周度进化缺少用户或触发时间");
+    private static void validate(LocalDateTime triggeredAt) {
+        if (triggeredAt == null) {
+            throw new IllegalArgumentException("周度研究缺少触发时间");
         }
     }
 

@@ -94,13 +94,15 @@ public class AiShadowEvaluationServiceImpl implements AiShadowEvaluationService 
     private ReleasePair validateReleases(EvaluationRequest request) {
         AiStrategyRelease champion = releaseMapper.selectById(request.championReleaseId());
         AiStrategyRelease challenger = releaseMapper.selectById(request.challengerReleaseId());
-        if (champion == null || !Objects.equals(champion.userId, request.userId())
-                || !"CHAMPION".equals(champion.releaseRole) || !"ACTIVE".equals(champion.status)) {
-            throw new IllegalArgumentException("影子评估要求当前用户的 ACTIVE Champion");
+        if (champion == null || !"CHAMPION".equals(champion.releaseRole)
+                || !"ACTIVE".equals(champion.status)) {
+            throw new IllegalArgumentException("影子评估要求全局 ACTIVE Champion");
         }
-        if (challenger == null || !Objects.equals(challenger.userId, request.userId())
-                || !"CHALLENGER".equals(challenger.releaseRole) || !"SHADOW".equals(challenger.status)) {
-            throw new IllegalArgumentException("影子评估要求当前用户的 SHADOW Challenger");
+        if (challenger == null || !"CHALLENGER".equals(challenger.releaseRole)
+                || !"SHADOW".equals(challenger.status)
+                || !Objects.equals(champion.researchUniverseId, challenger.researchUniverseId)
+                || !Objects.equals(champion.modelFamily, challenger.modelFamily)) {
+            throw new IllegalArgumentException("影子评估要求同研究范围的 SHADOW Challenger");
         }
         return new ReleasePair(champion, challenger);
     }
@@ -153,10 +155,6 @@ public class AiShadowEvaluationServiceImpl implements AiShadowEvaluationService 
             if (Objects.equals(champion.id, challenger.id)) {
                 throw new IllegalArgumentException("Champion 与 Challenger 预测 ID 不能相同");
             }
-            if (!Objects.equals(champion.userId, request.userId())
-                    || !Objects.equals(challenger.userId, request.userId())) {
-                throw new IllegalArgumentException("影子预测必须属于同一用户");
-            }
             if (!Objects.equals(champion.strategyReleaseId, request.championReleaseId())
                     || !Objects.equals(challenger.strategyReleaseId, request.challengerReleaseId())
                     || !Objects.equals(champion.modelVersionId, releases.champion().modelVersionId)
@@ -194,7 +192,7 @@ public class AiShadowEvaluationServiceImpl implements AiShadowEvaluationService 
     }
 
     private static void validatePredictionFields(AiPrediction prediction, String role) {
-        if (prediction.id == null || prediction.userId == null || prediction.sampleId == null
+        if (prediction.id == null || prediction.sampleId == null
                 || prediction.strategyReleaseId == null || prediction.stockCode == null
                 || prediction.tradeDate == null || prediction.samplePhase == null
                 || prediction.horizonDays == null || prediction.horizonDays <= 0
@@ -238,6 +236,8 @@ public class AiShadowEvaluationServiceImpl implements AiShadowEvaluationService 
         BigDecimal challengerCalibration = calibrationError(labelled, false);
         BigDecimal championHitRate = hitRate(championReturns);
         BigDecimal challengerHitRate = hitRate(challengerReturns);
+        BigDecimal championWilsonLowerBound = wilsonLowerBound(championReturns);
+        BigDecimal challengerWilsonLowerBound = wilsonLowerBound(challengerReturns);
         String driftStatus = driftStatus(request.featureDriftScore(), request.thresholds());
         boolean shadowThresholdsPassed = "STABLE".equals(driftStatus)
                 && coverage.compareTo(request.thresholds().minimumCoverageRate()) >= 0
@@ -262,6 +262,8 @@ public class AiShadowEvaluationServiceImpl implements AiShadowEvaluationService 
         values.put("directionAgreementRate", agreement);
         values.put("championHitRate", championHitRate);
         values.put("challengerHitRate", challengerHitRate);
+        values.put("championWilsonLowerBound", championWilsonLowerBound);
+        values.put("challengerWilsonLowerBound", challengerWilsonLowerBound);
         values.put("championExcessReturn", championReturn);
         values.put("challengerExcessReturn", challengerReturn);
         values.put("excessReturnAdvantage", advantage);
@@ -272,7 +274,8 @@ public class AiShadowEvaluationServiceImpl implements AiShadowEvaluationService 
         values.put("driftSummary", driftSummary);
         return new Metrics(coverage, agreement, championCalibration, challengerCalibration,
                 championReturn, challengerReturn, championDrawdown, challengerDrawdown,
-                championHitRate, challengerHitRate, advantage, driftStatus,
+                championHitRate, challengerHitRate, championWilsonLowerBound,
+                challengerWilsonLowerBound, advantage, driftStatus,
                 shadowThresholdsPassed, promotionCandidate, json(values));
     }
 
@@ -283,7 +286,6 @@ public class AiShadowEvaluationServiceImpl implements AiShadowEvaluationService 
             Metrics metrics
     ) {
         AiShadowEvaluation expected = new AiShadowEvaluation();
-        expected.userId = request.userId();
         expected.pipelineRunId = request.pipelineRunId();
         expected.trainingDatasetId = request.trainingDatasetId();
         expected.championReleaseId = request.championReleaseId();
@@ -306,12 +308,12 @@ public class AiShadowEvaluationServiceImpl implements AiShadowEvaluationService 
         expected.challengerMaxDrawdown = metrics.challengerMaxDrawdown();
         expected.featureDriftScore = decimal(request.featureDriftScore());
         expected.metricsJson = metrics.metricsJson();
-        expected.decisionStatus = metrics.promotionCandidate() ? "PROMOTION_CANDIDATE" : "OBSERVING";
+        expected.decisionStatus = metrics.promotionCandidate() ? "READY_FOR_REVIEW" : "OBSERVING";
         expected.evaluatedAt = request.evaluatedAt();
         expected.createdAt = LocalDateTime.now();
         evaluationMapper.insertImmutable(expected);
         AiShadowEvaluation actual = evaluationMapper.selectWindowForShare(
-                request.userId(), request.championReleaseId(), request.challengerReleaseId(),
+                request.championReleaseId(), request.challengerReleaseId(),
                 request.windowStartDate(), request.windowEndDate(), request.evaluationVersion());
         if (actual == null) {
             throw new IllegalStateException("影子评估窗口写入后未读取到记录");
@@ -395,7 +397,6 @@ public class AiShadowEvaluationServiceImpl implements AiShadowEvaluationService 
         evidence.put("coverageRate", evaluation.coverageRate);
         evidence.put("actionAgreementRate", evaluation.actionAgreementRate);
         AiDriftEvent expected = new AiDriftEvent();
-        expected.userId = request.userId();
         expected.modelVersionId = evaluation.challengerModelVersionId;
         expected.strategyReleaseId = evaluation.challengerReleaseId;
         expected.shadowEvaluationId = evaluation.id;
@@ -418,7 +419,7 @@ public class AiShadowEvaluationServiceImpl implements AiShadowEvaluationService 
                 severity, threshold.toPlainString()));
         driftMapper.insertBatchImmutable(List.of(expected));
         List<AiDriftEvent> persisted = driftMapper.selectByFingerprintsForShare(
-                request.userId(), List.of(expected.eventFingerprint));
+                List.of(expected.eventFingerprint));
         if (persisted.size() != 1) {
             throw new IllegalStateException("影子漂移事件写入后未读取到唯一记录");
         }
@@ -441,26 +442,35 @@ public class AiShadowEvaluationServiceImpl implements AiShadowEvaluationService 
         if (!metrics.shadowThresholdsPassed()) {
             return null;
         }
+        if (metrics.championCalibrationError() == null
+                || metrics.challengerCalibrationError() == null
+                || metrics.championWilsonLowerBound() == null
+                || metrics.challengerWilsonLowerBound() == null) {
+            return null;
+        }
         GovernanceContext context = request.governance();
         int criticalDriftCount = (int) driftEvents.stream()
                 .filter(event -> "CRITICAL".equals(event.severity)).count();
         AiStrategyGovernanceService.PromotionEvidence evidence =
                 new AiStrategyGovernanceService.PromotionEvidence(
                         context.shadowTradingDays(), evaluation.eligibleSampleCount,
-                        context.tradeCount(), context.foldCount(),
-                        evaluation.challengerExcessReturn, evaluation.challengerMaxDrawdown,
+                        evaluation.coverageRate, context.tradeCount(), context.foldCount(),
+                        evaluation.championExcessReturn, evaluation.challengerExcessReturn,
+                        evaluation.championMaxDrawdown, evaluation.challengerMaxDrawdown,
+                        evaluation.championCalibrationError, evaluation.challengerCalibrationError,
+                        metrics.championWilsonLowerBound(), metrics.challengerWilsonLowerBound(),
                         context.maxSingleStockContribution(),
                         context.confidenceIntervalLowerExcessReturn(), criticalDriftCount,
                         evaluation.inputFingerprint);
         return governanceService.assess(new AiStrategyGovernanceService.AssessmentRequest(
-                request.userId(), request.challengerReleaseId(), request.championReleaseId(),
+                request.challengerReleaseId(), request.championReleaseId(),
                 context.walkForwardRunId(), context.backtestRunId(), evaluation.id,
                 context.policyVersion(), context.policy(), evidence, request.evaluatedAt()));
     }
 
     private String evaluationFingerprint(EvaluationRequest request, List<PairSnapshot> pairs) {
         StringBuilder canonical = new StringBuilder(String.join("|",
-                String.valueOf(request.userId()), String.valueOf(request.championReleaseId()),
+                String.valueOf(request.championReleaseId()),
                 String.valueOf(request.challengerReleaseId()), String.valueOf(request.windowStartDate()),
                 String.valueOf(request.windowEndDate()), request.evaluationVersion(),
                 String.valueOf(request.windowSampleCount()), request.featureDriftScore().toPlainString(),
@@ -510,6 +520,22 @@ public class AiShadowEvaluationServiceImpl implements AiShadowEvaluationService 
         }
         int hits = (int) returns.stream().filter(value -> value.signum() > 0).count();
         return ratio(hits, returns.size());
+    }
+
+    private static BigDecimal wilsonLowerBound(List<BigDecimal> returns) {
+        if (returns == null || returns.isEmpty()) {
+            return null;
+        }
+        double n = returns.size();
+        double hits = returns.stream().filter(value -> value.signum() > 0).count();
+        double p = hits / n;
+        double z = 1.96d;
+        double zSquared = z * z;
+        double denominator = 1.0d + zSquared / n;
+        double centre = p + zSquared / (2.0d * n);
+        double margin = z * Math.sqrt((p * (1.0d - p) + zSquared / (4.0d * n)) / n);
+        return BigDecimal.valueOf(Math.max(0.0d, (centre - margin) / denominator))
+                .setScale(SCALE, RoundingMode.HALF_UP);
     }
 
     private static BigDecimal maxDrawdown(List<BigDecimal> returns) {
@@ -613,8 +639,7 @@ public class AiShadowEvaluationServiceImpl implements AiShadowEvaluationService 
     }
 
     private static void validateRequest(EvaluationRequest request) {
-        if (request == null || request.userId() == null || request.userId() <= 0
-                || request.pipelineRunId() != null && request.pipelineRunId() <= 0
+        if (request == null || request.pipelineRunId() != null && request.pipelineRunId() <= 0
                 || request.trainingDatasetId() != null && request.trainingDatasetId() <= 0
                 || request.championReleaseId() == null || request.championReleaseId() <= 0
                 || request.challengerReleaseId() == null || request.challengerReleaseId() <= 0
@@ -687,6 +712,8 @@ public class AiShadowEvaluationServiceImpl implements AiShadowEvaluationService 
             BigDecimal challengerMaxDrawdown,
             BigDecimal championHitRate,
             BigDecimal challengerHitRate,
+            BigDecimal championWilsonLowerBound,
+            BigDecimal challengerWilsonLowerBound,
             BigDecimal excessReturnAdvantage,
             String driftStatus,
             boolean shadowThresholdsPassed,

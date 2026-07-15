@@ -69,7 +69,6 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
     }
 
     @Override
-    @Transactional
     public DatasetBuildResult buildDataset(DatasetBuildRequest request) {
         validateBuildRequest(request);
         AiTrainingDatasetSourceQuery query = sourceQuery(request);
@@ -86,7 +85,7 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
                 lineageFingerprint, artifactChecksum, selected.size());
         datasetMapper.insertImmutable(expected);
         AiTrainingDataset persisted = datasetMapper.selectByVersionForShare(
-                request.userId(), request.datasetKey(), request.versionNo());
+                request.datasetKey(), request.versionNo());
         validatePersistedDataset(expected, persisted);
 
         List<AiTrainingDatasetItem> expectedItems = datasetItems(persisted.id, selected, request.asOfTime());
@@ -99,12 +98,11 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
     }
 
     @Override
-    @Transactional
     public AiModelVersion registerModel(ModelRegistration registration) {
         validateModelRegistration(registration);
         AiTrainingDataset dataset = datasetMapper.selectById(registration.trainingDatasetId());
-        if (dataset == null || !Objects.equals(dataset.userId, registration.userId())) {
-            throw new IllegalArgumentException("trainingDatasetId 对应的数据集不存在或不属于当前用户");
+        if (dataset == null || !Objects.equals(dataset.modelFamily, registration.modelFamily())) {
+            throw new IllegalArgumentException("trainingDatasetId 对应的数据集不存在或模型族不一致");
         }
         if (!"READY".equals(dataset.status)) {
             throw new IllegalStateException("模型只能关联 READY 训练数据集");
@@ -116,7 +114,7 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
         AiModelVersion expected = modelVersion(registration, dataset, verifiedQualityGate);
         modelMapper.insertImmutable(expected);
         AiModelVersion persisted = modelMapper.selectByVersionForShare(
-                registration.userId(), registration.modelKey(), registration.versionNo());
+                registration.modelFamily(), registration.modelKey(), registration.versionNo());
         if (persisted == null) {
             throw new IllegalStateException("模型版本写入后未读取到记录");
         }
@@ -148,7 +146,7 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
                 .thenComparing(value -> value.source().tradeDate)
                 .thenComparing(value -> value.source().stockCode)
                 .thenComparing(value -> value.source().sampleId)
-                .thenComparing(value -> value.source().labelId));
+                .thenComparing(value -> value.source().sampleLabelId));
         return selected;
     }
 
@@ -157,23 +155,22 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
             AiTrainingDatasetSource source,
             Set<String> lineageKeys
     ) {
-        if (source == null || source.sampleId == null || source.labelId == null
-                || source.userId == null || source.stockCode == null || source.stockCode.isBlank()
+        if (source == null || source.sampleId == null || source.sampleLabelId == null
+                || source.stockCode == null || source.stockCode.isBlank()
                 || source.tradeDate == null || source.sampleAsOfTime == null
                 || source.labelAvailableAt == null || source.featureSnapshot == null
                 || source.featureFingerprint == null || source.featureFingerprint.isBlank()
                 || source.labelFingerprint == null || source.labelFingerprint.isBlank()
-                || source.horizonDays == null || source.horizonDays <= 0
-                || !Objects.equals(request.userId(), source.userId)
+                || source.horizonTradingDays == null || source.horizonTradingDays <= 0
                 || !Objects.equals(request.featureVersion(), source.featureVersion)
                 || !Objects.equals(request.labelVersion(), source.labelVersion)
                 || !Objects.equals(request.calendarVersion(), source.calendarVersion)
-                || !Objects.equals(source.horizonDays, request.maxHorizonDays())
+                || !Objects.equals(source.horizonTradingDays, request.maxHorizonDays())
                 || source.sampleAsOfTime.isAfter(request.asOfTime())
                 || source.labelAvailableAt.isAfter(request.asOfTime())) {
             throw new IllegalArgumentException("训练来源缺少不可变样本、成熟标签、目标周期或版本血缘");
         }
-        if (!lineageKeys.add(source.sampleId + ":" + source.labelId)) {
+        if (!lineageKeys.add(source.sampleId + ":" + source.sampleLabelId)) {
             throw new IllegalArgumentException("训练来源包含重复样本标签血缘");
         }
     }
@@ -237,14 +234,14 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
         for (SelectedSource selected : sources) {
             AiTrainingDatasetSource source = selected.source();
             Map<String, Object> target = new LinkedHashMap<>();
-            target.put("horizonDays", source.horizonDays);
+            target.put("horizonDays", source.horizonTradingDays);
             target.put("netReturn", source.netReturn);
             target.put("excessReturn", source.excessReturn);
-            target.put("labelScore", source.labelScore);
-            target.put("hitDirection", source.hitDirection);
+            target.put("actualDirection", source.actualDirection);
+            target.put("executionStatus", source.executionStatus);
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("sampleId", source.sampleId);
-            row.put("labelId", source.labelId);
+            row.put("labelId", source.sampleLabelId);
             row.put("stockCode", source.stockCode);
             row.put("tradeDate", source.tradeDate.toString());
             row.put("sampleAsOfTime", source.sampleAsOfTime.toString());
@@ -315,9 +312,10 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
             int rowCount
     ) {
         AiTrainingDataset dataset = new AiTrainingDataset();
-        dataset.userId = request.userId();
+        dataset.researchUniverseId = request.researchUniverseId();
         dataset.datasetKey = request.datasetKey();
         dataset.versionNo = request.versionNo();
+        dataset.modelFamily = request.modelFamily();
         dataset.purpose = request.purpose();
         dataset.featureVersion = request.featureVersion();
         dataset.labelVersion = request.labelVersion();
@@ -330,6 +328,8 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
         dataset.testStartDate = request.testStartDate();
         dataset.testEndDate = request.testEndDate();
         dataset.maxHorizonDays = request.maxHorizonDays();
+        dataset.purgeTradingDays = request.purgeTradingDays();
+        dataset.embargoTradingDays = request.embargoTradingDays();
         dataset.sourceQueryJson = sourceQueryJson;
         dataset.selectionPolicyJson = selectionPolicyJson;
         dataset.lineageFingerprint = lineageFingerprint;
@@ -354,7 +354,7 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
             AiTrainingDatasetItem item = new AiTrainingDatasetItem();
             item.trainingDatasetId = datasetId;
             item.sampleId = source.sampleId;
-            item.labelId = source.labelId;
+            item.sampleLabelId = source.sampleLabelId;
             item.splitType = value.split();
             item.sequenceNo = sequences.merge(value.split(), 1, Integer::sum);
             item.sampleAsOfTime = source.sampleAsOfTime;
@@ -395,29 +395,28 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
             throw new IllegalStateException("训练数据集明细写入数量不一致");
         }
         Map<String, AiTrainingDatasetItem> byLineage = new LinkedHashMap<>();
-        actual.forEach(item -> byLineage.put(item.sampleId + ":" + item.labelId, item));
+        actual.forEach(item -> byLineage.put(item.sampleId + ":" + item.sampleLabelId, item));
         for (AiTrainingDatasetItem item : expected) {
-            AiTrainingDatasetItem persisted = byLineage.get(item.sampleId + ":" + item.labelId);
+            AiTrainingDatasetItem persisted = byLineage.get(item.sampleId + ":" + item.sampleLabelId);
             if (persisted == null || !Objects.equals(item.splitType, persisted.splitType)
                     || !Objects.equals(item.sequenceNo, persisted.sequenceNo)
                     || !Objects.equals(item.sampleAsOfTime, persisted.sampleAsOfTime)
                     || !Objects.equals(item.labelAvailableAt, persisted.labelAvailableAt)
                     || !Objects.equals(item.featureFingerprint, persisted.featureFingerprint)
                     || !Objects.equals(item.labelFingerprint, persisted.labelFingerprint)) {
-                throw new IllegalStateException("不可变训练明细冲突：" + item.sampleId + "/" + item.labelId);
+                throw new IllegalStateException("不可变训练明细冲突：" + item.sampleId + "/" + item.sampleLabelId);
             }
         }
     }
 
     private static AiTrainingDatasetSourceQuery sourceQuery(DatasetBuildRequest request) {
         AiTrainingDatasetSourceQuery query = new AiTrainingDatasetSourceQuery();
-        query.userId = request.userId();
         query.featureVersion = request.featureVersion();
         query.labelVersion = request.labelVersion();
         query.calendarVersion = request.calendarVersion();
         query.startDate = request.trainStartDate();
         query.endDate = request.testEndDate();
-        query.maxHorizonDays = request.maxHorizonDays();
+        query.horizonTradingDays = request.maxHorizonDays();
         query.asOfTime = request.asOfTime();
         return query;
     }
@@ -425,15 +424,15 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
     private static Map<String, Object> sourceQueryEvidence(AiTrainingDatasetSourceQuery query) {
         Map<String, Object> evidence = new LinkedHashMap<>();
         evidence.put("source", "ai_sample INNER JOIN ai_sample_label");
-        evidence.put("userId", query.userId);
         evidence.put("featureVersion", query.featureVersion);
         evidence.put("labelVersion", query.labelVersion);
         evidence.put("calendarVersion", query.calendarVersion);
         evidence.put("startDate", query.startDate.toString());
         evidence.put("endDate", query.endDate.toString());
-        evidence.put("targetHorizonDays", query.maxHorizonDays);
+        evidence.put("targetHorizonDays", query.horizonTradingDays);
         evidence.put("asOfTime", query.asOfTime.toString());
-        evidence.put("labelStatus", "VERIFIED");
+        evidence.put("labelStatus", "MATURED");
+        evidence.put("executionStatus", "EXECUTED");
         return evidence;
     }
 
@@ -458,7 +457,7 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
     ) {
         String rows = selected.stream().map(value -> String.join(":",
                         value.split(), String.valueOf(value.source().sampleId),
-                        String.valueOf(value.source().labelId), value.source().featureFingerprint,
+                        String.valueOf(value.source().sampleLabelId), value.source().featureFingerprint,
                         value.source().labelFingerprint))
                 .reduce((left, right) -> left + "|" + right).orElse("");
         return sha256(String.join("|", request.datasetKey(), request.versionNo(),
@@ -497,16 +496,19 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
     }
 
     private static void validateBuildRequest(DatasetBuildRequest request) {
-        if (request == null || request.userId() == null || request.userId() <= 0
-                || blank(request.datasetKey()) || blank(request.versionNo()) || blank(request.purpose())
+        if (request == null || request.researchUniverseId() == null || request.researchUniverseId() <= 0
+                || blank(request.datasetKey()) || blank(request.versionNo())
+                || blank(request.modelFamily()) || blank(request.purpose())
                 || blank(request.featureVersion()) || blank(request.labelVersion())
                 || blank(request.calendarVersion()) || request.asOfTime() == null
                 || request.trainStartDate() == null || request.trainEndDate() == null
                 || request.validationStartDate() == null || request.validationEndDate() == null
                 || request.testStartDate() == null || request.testEndDate() == null
                 || request.maxHorizonDays() == null || request.maxHorizonDays() <= 0
+                || request.purgeTradingDays() == null || request.purgeTradingDays() < 5
+                || request.embargoTradingDays() == null || request.embargoTradingDays() < 5
                 || request.artifactPath() == null) {
-            throw new IllegalArgumentException("训练数据集请求缺少用户、版本、窗口或产物路径");
+            throw new IllegalArgumentException("训练数据集请求缺少研究股票池、版本、隔离窗口或产物路径");
         }
         if (request.trainStartDate().isAfter(request.trainEndDate())
                 || !request.trainEndDate().isBefore(request.validationStartDate())
@@ -519,13 +521,11 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
     }
 
     private static void validateModelRegistration(ModelRegistration registration) {
-        if (registration == null || registration.userId() == null || registration.userId() <= 0) {
-            throw new IllegalArgumentException("模型注册缺少 userId");
-        }
-        if (registration.trainingDatasetId() == null || registration.trainingDatasetId() <= 0) {
+        if (registration == null || registration.trainingDatasetId() == null
+                || registration.trainingDatasetId() <= 0) {
             throw new IllegalArgumentException("模型注册缺少有效 trainingDatasetId");
         }
-        if (blank(registration.modelKey()) || blank(registration.versionNo())
+        if (blank(registration.modelFamily()) || blank(registration.modelKey()) || blank(registration.versionNo())
                 || blank(registration.modelType()) || blank(registration.algorithm())
                 || blank(registration.featureVersion()) || blank(registration.trainerVersion())
                 || registration.randomSeed() == null || blank(registration.artifactUri())
@@ -545,8 +545,8 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
             boolean verifiedQualityGate
     ) {
         AiModelVersion model = new AiModelVersion();
-        model.userId = registration.userId();
         model.trainingDatasetId = registration.trainingDatasetId();
+        model.modelFamily = registration.modelFamily();
         model.modelKey = registration.modelKey();
         model.versionNo = registration.versionNo();
         model.modelType = registration.modelType();

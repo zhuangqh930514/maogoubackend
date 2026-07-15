@@ -27,7 +27,6 @@ public interface AiFactorPerformanceService {
     }
 
     record PerformanceBatch(
-            Long userId,
             String factorVersion,
             Integer horizonDays,
             String marketRegime,

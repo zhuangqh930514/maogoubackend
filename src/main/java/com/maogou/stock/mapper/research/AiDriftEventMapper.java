@@ -13,7 +13,7 @@ public interface AiDriftEventMapper extends BaseMapper<AiDriftEvent> {
     @Insert("""
             <script>
             INSERT INTO ai_drift_event (
-                user_id, factor_performance_id, model_version_id, strategy_release_id,
+                factor_performance_id, model_version_id, strategy_release_id,
                 shadow_evaluation_id, event_fingerprint, event_type, subject_type, subject_key,
                 detector_version, window_start_date, window_end_date, metric_name, baseline_value,
                 observed_value, threshold_value, severity, status, evidence_json, detected_at,
@@ -21,7 +21,7 @@ public interface AiDriftEventMapper extends BaseMapper<AiDriftEvent> {
             ) VALUES
             <foreach collection="items" item="item" separator=",">
                 (
-                    #{item.userId}, #{item.factorPerformanceId}, #{item.modelVersionId},
+                    #{item.factorPerformanceId}, #{item.modelVersionId},
                     #{item.strategyReleaseId}, #{item.shadowEvaluationId}, #{item.eventFingerprint},
                     #{item.eventType}, #{item.subjectType}, #{item.subjectKey},
                     #{item.detectorVersion}, #{item.windowStartDate}, #{item.windowEndDate},
@@ -38,8 +38,7 @@ public interface AiDriftEventMapper extends BaseMapper<AiDriftEvent> {
     @Select("""
             <script>
             SELECT * FROM ai_drift_event
-            WHERE user_id = #{userId}
-              AND event_fingerprint IN
+            WHERE event_fingerprint IN
               <foreach collection="fingerprints" item="fingerprint" open="(" separator="," close=")">
                   #{fingerprint}
               </foreach>
@@ -47,7 +46,5 @@ public interface AiDriftEventMapper extends BaseMapper<AiDriftEvent> {
             </script>
             """)
     List<AiDriftEvent> selectByFingerprintsForShare(
-            @Param("userId") Long userId,
-            @Param("fingerprints") List<String> fingerprints
-    );
+            @Param("fingerprints") List<String> fingerprints);
 }

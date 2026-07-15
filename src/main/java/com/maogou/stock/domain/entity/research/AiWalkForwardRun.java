@@ -10,17 +10,13 @@ import java.time.LocalDateTime;
 public class AiWalkForwardRun {
     @TableId(type = IdType.AUTO)
     public Long id;
-    public Long userId;
     public Long trainingDatasetId;
     public Long strategyReleaseId;
     public Long modelVersionId;
     public String runKey;
-    public String runVersion;
-    public String objective;
-    public Integer horizonDays;
-    public Integer purgeDays;
-    public Integer embargoDays;
-    public Integer foldCount;
+    public String engineVersion;
+    public Integer purgeTradingDays;
+    public Integer embargoTradingDays;
     public Long randomSeed;
     public String inputFingerprint;
     public String configJson;

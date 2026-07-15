@@ -31,33 +31,39 @@ class AiWalkForwardServiceImplTest {
     void createsChronologicalFoldsAndPurgesLabelsThatCrossBoundaries() {
         Fixture fixture = fixture();
         AiWalkForwardService service = service(fixture);
-        List<LocalDate> dates = dates(30);
+        List<LocalDate> dates = dates(45);
+        AiWalkForwardService.WalkForwardRequest base = request(dates);
+        List<AiWalkForwardService.Observation> observations = new ArrayList<>(base.observations());
+        observations.set(7, withLabelAvailableDate(observations.get(7), dates.get(18)));
+        observations.set(21, withLabelAvailableDate(observations.get(21), dates.get(32)));
+        AiWalkForwardService.WalkForwardRequest request = withObservations(base, observations);
 
-        AiWalkForwardService.WalkForwardResult result = service.runAndStore(request(dates));
+        AiWalkForwardService.WalkForwardResult result = service.runAndStore(request);
 
         assertThat(result.run().status).isEqualTo("COMPLETED");
         assertThat(result.folds()).hasSize(2);
         AiWalkForwardFold first = result.folds().get(0);
         assertThat(first.trainStartDate).isEqualTo(dates.get(0));
         assertThat(first.trainEndDate).isEqualTo(dates.get(7));
-        assertThat(first.validationStartDate).isEqualTo(dates.get(10));
-        assertThat(first.validationEndDate).isEqualTo(dates.get(13));
-        assertThat(first.testStartDate).isEqualTo(dates.get(15));
-        assertThat(first.testEndDate).isEqualTo(dates.get(18));
+        assertThat(first.validationStartDate).isEqualTo(dates.get(18));
+        assertThat(first.validationEndDate).isEqualTo(dates.get(21));
+        assertThat(first.testStartDate).isEqualTo(dates.get(32));
+        assertThat(first.testEndDate).isEqualTo(dates.get(35));
         assertThat(first.trainEndDate).isBefore(first.validationStartDate);
         assertThat(first.validationEndDate).isBefore(first.testStartDate);
 
         AiWalkForwardService.FoldExecution evidence = result.executions().get(0);
-        assertThat(evidence.trainSampleIds()).doesNotContain(8L, 9L, 10L);
-        assertThat(evidence.validationSampleIds()).doesNotContain(14L);
+        assertThat(evidence.trainSampleIds()).doesNotContain(8L);
+        assertThat(evidence.validationSampleIds()).doesNotContain(22L);
         assertThat(evidence.trainSampleIds()).allMatch(id ->
-                request(dates).observations().get(id.intValue() - 1).labelAvailableDate()
+                request.observations().get(id.intValue() - 1).labelAvailableDate()
                         .isBefore(first.validationStartDate));
         assertThat(evidence.validationSampleIds()).allMatch(id ->
-                request(dates).observations().get(id.intValue() - 1).labelAvailableDate()
+                request.observations().get(id.intValue() - 1).labelAvailableDate()
                         .isBefore(first.testStartDate));
         assertThat(evidence.trainSampleIds()).doesNotContainAnyElementsOf(evidence.validationSampleIds());
         assertThat(evidence.validationSampleIds()).doesNotContainAnyElementsOf(evidence.testSampleIds());
+        assertThat(evidence.trainSampleIds()).doesNotContainAnyElementsOf(evidence.testSampleIds());
     }
 
     @Test
@@ -65,7 +71,7 @@ class AiWalkForwardServiceImplTest {
         Fixture fixture = fixture();
         AiWalkForwardService service = service(fixture);
 
-        AiWalkForwardService.WalkForwardResult result = service.runAndStore(request(dates(30)));
+        AiWalkForwardService.WalkForwardResult result = service.runAndStore(request(dates(45)));
 
         assertThat(result.baselines()).hasSize(8);
         assertThat(result.baselines()).extracting(item -> item.baselineType).containsOnly(
@@ -76,8 +82,8 @@ class AiWalkForwardServiceImplTest {
         assertThat(result.baselines()).allMatch(item -> item.metricsJson.contains("totalReturn")
                 && item.navJson.contains("nav"));
         assertThat(result.folds()).allMatch(item -> item.metricsJson.contains("candidateTotalReturn"));
-        assertThat(result.folds()).allMatch(item -> item.confidenceIntervalJson.contains("lower95")
-                && item.confidenceIntervalJson.contains("upper95"));
+        assertThat(result.folds()).allMatch(item -> item.metricsJson.contains("lower95")
+                && item.metricsJson.contains("upper95"));
         var aggregate = new ObjectMapper().readTree(result.run().aggregateMetricsJson);
         assertThat(aggregate.has("meanTestReturn")).isTrue();
         assertThat(aggregate.path("confidenceInterval").has("lower95")).isTrue();
@@ -88,7 +94,7 @@ class AiWalkForwardServiceImplTest {
     void rerunningTheSameVersionedExperimentReturnsTheOriginalImmutableArtifacts() {
         Fixture fixture = fixture();
         AiWalkForwardService service = service(fixture);
-        AiWalkForwardService.WalkForwardRequest request = request(dates(30));
+        AiWalkForwardService.WalkForwardRequest request = request(dates(45));
 
         AiWalkForwardService.WalkForwardResult first = service.runAndStore(request);
         AiWalkForwardService.WalkForwardResult repeated = service.runAndStore(request);
@@ -104,7 +110,7 @@ class AiWalkForwardServiceImplTest {
     void rejectsDifferentDatasetLineageReusingTheSameRunKey() {
         Fixture fixture = fixture();
         AiWalkForwardService service = service(fixture);
-        AiWalkForwardService.WalkForwardRequest original = request(dates(30));
+        AiWalkForwardService.WalkForwardRequest original = request(dates(45));
         service.runAndStore(original);
         List<AiWalkForwardService.Observation> changed = new ArrayList<>(original.observations());
         AiWalkForwardService.Observation first = changed.get(0);
@@ -113,8 +119,8 @@ class AiWalkForwardServiceImplTest {
                 first.realizedNetReturn(), first.strategyScore(), first.momentumScore(),
                 first.championScore(), "changed-lineage"));
         AiWalkForwardService.WalkForwardRequest conflicting = new AiWalkForwardService.WalkForwardRequest(
-                original.userId(), original.trainingDatasetId(), original.strategyReleaseId(),
-                original.modelVersionId(), original.runKey(), original.runVersion(), original.objective(),
+                original.trainingDatasetId(), original.strategyReleaseId(),
+                original.modelVersionId(), original.runKey(), original.engineVersion(), original.objective(),
                 original.horizonDays(), original.purgeDays(), original.embargoDays(),
                 original.foldCount(), original.randomSeed(), original.config(), changed,
                 original.benchmarkCode(), original.benchmark(), original.evaluatedAt());
@@ -149,10 +155,32 @@ class AiWalkForwardServiceImplTest {
                         date, new BigDecimal("0.001"), "benchmark-" + date))
                 .toList();
         return new AiWalkForwardService.WalkForwardRequest(
-                5L, 11L, 21L, null, "WF-202607", "WF_V2_1", "EXCESS_RETURN",
-                3, 2, 1, 2, 930514L,
+                11L, 21L, null, "WF-202607", "WF_V2_1", "EXCESS_RETURN",
+                3, 5, 5, 2, 930514L,
                 new AiWalkForwardService.WalkForwardConfig(8, 4, 4, 4, 2, 200),
                 observations, "000300", benchmark, LocalDateTime.of(2026, 7, 31, 16, 0));
+    }
+
+    private static AiWalkForwardService.Observation withLabelAvailableDate(
+            AiWalkForwardService.Observation source,
+            LocalDate labelAvailableDate
+    ) {
+        return new AiWalkForwardService.Observation(
+                source.sampleId(), source.tradeDate(), labelAvailableDate, source.stockCode(),
+                source.realizedNetReturn(), source.strategyScore(), source.momentumScore(),
+                source.championScore(), source.lineageFingerprint());
+    }
+
+    private static AiWalkForwardService.WalkForwardRequest withObservations(
+            AiWalkForwardService.WalkForwardRequest source,
+            List<AiWalkForwardService.Observation> observations
+    ) {
+        return new AiWalkForwardService.WalkForwardRequest(
+                source.trainingDatasetId(), source.strategyReleaseId(), source.modelVersionId(),
+                source.runKey(), source.engineVersion(), source.objective(), source.horizonDays(),
+                source.purgeDays(), source.embargoDays(), source.foldCount(), source.randomSeed(),
+                source.config(), observations, source.benchmarkCode(), source.benchmark(),
+                source.evaluatedAt());
     }
 
     private static List<LocalDate> dates(int count) {
@@ -179,14 +207,14 @@ class AiWalkForwardServiceImplTest {
                 .thenAnswer(invocation -> {
                     AiWalkForwardRun run = invocation.getArgument(0);
                     boolean exists = runs.stream().anyMatch(item ->
-                            item.userId.equals(run.userId) && item.runKey.equals(run.runKey));
+                            item.runKey.equals(run.runKey));
                     if (!exists) {
                         run.id = ids.incrementAndGet();
                         runs.add(run);
                     }
                     return 1;
                 });
-        when(runMapper.selectByRunKeyForShare(anyLong(), anyString()))
+        when(runMapper.selectByRunKeyForShare(anyString()))
                 .thenAnswer(invocation -> runs.isEmpty() ? null : runs.get(0));
         when(foldMapper.insertBatchImmutable(anyList())).thenAnswer(invocation -> {
             List<AiWalkForwardFold> items = invocation.getArgument(0);

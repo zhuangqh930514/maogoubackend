@@ -23,6 +23,13 @@ import java.util.Objects;
 @Service
 public class AiStrategyGovernanceServiceImpl implements AiStrategyGovernanceService {
 
+    private static final int MINIMUM_ELIGIBLE_SAMPLES = 2_000;
+    private static final int MINIMUM_SHADOW_TRADING_DAYS = 20;
+    private static final java.math.BigDecimal MINIMUM_COVERAGE_RATE =
+            new java.math.BigDecimal("0.60");
+    private static final java.math.BigDecimal MAXIMUM_DRAWDOWN_DEGRADATION =
+            new java.math.BigDecimal("0.02");
+
     private final AiStrategyReleaseMapper releaseMapper;
     private final AiStrategyGovernanceEventMapper eventMapper;
     private final ObjectMapper objectMapper;
@@ -42,13 +49,17 @@ public class AiStrategyGovernanceServiceImpl implements AiStrategyGovernanceServ
     public Assessment assess(AssessmentRequest request) {
         validate(request);
         AiStrategyRelease challenger = releaseMapper.selectByIdForUpdate(request.challengerReleaseId());
-        if (challenger == null || !Objects.equals(request.userId(), challenger.userId)
-                || !"CHALLENGER".equals(challenger.releaseRole)
+        if (challenger == null || !"CHALLENGER".equals(challenger.releaseRole)
                 || !"SHADOW".equals(challenger.status)) {
-            throw new IllegalArgumentException("只有当前用户处于 SHADOW 的 Challenger 可以评估");
+            throw new IllegalArgumentException("只有处于 SHADOW 的全局 Challenger 可以评估");
+        }
+        AiStrategyRelease champion = releaseMapper.selectActiveChampionForUpdate(
+                challenger.researchUniverseId, challenger.modelFamily);
+        if (champion == null || !Objects.equals(champion.id, request.currentChampionReleaseId())) {
+            throw new IllegalStateException("当前全局 Champion 与评估请求不一致");
         }
         List<String> reasons = rejectionReasons(request.policy(), request.evidence());
-        String decision = reasons.isEmpty() ? "AWAITING_HUMAN_CONFIRMATION" : "REJECTED";
+        String decision = reasons.isEmpty() ? "READY_FOR_REVIEW" : "REJECTED";
         String eventType = reasons.isEmpty() ? "PROMOTION_CANDIDATE_READY" : "PROMOTION_REJECTED";
         String reason = reasons.isEmpty()
                 ? "所有自动化门槛已通过，等待人工确认" : String.join("；", reasons);
@@ -56,7 +67,6 @@ public class AiStrategyGovernanceServiceImpl implements AiStrategyGovernanceServ
                 + sha256(request.evidence().evidenceFingerprint() + "|" + request.policy());
 
         AiStrategyGovernanceEvent expected = new AiStrategyGovernanceEvent();
-        expected.userId = request.userId();
         expected.strategyReleaseId = challenger.id;
         expected.previousChampionReleaseId = request.currentChampionReleaseId();
         expected.walkForwardRunId = request.walkForwardRunId();
@@ -73,8 +83,7 @@ public class AiStrategyGovernanceServiceImpl implements AiStrategyGovernanceServ
         expected.occurredAt = request.assessedAt();
         expected.createdAt = LocalDateTime.now();
         eventMapper.insertImmutable(expected);
-        AiStrategyGovernanceEvent event = eventMapper.selectByEventKeyForShare(
-                request.userId(), eventKey);
+        AiStrategyGovernanceEvent event = eventMapper.selectByEventKeyForShare(eventKey);
         if (event == null) {
             throw new IllegalStateException("策略治理事件写入后未读取到记录");
         }
@@ -90,8 +99,7 @@ public class AiStrategyGovernanceServiceImpl implements AiStrategyGovernanceServ
     @Override
     @Transactional
     public PromotionResult confirmPromotion(ConfirmationRequest request) {
-        if (request == null || request.userId() == null || request.userId() <= 0
-                || request.challengerReleaseId() == null || request.challengerReleaseId() <= 0
+        if (request == null || request.challengerReleaseId() == null || request.challengerReleaseId() <= 0
                 || request.assessmentEventKey() == null || request.assessmentEventKey().isBlank()
                 || request.actorId() == null || request.actorId() <= 0
                 || request.policyVersion() == null || request.policyVersion().isBlank()
@@ -100,19 +108,23 @@ public class AiStrategyGovernanceServiceImpl implements AiStrategyGovernanceServ
             throw new IllegalArgumentException("人工晋级确认缺少操作者、评估事件或策略");
         }
         AiStrategyGovernanceEvent assessment = eventMapper.selectByEventKeyForShare(
-                request.userId(), request.assessmentEventKey());
+                request.assessmentEventKey());
         if (assessment == null
                 || !Objects.equals(request.challengerReleaseId(), assessment.strategyReleaseId)
-                || !"AWAITING_HUMAN_CONFIRMATION".equals(assessment.decisionStatus)
+                || !"READY_FOR_REVIEW".equals(assessment.decisionStatus)
                 || !"PROMOTION_CANDIDATE_READY".equals(assessment.eventType)) {
             throw new IllegalArgumentException("只有通过自动门槛的评估事件可以人工确认");
         }
         String eventKey = "CONFIRM:" + request.challengerReleaseId() + ":"
                 + assessment.id + ":" + request.actorId();
-        AiStrategyGovernanceEvent existingEvent = eventMapper.selectByEventKeyForShare(
-                request.userId(), eventKey);
+        AiStrategyRelease challenger = releaseMapper.selectByIdForUpdate(request.challengerReleaseId());
+        if (challenger == null) {
+            throw new IllegalArgumentException("待晋级 Challenger 不存在");
+        }
+        AiStrategyGovernanceEvent existingEvent = eventMapper.selectByEventKeyForShare(eventKey);
         if (existingEvent != null) {
-            AiStrategyRelease active = releaseMapper.selectActiveChampionForUpdate(request.userId());
+            AiStrategyRelease active = releaseMapper.selectActiveChampionForUpdate(
+                    challenger.researchUniverseId, challenger.modelFamily);
             AiStrategyRelease previous = releaseMapper.selectByIdForUpdate(
                     assessment.previousChampionReleaseId);
             if (active == null || !Objects.equals(active.id, request.challengerReleaseId())
@@ -122,10 +134,9 @@ public class AiStrategyGovernanceServiceImpl implements AiStrategyGovernanceServ
             }
             return new PromotionResult(active, previous, existingEvent);
         }
-        AiStrategyRelease challenger = releaseMapper.selectByIdForUpdate(request.challengerReleaseId());
-        AiStrategyRelease champion = releaseMapper.selectActiveChampionForUpdate(request.userId());
-        if (challenger == null || !Objects.equals(request.userId(), challenger.userId)
-                || !"CHALLENGER".equals(challenger.releaseRole)
+        AiStrategyRelease champion = releaseMapper.selectActiveChampionForUpdate(
+                challenger.researchUniverseId, challenger.modelFamily);
+        if (!"CHALLENGER".equals(challenger.releaseRole)
                 || !"SHADOW".equals(challenger.status)) {
             throw new IllegalArgumentException("待晋级策略不再是 SHADOW Challenger");
         }
@@ -151,7 +162,6 @@ public class AiStrategyGovernanceServiceImpl implements AiStrategyGovernanceServ
         }
 
         AiStrategyGovernanceEvent expected = new AiStrategyGovernanceEvent();
-        expected.userId = request.userId();
         expected.strategyReleaseId = challenger.id;
         expected.previousChampionReleaseId = champion.id;
         expected.walkForwardRunId = assessment.walkForwardRunId;
@@ -162,7 +172,7 @@ public class AiStrategyGovernanceServiceImpl implements AiStrategyGovernanceServ
         expected.decisionStatus = "PROMOTED";
         expected.policyVersion = request.policyVersion();
         expected.actorType = "HUMAN";
-        expected.actorId = request.actorId();
+        expected.actorUserId = request.actorId();
         expected.reason = request.confirmationReason();
         expected.thresholdSnapshotJson = assessment.thresholdSnapshotJson;
         expected.evidenceJson = json(Map.of(
@@ -172,8 +182,7 @@ public class AiStrategyGovernanceServiceImpl implements AiStrategyGovernanceServ
         expected.occurredAt = request.confirmedAt();
         expected.createdAt = LocalDateTime.now();
         eventMapper.insertImmutable(expected);
-        AiStrategyGovernanceEvent event = eventMapper.selectByEventKeyForShare(
-                request.userId(), eventKey);
+        AiStrategyGovernanceEvent event = eventMapper.selectByEventKeyForShare(eventKey);
         if (event == null || !Objects.equals(expected.eventType, event.eventType)
                 || !Objects.equals(expected.evidenceJson, event.evidenceJson)) {
             throw new IllegalStateException("不可变人工晋级事件冲突：" + eventKey);
@@ -184,8 +193,7 @@ public class AiStrategyGovernanceServiceImpl implements AiStrategyGovernanceServ
     @Override
     @Transactional
     public RollbackResult rollback(RollbackRequest request) {
-        if (request == null || request.userId() == null || request.userId() <= 0
-                || request.currentChampionReleaseId() == null || request.currentChampionReleaseId() <= 0
+        if (request == null || request.currentChampionReleaseId() == null || request.currentChampionReleaseId() <= 0
                 || request.previousChampionReleaseId() == null || request.previousChampionReleaseId() <= 0
                 || Objects.equals(request.currentChampionReleaseId(), request.previousChampionReleaseId())
                 || request.shadowEvaluationId() == null || request.shadowEvaluationId() <= 0
@@ -196,15 +204,22 @@ public class AiStrategyGovernanceServiceImpl implements AiStrategyGovernanceServ
                 || request.rolledBackAt() == null) {
             throw new IllegalArgumentException("策略回滚缺少严重退化证据或上一版 Champion");
         }
-        AiStrategyRelease current = releaseMapper.selectActiveChampionForUpdate(request.userId());
+        AiStrategyRelease current = releaseMapper.selectByIdForUpdate(request.currentChampionReleaseId());
         AiStrategyRelease previous = releaseMapper.selectByIdForUpdate(request.previousChampionReleaseId());
         if (current == null || !Objects.equals(current.id, request.currentChampionReleaseId())
                 || !"CHAMPION".equals(current.releaseRole) || !"ACTIVE".equals(current.status)) {
             throw new IllegalStateException("当前激活 Champion 与回滚请求不一致");
         }
-        if (previous == null || !Objects.equals(previous.userId, request.userId())
+        AiStrategyRelease active = releaseMapper.selectActiveChampionForUpdate(
+                current.researchUniverseId, current.modelFamily);
+        if (active == null || !Objects.equals(active.id, current.id)) {
+            throw new IllegalStateException("当前全局 Champion 锁定结果不一致");
+        }
+        if (previous == null
+                || !Objects.equals(previous.researchUniverseId, current.researchUniverseId)
+                || !Objects.equals(previous.modelFamily, current.modelFamily)
                 || !"CHAMPION".equals(previous.releaseRole) || !"RETIRED".equals(previous.status)) {
-            throw new IllegalArgumentException("回滚目标必须是同用户已退役的 Champion");
+            throw new IllegalArgumentException("回滚目标必须是同研究范围已退役的 Champion");
         }
 
         current.status = "RETIRED";
@@ -226,7 +241,6 @@ public class AiStrategyGovernanceServiceImpl implements AiStrategyGovernanceServ
         String eventKey = "ROLLBACK:" + current.id + ":" + previous.id + ":"
                 + sha256(request.degradationFingerprint() + "|" + request.policyVersion());
         AiStrategyGovernanceEvent expected = new AiStrategyGovernanceEvent();
-        expected.userId = request.userId();
         expected.strategyReleaseId = previous.id;
         expected.previousChampionReleaseId = current.id;
         expected.shadowEvaluationId = request.shadowEvaluationId();
@@ -245,8 +259,7 @@ public class AiStrategyGovernanceServiceImpl implements AiStrategyGovernanceServ
         expected.occurredAt = request.rolledBackAt();
         expected.createdAt = LocalDateTime.now();
         eventMapper.insertImmutable(expected);
-        AiStrategyGovernanceEvent event = eventMapper.selectByEventKeyForShare(
-                request.userId(), eventKey);
+        AiStrategyGovernanceEvent event = eventMapper.selectByEventKeyForShare(eventKey);
         if (event == null || !Objects.equals(expected.eventType, event.eventType)
                 || !Objects.equals(expected.evidenceJson, event.evidenceJson)) {
             throw new IllegalStateException("不可变回滚治理事件冲突：" + eventKey);
@@ -256,11 +269,16 @@ public class AiStrategyGovernanceServiceImpl implements AiStrategyGovernanceServ
 
     private static List<String> rejectionReasons(PromotionPolicy policy, PromotionEvidence evidence) {
         List<String> reasons = new ArrayList<>();
-        if (evidence.shadowTradingDays() < policy.minimumShadowDays()) {
-            reasons.add("影子天数不足 " + policy.minimumShadowDays());
+        int requiredShadowDays = Math.max(policy.minimumShadowDays(), MINIMUM_SHADOW_TRADING_DAYS);
+        if (evidence.shadowTradingDays() < requiredShadowDays) {
+            reasons.add("影子天数不足 " + requiredShadowDays);
         }
-        if (evidence.sampleCount() < policy.minimumSamples()) {
-            reasons.add("样本数不足 " + policy.minimumSamples());
+        int requiredSamples = Math.max(policy.minimumSamples(), MINIMUM_ELIGIBLE_SAMPLES);
+        if (evidence.eligibleSampleCount() < requiredSamples) {
+            reasons.add("合格样本数不足 " + requiredSamples);
+        }
+        if (evidence.coverageRate().compareTo(MINIMUM_COVERAGE_RATE) < 0) {
+            reasons.add("覆盖率低于 " + MINIMUM_COVERAGE_RATE);
         }
         if (evidence.tradeCount() < policy.minimumTrades()) {
             reasons.add("交易数不足 " + policy.minimumTrades());
@@ -268,8 +286,25 @@ public class AiStrategyGovernanceServiceImpl implements AiStrategyGovernanceServ
         if (evidence.foldCount() < policy.minimumFolds()) {
             reasons.add("Walk-forward 窗口数不足 " + policy.minimumFolds());
         }
-        if (evidence.maxDrawdown().compareTo(policy.maximumDrawdown()) < 0) {
+        if (evidence.challengerMaxDrawdown().compareTo(policy.maximumDrawdown()) < 0) {
             reasons.add("最大回撤超过上限 " + policy.maximumDrawdown());
+        }
+        if (evidence.challengerNetExcessReturn()
+                .compareTo(evidence.championNetExcessReturn()) <= 0) {
+            reasons.add("Challenger 净超额收益未超过 Champion");
+        }
+        if (drawdownMagnitude(evidence.challengerMaxDrawdown()).compareTo(
+                drawdownMagnitude(evidence.championMaxDrawdown())
+                        .add(MAXIMUM_DRAWDOWN_DEGRADATION)) > 0) {
+            reasons.add("Challenger 最大回撤比 Champion 恶化超过 0.02");
+        }
+        if (evidence.challengerCalibrationError()
+                .compareTo(evidence.championCalibrationError()) > 0) {
+            reasons.add("Challenger 校准误差高于 Champion");
+        }
+        if (evidence.challengerWilsonLowerBound()
+                .compareTo(evidence.championWilsonLowerBound()) < 0) {
+            reasons.add("Challenger Wilson 下界低于 Champion");
         }
         if (evidence.maxSingleStockContribution()
                 .compareTo(policy.maximumSingleStockContribution()) > 0) {
@@ -286,8 +321,7 @@ public class AiStrategyGovernanceServiceImpl implements AiStrategyGovernanceServ
     }
 
     private static void validate(AssessmentRequest request) {
-        if (request == null || request.userId() == null || request.userId() <= 0
-                || request.challengerReleaseId() == null || request.challengerReleaseId() <= 0
+        if (request == null || request.challengerReleaseId() == null || request.challengerReleaseId() <= 0
                 || request.currentChampionReleaseId() == null || request.currentChampionReleaseId() <= 0
                 || request.walkForwardRunId() == null || request.walkForwardRunId() <= 0
                 || request.backtestRunId() == null || request.backtestRunId() <= 0
@@ -295,7 +329,7 @@ public class AiStrategyGovernanceServiceImpl implements AiStrategyGovernanceServ
                 || request.policyVersion() == null || request.policyVersion().isBlank()
                 || request.policy() == null || request.evidence() == null
                 || request.assessedAt() == null) {
-            throw new IllegalArgumentException("策略晋级评估缺少用户、策略或证据关联");
+            throw new IllegalArgumentException("策略晋级评估缺少策略或证据关联");
         }
         PromotionPolicy policy = request.policy();
         PromotionEvidence evidence = request.evidence();
@@ -308,16 +342,32 @@ public class AiStrategyGovernanceServiceImpl implements AiStrategyGovernanceServ
                 || policy.maximumSingleStockContribution().signum() < 0
                 || policy.minimumConfidenceIntervalExcessReturn() == null
                 || evidence.shadowTradingDays() == null || evidence.shadowTradingDays() < 0
-                || evidence.sampleCount() == null || evidence.sampleCount() < 0
+                || evidence.eligibleSampleCount() == null || evidence.eligibleSampleCount() < 0
+                || !validRate(evidence.coverageRate())
                 || evidence.tradeCount() == null || evidence.tradeCount() < 0
                 || evidence.foldCount() == null || evidence.foldCount() < 0
-                || evidence.challengerExcessReturn() == null || evidence.maxDrawdown() == null
+                || evidence.championNetExcessReturn() == null
+                || evidence.challengerNetExcessReturn() == null
+                || evidence.championMaxDrawdown() == null
+                || evidence.challengerMaxDrawdown() == null
+                || evidence.championCalibrationError() == null
+                || evidence.challengerCalibrationError() == null
+                || !validRate(evidence.championWilsonLowerBound())
+                || !validRate(evidence.challengerWilsonLowerBound())
                 || evidence.maxSingleStockContribution() == null
                 || evidence.confidenceIntervalLowerExcessReturn() == null
                 || evidence.criticalDriftCount() == null || evidence.criticalDriftCount() < 0
                 || evidence.evidenceFingerprint() == null || evidence.evidenceFingerprint().isBlank()) {
             throw new IllegalArgumentException("策略晋级阈值或证据值无效");
         }
+    }
+
+    private static boolean validRate(java.math.BigDecimal value) {
+        return value != null && value.signum() >= 0 && value.compareTo(java.math.BigDecimal.ONE) <= 0;
+    }
+
+    private static java.math.BigDecimal drawdownMagnitude(java.math.BigDecimal value) {
+        return value.abs();
     }
 
     private String json(Object value) {

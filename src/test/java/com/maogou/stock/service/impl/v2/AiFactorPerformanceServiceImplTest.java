@@ -107,7 +107,7 @@ class AiFactorPerformanceServiceImplTest {
         }
         AiFactorPerformanceService.PerformanceBatch original = batch(current);
         AiFactorPerformanceService.PerformanceBatch withBaseline = new AiFactorPerformanceService.PerformanceBatch(
-                original.userId(), original.factorVersion(), original.horizonDays(),
+                original.factorVersion(), original.horizonDays(),
                 original.marketRegime(), original.windowType(), original.windowStartDate(),
                 original.windowEndDate(), original.observations(), baseline,
                 original.detectorVersion(), original.thresholds(), original.evaluatedAt());
@@ -206,7 +206,7 @@ class AiFactorPerformanceServiceImplTest {
         AiFactorPerformanceService.PerformanceBatch original = batch(List.of(
                 observation(901L, "600901", "2026-07-01", "1.0", "0.02", "-0.01")));
         AiFactorPerformanceService.PerformanceBatch invalid = new AiFactorPerformanceService.PerformanceBatch(
-                original.userId(), original.factorVersion(), original.horizonDays(),
+                original.factorVersion(), original.horizonDays(),
                 original.marketRegime(), original.windowType(), original.windowStartDate(),
                 original.windowEndDate(), original.observations(), original.baselineObservations(),
                 original.detectorVersion(), new AiFactorPerformanceService.DriftThresholds(
@@ -228,7 +228,7 @@ class AiFactorPerformanceServiceImplTest {
             List<AiFactorPerformanceService.Observation> observations
     ) {
         return new AiFactorPerformanceService.PerformanceBatch(
-                5L, "FACTOR_V2_1", 3, "BULL", "ROLLING_20D",
+                "FACTOR_V2_1", 3, "BULL", "ROLLING_20D",
                 LocalDate.of(2026, 7, 1), LocalDate.of(2026, 7, 2),
                 observations, List.of(), "DRIFT_V2_1",
                 new AiFactorPerformanceService.DriftThresholds(
@@ -256,6 +256,7 @@ class AiFactorPerformanceServiceImplTest {
 
         AiFactorValue factor = new AiFactorValue();
         factor.id = sampleId + 1000;
+        factor.factorDefinitionId = 51L;
         factor.userId = 5L;
         factor.sampleId = sampleId;
         factor.stockCode = stockCode;
@@ -292,9 +293,7 @@ class AiFactorPerformanceServiceImplTest {
             List<AiFactorPerformance> items = invocation.getArgument(0);
             for (AiFactorPerformance item : items) {
                 boolean exists = database.stream().anyMatch(existing ->
-                        existing.userId.equals(item.userId)
-                                && existing.factorCode.equals(item.factorCode)
-                                && existing.factorVersion.equals(item.factorVersion)
+                        existing.factorDefinitionId.equals(item.factorDefinitionId)
                                 && existing.horizonDays.equals(item.horizonDays)
                                 && existing.marketRegime.equals(item.marketRegime)
                                 && existing.windowType.equals(item.windowType)
@@ -308,8 +307,8 @@ class AiFactorPerformanceServiceImplTest {
             return items.size();
         });
         when(performanceMapper.selectWindowForShare(
-                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyInt(),
+                org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any())).thenAnswer(invocation -> List.copyOf(database));
         when(driftMapper.insertBatchImmutable(anyList())).thenAnswer(invocation -> {
@@ -324,9 +323,8 @@ class AiFactorPerformanceServiceImplTest {
             }
             return items.size();
         });
-        when(driftMapper.selectByFingerprintsForShare(
-                org.mockito.ArgumentMatchers.anyLong(), anyList())).thenAnswer(invocation -> {
-                    List<String> fingerprints = invocation.getArgument(1);
+        when(driftMapper.selectByFingerprintsForShare(anyList())).thenAnswer(invocation -> {
+                    List<String> fingerprints = invocation.getArgument(0);
                     return driftDatabase.stream()
                             .filter(item -> fingerprints.contains(item.eventFingerprint)).toList();
                 });

@@ -10,14 +10,14 @@ public interface AiModelVersionMapper extends BaseMapper<AiModelVersion> {
 
     @Insert("""
             INSERT INTO ai_model_version (
-                user_id, training_dataset_id, model_key, version_no, model_type, algorithm,
+                training_dataset_id, model_family, model_key, version_no, model_type, algorithm,
                 feature_version, trainer_version, random_seed, artifact_uri, artifact_checksum,
                 feature_manifest_uri, feature_manifest_checksum, train_start_date, train_end_date,
                 validation_start_date, validation_end_date, test_start_date, test_end_date,
                 parameters_json, metrics_json, calibration_json, sample_count, status,
                 created_at, updated_at
             ) VALUES (
-                #{item.userId}, #{item.trainingDatasetId}, #{item.modelKey}, #{item.versionNo},
+                #{item.trainingDatasetId}, #{item.modelFamily}, #{item.modelKey}, #{item.versionNo},
                 #{item.modelType}, #{item.algorithm}, #{item.featureVersion}, #{item.trainerVersion},
                 #{item.randomSeed}, #{item.artifactUri}, #{item.artifactChecksum},
                 #{item.featureManifestUri}, #{item.featureManifestChecksum}, #{item.trainStartDate},
@@ -31,11 +31,11 @@ public interface AiModelVersionMapper extends BaseMapper<AiModelVersion> {
 
     @Select("""
             SELECT * FROM ai_model_version
-            WHERE user_id = #{userId} AND model_key = #{modelKey} AND version_no = #{versionNo}
+            WHERE model_family = #{modelFamily} AND model_key = #{modelKey} AND version_no = #{versionNo}
             FOR SHARE
             """)
     AiModelVersion selectByVersionForShare(
-            @Param("userId") Long userId,
+            @Param("modelFamily") String modelFamily,
             @Param("modelKey") String modelKey,
             @Param("versionNo") String versionNo
     );
