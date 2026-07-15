@@ -26,7 +26,9 @@ import com.maogou.stock.mapper.research.AiPipelineRunMapper;
 import com.maogou.stock.mapper.research.AiPredictionEvaluationMapper;
 import com.maogou.stock.mapper.research.AiPredictionMapper;
 import com.maogou.stock.mapper.research.AiSampleMapper;
+import com.maogou.stock.service.AiResearchDailyReportService;
 import com.maogou.stock.service.research.AiDailyDecisionPolicy;
+import com.maogou.stock.service.research.AiResearchContract;
 import com.maogou.stock.service.research.AiUserDailyProjectionService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -53,7 +55,7 @@ import java.util.stream.Collectors;
 @Service
 public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionService {
 
-    private static final String FACTOR_VERSION = "1.0.0";
+    private static final String FACTOR_VERSION = AiResearchContract.FACTOR_VERSION;
     private static final List<Integer> CORE_HORIZONS = List.of(1, 2, 3);
     private static final Map<Integer, BigDecimal> HORIZON_WEIGHTS = Map.of(
             1, new BigDecimal("0.200000"),
@@ -74,6 +76,7 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
     private final AiFactorValueMapper factorValueMapper;
     private final AiFactorPerformanceMapper factorPerformanceMapper;
     private final AiDailyDecisionPolicy decisionPolicy;
+    private final AiResearchDailyReportService dailyReportService;
     private final ObjectMapper objectMapper;
 
     public AiUserDailyProjectionServiceImpl(
@@ -89,6 +92,7 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
             AiFactorValueMapper factorValueMapper,
             AiFactorPerformanceMapper factorPerformanceMapper,
             AiDailyDecisionPolicy decisionPolicy,
+            AiResearchDailyReportService dailyReportService,
             ObjectMapper objectMapper
     ) {
         this.snapshotMapper = snapshotMapper;
@@ -103,6 +107,7 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
         this.factorValueMapper = factorValueMapper;
         this.factorPerformanceMapper = factorPerformanceMapper;
         this.decisionPolicy = decisionPolicy;
+        this.dailyReportService = dailyReportService;
         this.objectMapper = objectMapper;
     }
 
@@ -110,20 +115,22 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
     @Transactional
     public ProjectionResult project(ProjectionRequest request) {
         validate(request);
+        AiPipelineRun globalRun = requireGlobalRun(request);
         AiDailyDecisionSnapshot existing = snapshotMapper.selectByIdempotencyForShare(
                 request.userId(), request.idempotencyKey());
         if (existing != null) {
             assertOwned(existing, request.userId());
+            archiveReport(request, globalRun, existing);
             return stored(existing);
         }
 
-        AiPipelineRun globalRun = requireGlobalRun(request);
         if (snapshotMapper.lockUser(request.userId()) == null) {
             throw new IllegalArgumentException("用户不存在，无法生成每日决策");
         }
         existing = snapshotMapper.selectByIdempotencyForShare(request.userId(), request.idempotencyKey());
         if (existing != null) {
             assertOwned(existing, request.userId());
+            archiveReport(request, globalRun, existing);
             return stored(existing);
         }
 
@@ -209,7 +216,27 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
         }
         applySnapshotMetrics(snapshot, items, samples, evidence);
         snapshotMapper.updateById(snapshot);
+        archiveReport(request, globalRun, snapshot);
         return new ProjectionResult(snapshot, items, links, PROJECTION_STEPS);
+    }
+
+    private void archiveReport(
+            ProjectionRequest request,
+            AiPipelineRun globalRun,
+            AiDailyDecisionSnapshot snapshot
+    ) {
+        dailyReportService.generate(new AiResearchDailyReportService.GenerationRequest(
+                request.userId(),
+                request.tradeDate(),
+                snapshot.id,
+                request.userPipelineRunId(),
+                globalRun.strategyReleaseId,
+                globalRun.modelVersionId,
+                "USER_PROJECTION_REPORT:" + fingerprint(request.idempotencyKey()),
+                globalRun.status,
+                null,
+                "用户每日决策投影已完成",
+                request.generatedAt()));
     }
 
     @Override

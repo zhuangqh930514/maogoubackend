@@ -19,6 +19,7 @@ import com.maogou.stock.mapper.research.AiPipelineRunMapper;
 import com.maogou.stock.mapper.research.AiPredictionEvaluationMapper;
 import com.maogou.stock.mapper.research.AiPredictionMapper;
 import com.maogou.stock.mapper.research.AiSampleMapper;
+import com.maogou.stock.service.AiResearchDailyReportService;
 import com.maogou.stock.service.research.AiUserDailyProjectionService;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import org.junit.jupiter.api.Test;
@@ -60,6 +61,11 @@ class AiUserDailyProjectionServiceImplTest {
         assertThat(result.predictionLinks().stream()
                 .map(item -> item.weight)
                 .reduce(BigDecimal.ZERO, BigDecimal::add)).isEqualByComparingTo("1.000000");
+        ArgumentCaptor<AiResearchDailyReportService.GenerationRequest> reportRequest =
+                ArgumentCaptor.forClass(AiResearchDailyReportService.GenerationRequest.class);
+        verify(fixture.dailyReportService).generate(reportRequest.capture());
+        assertThat(reportRequest.getValue().userId()).isEqualTo(5L);
+        assertThat(reportRequest.getValue().decisionSnapshotId()).isEqualTo(result.snapshot().id);
     }
 
     @Test
@@ -122,6 +128,7 @@ class AiUserDailyProjectionServiceImplTest {
         AiPredictionEvaluationMapper evaluationMapper = mock(AiPredictionEvaluationMapper.class);
         AiFactorValueMapper factorValueMapper = mock(AiFactorValueMapper.class);
         AiFactorPerformanceMapper factorPerformanceMapper = mock(AiFactorPerformanceMapper.class);
+        AiResearchDailyReportService dailyReportService = mock(AiResearchDailyReportService.class);
 
         AiPipelineRun run = new AiPipelineRun();
         run.id = 81L;
@@ -184,9 +191,9 @@ class AiUserDailyProjectionServiceImplTest {
         AiUserDailyProjectionService service = new AiUserDailyProjectionServiceImpl(
                 snapshotMapper, itemMapper, linkMapper, watchMapper, tradeMapper, runMapper,
                 sampleMapper, predictionMapper, evaluationMapper, factorValueMapper,
-                factorPerformanceMapper, new DecisionPolicyV1(),
+                factorPerformanceMapper, new DecisionPolicyV1(), dailyReportService,
                 new ObjectMapper().findAndRegisterModules());
-        return new Fixture(service, snapshotMapper, itemMapper, watchMapper);
+        return new Fixture(service, snapshotMapper, itemMapper, watchMapper, dailyReportService);
     }
 
     private static AiPrediction prediction(Long id, Long sampleId, int horizon, String score, String risk) {
@@ -218,7 +225,8 @@ class AiUserDailyProjectionServiceImplTest {
             AiUserDailyProjectionService service,
             AiDailyDecisionSnapshotMapper snapshotMapper,
             AiDailyDecisionItemMapper itemMapper,
-            WatchStockMapper watchMapper
+            WatchStockMapper watchMapper,
+            AiResearchDailyReportService dailyReportService
     ) {
     }
 }

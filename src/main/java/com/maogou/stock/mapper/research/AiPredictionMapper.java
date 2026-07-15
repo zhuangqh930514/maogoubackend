@@ -38,8 +38,8 @@ public interface AiPredictionMapper extends BaseMapper<AiPrediction> {
 
     @Select("""
             <script>
-            SELECT *
-            FROM ai_prediction
+            SELECT p.*, p.horizon_trading_days AS horizonDays
+            FROM ai_prediction p
             WHERE idempotency_key IN
               <foreach collection="keys" item="key" open="(" separator="," close=")">
                   #{key}
@@ -52,7 +52,7 @@ public interface AiPredictionMapper extends BaseMapper<AiPrediction> {
     );
 
     @Select("""
-            SELECT p.*
+            SELECT p.*, p.horizon_trading_days AS horizonDays
             FROM ai_prediction p
             LEFT JOIN ai_prediction_evaluation e
               ON e.prediction_id = p.id
@@ -71,7 +71,7 @@ public interface AiPredictionMapper extends BaseMapper<AiPrediction> {
 
     @Select("""
             <script>
-            SELECT * FROM ai_prediction
+            SELECT p.*, p.horizon_trading_days AS horizonDays FROM ai_prediction p
             WHERE strategy_release_id = #{strategyReleaseId}
               AND horizon_trading_days IN (1, 2, 3)
               AND sample_id IN
@@ -87,7 +87,7 @@ public interface AiPredictionMapper extends BaseMapper<AiPrediction> {
     );
 
     @Select("""
-            SELECT * FROM ai_prediction
+            SELECT p.*, p.horizon_trading_days AS horizonDays FROM ai_prediction p
             WHERE sample_id = #{sampleId} AND horizon_trading_days IN (1, 2, 3, 5)
             ORDER BY predicted_at DESC, id DESC
             """)
