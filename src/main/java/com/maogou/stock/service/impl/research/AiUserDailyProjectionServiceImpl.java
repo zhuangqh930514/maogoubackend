@@ -284,7 +284,10 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
         item.sampleId = sample == null ? null : sample.id;
         item.reportId = null;
         item.stockCode = stockCode;
-        item.stockName = sample != null && sample.stockName != null ? sample.stockName : fallbackName;
+        item.stockName = resolveStockName(
+                stockCode,
+                sample == null ? null : sample.stockName,
+                fallbackName);
         item.category = decision.category();
         item.systemScore = decision.systemScore();
         item.horizonSignalScore = decision.horizonSignalScore();
@@ -409,6 +412,26 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         holdingCodes.forEach(code -> names.putIfAbsent(code, code));
         return new UserUniverse(List.copyOf(names.keySet()), Map.copyOf(names), Set.copyOf(holdingCodes));
+    }
+
+    private static String resolveStockName(String stockCode, String sampleName, String fallbackName) {
+        if (isUsableStockName(sampleName, stockCode)) {
+            return sampleName.trim();
+        }
+        if (isUsableStockName(fallbackName, stockCode)) {
+            return fallbackName.trim();
+        }
+        return stockCode;
+    }
+
+    private static boolean isUsableStockName(String name, String stockCode) {
+        if (name == null || name.isBlank()) {
+            return false;
+        }
+        String normalized = name.trim();
+        return !normalized.equalsIgnoreCase(stockCode)
+                && !"未知股票".equals(normalized)
+                && !normalized.matches("(?i)\\d{6}(?:\\.(?:SH|SZ|BJ))?");
     }
 
     private AiPipelineRun requireGlobalRun(ProjectionRequest request) {

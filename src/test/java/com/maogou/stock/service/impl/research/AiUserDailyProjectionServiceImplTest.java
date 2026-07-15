@@ -84,6 +84,17 @@ class AiUserDailyProjectionServiceImplTest {
     }
 
     @Test
+    void stockCodeLikeSampleNameFallsBackToTheUsersStockName() {
+        Fixture fixture = fixture(5L, true, "600519");
+
+        AiUserDailyProjectionService.ProjectionResult result = fixture.service.project(request(5L));
+
+        assertThat(result.items()).singleElement()
+                .extracting(item -> item.stockName)
+                .isEqualTo("贵州茅台");
+    }
+
+    @Test
     void anExistingSnapshotOwnedByAnotherUserIsNeverReused() {
         Fixture fixture = fixture(5L, true);
         AiDailyDecisionSnapshot foreign = new AiDailyDecisionSnapshot();
@@ -117,6 +128,10 @@ class AiUserDailyProjectionServiceImplTest {
     }
 
     private static Fixture fixture(Long userId, boolean includeT3) {
+        return fixture(userId, includeT3, "贵州茅台");
+    }
+
+    private static Fixture fixture(Long userId, boolean includeT3, String sampleStockName) {
         AiDailyDecisionSnapshotMapper snapshotMapper = mock(AiDailyDecisionSnapshotMapper.class);
         AiDailyDecisionItemMapper itemMapper = mock(AiDailyDecisionItemMapper.class);
         AiDailyDecisionItemPredictionMapper linkMapper = mock(AiDailyDecisionItemPredictionMapper.class);
@@ -151,7 +166,7 @@ class AiUserDailyProjectionServiceImplTest {
         sample.id = 31L;
         sample.dataBatchId = 71L;
         sample.stockCode = "600519";
-        sample.stockName = "贵州茅台";
+        sample.stockName = sampleStockName;
         sample.tradeDate = run.tradeDate;
         sample.asOfTime = LocalDateTime.of(2026, 7, 10, 15, 5);
         sample.marketRegime = "BALANCED";
