@@ -335,11 +335,14 @@ public class ResilientMarketDataClient implements ResearchMarketDataClient {
     }
 
     private static String rootMessage(Throwable throwable) {
+        String summary = throwable.getMessage() == null
+                ? throwable.getClass().getSimpleName() : throwable.getMessage();
         Throwable current = throwable;
         while (current.getCause() != null) {
             current = current.getCause();
         }
-        return current.getMessage() == null ? current.getClass().getSimpleName() : current.getMessage();
+        String root = current.getMessage() == null ? current.getClass().getSimpleName() : current.getMessage();
+        return summary.equals(root) ? summary : summary + "；根因：" + root;
     }
 
     private record CachedValue<T>(T data, String providerCode, String fingerprint, LocalDateTime updatedAt) {

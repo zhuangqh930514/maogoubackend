@@ -201,7 +201,7 @@ class GlobalDailyResearchExecutorTest {
         verify(fixture.marketDataService).stockDetailAt(
                 org.mockito.ArgumentMatchers.eq("600519"), any());
         verify(fixture.resilientMarketDataClient).fetchKlineAt(
-                org.mockito.ArgumentMatchers.eq("000300"),
+                org.mockito.ArgumentMatchers.eq("000300.SH"),
                 org.mockito.ArgumentMatchers.eq("day"),
                 org.mockito.ArgumentMatchers.eq(80),
                 any());

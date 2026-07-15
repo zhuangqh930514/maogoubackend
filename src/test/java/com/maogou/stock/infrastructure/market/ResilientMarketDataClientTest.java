@@ -92,6 +92,21 @@ class ResilientMarketDataClientTest {
         assertThat(result.message()).contains("冲突");
     }
 
+    @Test
+    void recordsProviderContextWithoutLosingTheRootCause() {
+        StubProvider primary = new StubProvider("EASTMONEY");
+        primary.failure = new IllegalStateException(
+                "东方财富 K 线通道失败", new IllegalStateException("Unexpected end of file"));
+        MarketSourceHealthRegistry health = mock(MarketSourceHealthRegistry.class);
+        ResilientMarketDataClient client = client(List.of(primary), health);
+
+        client.fetchKlineAt("600519", "day", 60, AS_OF);
+
+        verify(health).recordFailure(
+                "EASTMONEY", ResearchMarketDataProvider.ENDPOINT_KLINE,
+                "东方财富 K 线通道失败；根因：Unexpected end of file", AS_OF);
+    }
+
     private static ResilientMarketDataClient client(
             List<ResearchMarketDataProvider> providers,
             MarketSourceHealthRegistry health

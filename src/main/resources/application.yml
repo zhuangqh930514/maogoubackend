@@ -42,7 +42,7 @@ maogou:
     sector-heatmap-cache-ttl-seconds: ${MAOGOU_SECTOR_HEATMAP_CACHE_TTL_SECONDS:60}
     sector-hot-stocks-cache-ttl-seconds: ${MAOGOU_SECTOR_HOT_STOCKS_CACHE_TTL_SECONDS:60}
     research-provider-order: ${MAOGOU_RESEARCH_PROVIDER_ORDER:EASTMONEY,SINA}
-    benchmark-symbol: ${MAOGOU_RESEARCH_BENCHMARK_SYMBOL:000300}
+    benchmark-symbol: ${MAOGOU_RESEARCH_BENCHMARK_SYMBOL:000300.SH}
     source-cooldown-base-seconds: ${MAOGOU_SOURCE_COOLDOWN_BASE_SECONDS:30}
     source-cooldown-max-seconds: ${MAOGOU_SOURCE_COOLDOWN_MAX_SECONDS:900}
     source-cooldown-failure-threshold: ${MAOGOU_SOURCE_COOLDOWN_FAILURE_THRESHOLD:3}

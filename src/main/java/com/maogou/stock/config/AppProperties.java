@@ -43,7 +43,7 @@ public class AppProperties {
         private long sectorHeatmapCacheTtlSeconds = 60;
         private long sectorHotStocksCacheTtlSeconds = 60;
         private String researchProviderOrder = "EASTMONEY,SINA";
-        private String benchmarkSymbol = "000300";
+        private String benchmarkSymbol = "000300.SH";
         private long sourceCooldownBaseSeconds = 30;
         private long sourceCooldownMaxSeconds = 900;
         private int sourceCooldownFailureThreshold = 3;
