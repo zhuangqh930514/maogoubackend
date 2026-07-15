@@ -12,6 +12,7 @@ import com.maogou.stock.domain.entity.research.AiStrategyRelease;
 import com.maogou.stock.domain.enums.AnalysisStatus;
 import com.maogou.stock.dto.ai.AiAnalysisReportResponse;
 import com.maogou.stock.dto.ai.AiAnalysisReportPageResponse;
+import com.maogou.stock.dto.ai.AiAnalysisReportSummaryResponse;
 import com.maogou.stock.dto.ai.AiAnalysisResultPayload;
 import com.maogou.stock.dto.ai.AiConditionalStrategyPayload;
 import com.maogou.stock.dto.ai.AiLearningPayloads;
@@ -70,6 +71,20 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
     private static final String UNKNOWN_STOCK_NAME = "未知股票";
     private static final Pattern THINK_BLOCK = Pattern.compile("(?is)<think>.*?</think>");
     private static final Pattern FENCED_BLOCK = Pattern.compile("(?is)```(?:json)?\\s*([\\s\\S]*?)\\s*```");
+    private static final String[] REPORT_SUMMARY_COLUMNS = {
+            "id", "stock_code", "stock_name", "system_score", "advice", "generated_at",
+            "source_model", "status", "error_message", "sample_id", "strategy_release_id",
+            "report_version", "supersedes_report_id", "data_quality_score", "calibrated_confidence",
+            "final_action", "risk_score", "risk_level"
+    };
+    private static final String[] REPORT_DETAIL_COLUMNS = {
+            "id", "user_id", "stock_code", "stock_name", "sample_id", "strategy_release_id",
+            "prompt_template_id", "report_date", "report_version", "supersedes_report_id",
+            "idempotency_key", "status", "system_score", "final_action", "target_direction",
+            "risk_score", "risk_level", "calibrated_confidence", "data_quality_score", "advice",
+            "technical_analysis", "risk_warning", "buy_sell_points", "conditional_strategy",
+            "prompt_summary", "source_model", "error_message", "generated_at", "created_at", "updated_at"
+    };
 
     private final AiAnalysisReportMapper reportMapper;
     private final AiAnalysisReportLineageWriter reportLineageWriter;
@@ -119,14 +134,44 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
     }
 
     @Override
-    public List<AiAnalysisReportResponse> listReports(String code) {
+    public List<AiAnalysisReportSummaryResponse> listReports(String code) {
         QueryWrapper<AiAnalysisReport> wrapper = new QueryWrapper<AiAnalysisReport>()
                 .eq("user_id", AuthContext.currentUserIdOrDefault())
                 .orderByDesc("generated_at");
         if (code != null && !code.isBlank()) {
             wrapper.eq("stock_code", code);
         }
-        return reportResponses(reportMapper.selectList(wrapper));
+        wrapper.select(REPORT_SUMMARY_COLUMNS);
+        return reportMapper.selectList(wrapper).stream()
+                .map(AiAnalysisReportSummaryResponse::from)
+                .toList();
+    }
+
+    @Override
+    public AiAnalysisReportResponse report(Long reportId) {
+        if (reportId == null || reportId <= 0) {
+            throw new IllegalArgumentException("报告 ID 无效");
+        }
+        AiAnalysisReport report = reportMapper.selectOwned(reportId, AuthContext.currentUserIdOrDefault());
+        if (report == null) {
+            throw new IllegalArgumentException("报告不存在");
+        }
+        return reportResponse(report);
+    }
+
+    @Override
+    public AiAnalysisReportResponse latestReport(String code) {
+        QueryWrapper<AiAnalysisReport> query = new QueryWrapper<AiAnalysisReport>()
+                .eq("user_id", AuthContext.currentUserIdOrDefault())
+                .orderByDesc("generated_at")
+                .orderByDesc("id")
+                .last("LIMIT 1");
+        if (code != null && !code.isBlank()) {
+            query.eq("stock_code", code.trim());
+        }
+        query.select(REPORT_DETAIL_COLUMNS);
+        AiAnalysisReport report = reportMapper.selectOne(query);
+        return report == null ? null : reportResponse(report);
     }
 
     @Override
@@ -157,7 +202,10 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 .orderByDesc("generated_at")
                 .orderByDesc("id")
                 .last("LIMIT " + normalizedPageSize + " OFFSET " + offset);
-        List<AiAnalysisReportResponse> items = reportResponses(reportMapper.selectList(query));
+        query.select(REPORT_SUMMARY_COLUMNS);
+        List<AiAnalysisReportSummaryResponse> items = reportMapper.selectList(query).stream()
+                .map(AiAnalysisReportSummaryResponse::from)
+                .toList();
         return new AiAnalysisReportPageResponse(
                 items,
                 total,

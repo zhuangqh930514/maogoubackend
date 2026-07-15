@@ -51,7 +51,8 @@ CREATE TABLE IF NOT EXISTS trade_record (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_trade_record_user_time (user_id, traded_at),
     KEY idx_trade_record_stock (user_id, stock_code),
-    KEY idx_trade_record_user_list (user_id, deleted, traded_at)
+    KEY idx_trade_record_user_list (user_id, deleted, traded_at),
+    KEY idx_trade_record_user_active_stock (user_id, deleted, stock_code, traded_at)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 
 CREATE TABLE IF NOT EXISTS ai_model_config (

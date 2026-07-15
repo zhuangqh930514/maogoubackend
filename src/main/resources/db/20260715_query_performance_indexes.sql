@@ -17,6 +17,18 @@ DEALLOCATE PREPARE performance_index_stmt;
 
 SET @ddl = (
     SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE trade_record ADD INDEX idx_trade_record_user_active_stock (user_id, deleted, stock_code, traded_at)',
+        'SELECT 1')
+    FROM information_schema.statistics
+    WHERE table_schema = @schema_name AND table_name = 'trade_record'
+      AND index_name = 'idx_trade_record_user_active_stock'
+);
+PREPARE performance_index_stmt FROM @ddl;
+EXECUTE performance_index_stmt;
+DEALLOCATE PREPARE performance_index_stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
         'ALTER TABLE watch_stock ADD INDEX idx_watch_stock_user_group_list (user_id, deleted, group_name, priority ASC, created_at DESC)',
         'SELECT 1')
     FROM information_schema.statistics

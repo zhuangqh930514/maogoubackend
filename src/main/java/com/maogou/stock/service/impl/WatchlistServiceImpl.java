@@ -6,6 +6,7 @@ import com.maogou.stock.dto.market.FinanceSnapshotResponse;
 import com.maogou.stock.dto.market.StockQuoteResponse;
 import com.maogou.stock.dto.watchlist.AddWatchStockRequest;
 import com.maogou.stock.dto.watchlist.WatchStockResponse;
+import com.maogou.stock.dto.common.PageResponse;
 import com.maogou.stock.mapper.WatchStockMapper;
 import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.MarketDataService;
@@ -51,6 +52,59 @@ public class WatchlistServiceImpl implements WatchlistService {
         return stocks.stream()
                 .map(entity -> buildLightResponse(entity, quotes.get(entity.stockCode)))
                 .toList();
+    }
+
+    @Override
+    public PageResponse<WatchStockResponse> page(String view, int page, int pageSize) {
+        int normalizedPageSize = Math.max(1, Math.min(pageSize, 100));
+        String normalizedView = view == null || view.isBlank() ? "全部" : view.trim();
+        if ("全部".equals(normalizedView)) {
+            return pageAll(normalizedPageSize, page);
+        }
+
+        List<WatchStockResponse> filtered = list(null).stream()
+                .filter(item -> matchesView(item, normalizedView))
+                .toList();
+        int totalPages = filtered.isEmpty() ? 0 : (int) Math.ceil((double) filtered.size() / normalizedPageSize);
+        int normalizedPage = totalPages == 0 ? 1 : Math.min(Math.max(1, page), totalPages);
+        int fromIndex = Math.min((normalizedPage - 1) * normalizedPageSize, filtered.size());
+        int toIndex = Math.min(fromIndex + normalizedPageSize, filtered.size());
+        return PageResponse.of(filtered.subList(fromIndex, toIndex), filtered.size(), normalizedPage, normalizedPageSize);
+    }
+
+    private PageResponse<WatchStockResponse> pageAll(int pageSize, int page) {
+        Long userId = AuthContext.currentUserIdOrDefault();
+        QueryWrapper<WatchStock> countQuery = new QueryWrapper<WatchStock>().eq("user_id", userId);
+        long total = watchStockMapper.selectCount(countQuery);
+        int totalPages = total == 0 ? 0 : (int) Math.ceil((double) total / pageSize);
+        int normalizedPage = totalPages == 0 ? 1 : Math.min(Math.max(1, page), totalPages);
+        if (total == 0) {
+            return PageResponse.of(List.of(), 0, normalizedPage, pageSize);
+        }
+
+        long offset = (long) (normalizedPage - 1) * pageSize;
+        QueryWrapper<WatchStock> pageQuery = new QueryWrapper<WatchStock>()
+                .eq("user_id", userId)
+                .orderByAsc("priority")
+                .orderByDesc("created_at")
+                .last("LIMIT " + pageSize + " OFFSET " + offset);
+        List<WatchStock> stocks = watchStockMapper.selectList(pageQuery);
+        Map<String, StockQuoteResponse> quotes = marketDataService.quotesFast(stocks.stream()
+                .map(entity -> entity.stockCode)
+                .toList());
+        List<WatchStockResponse> items = stocks.stream()
+                .map(entity -> buildLightResponse(entity, quotes.get(entity.stockCode)))
+                .toList();
+        return PageResponse.of(items, total, normalizedPage, pageSize);
+    }
+
+    private static boolean matchesView(WatchStockResponse item, String view) {
+        return switch (view) {
+            case "AI重点" -> item.aiScore() != null && item.aiScore() >= 78;
+            case "高波动" -> item.volumeRatio() != null && item.volumeRatio().compareTo(new BigDecimal("1.8")) >= 0;
+            case "稳健持有" -> "稳健持有".equals(item.advice());
+            default -> true;
+        };
     }
 
     @Override

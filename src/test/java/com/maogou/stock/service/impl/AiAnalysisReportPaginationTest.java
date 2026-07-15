@@ -1,6 +1,7 @@
 package com.maogou.stock.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.maogou.stock.domain.entity.AiAnalysisReport;
 import com.maogou.stock.mapper.AiAnalysisReportMapper;
 import com.maogou.stock.security.AuthContext;
@@ -45,6 +46,9 @@ class AiAnalysisReportPaginationTest {
         assertThat(listQuery.getValue().getCustomSqlSegment())
                 .contains("report_date")
                 .contains("LIMIT 10 OFFSET 10");
+        assertThat(((QueryWrapper<AiAnalysisReport>) listQuery.getValue()).getSqlSelect())
+                .contains("stock_code", "risk_score")
+                .doesNotContain("technical_analysis", "raw_prompt", "raw_response", "conditional_strategy");
     }
 
     @Test

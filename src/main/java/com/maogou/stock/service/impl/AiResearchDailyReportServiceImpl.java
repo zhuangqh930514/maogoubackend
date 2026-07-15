@@ -4,6 +4,10 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.maogou.stock.domain.entity.WatchStock;
 import com.maogou.stock.domain.entity.research.AiDailyDecisionItem;
 import com.maogou.stock.domain.entity.research.AiDailyDecisionItemPrediction;
 import com.maogou.stock.domain.entity.research.AiDailyDecisionSnapshot;
@@ -19,6 +23,7 @@ import com.maogou.stock.mapper.research.AiPipelineRunMapper;
 import com.maogou.stock.mapper.research.AiPipelineStepMapper;
 import com.maogou.stock.mapper.research.AiResearchDailyReportMapper;
 import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
+import com.maogou.stock.mapper.WatchStockMapper;
 import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.AiResearchDailyReportService;
 import com.maogou.stock.service.TradingCalendarService;
@@ -48,6 +53,7 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
     private final AiPipelineRunMapper pipelineRunMapper;
     private final AiPipelineStepMapper pipelineStepMapper;
     private final AiStrategyReleaseMapper strategyReleaseMapper;
+    private final WatchStockMapper watchStockMapper;
     private final ObjectMapper objectMapper;
     private final TradingCalendarService tradingCalendarService;
 
@@ -59,6 +65,7 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
             AiPipelineRunMapper pipelineRunMapper,
             AiPipelineStepMapper pipelineStepMapper,
             AiStrategyReleaseMapper strategyReleaseMapper,
+            WatchStockMapper watchStockMapper,
             ObjectMapper objectMapper,
             TradingCalendarService tradingCalendarService
     ) {
@@ -69,6 +76,7 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
         this.pipelineRunMapper = pipelineRunMapper;
         this.pipelineStepMapper = pipelineStepMapper;
         this.strategyReleaseMapper = strategyReleaseMapper;
+        this.watchStockMapper = watchStockMapper;
         this.objectMapper = objectMapper;
         this.tradingCalendarService = tradingCalendarService;
     }
@@ -376,12 +384,72 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
 
     private AiResearchDailyReportPayloads.ReportView toView(AiResearchDailyReport entity) {
         try {
-            AiResearchDailyReportPayloads.ReportContent content = objectMapper.readValue(
-                    entity.contentJson, AiResearchDailyReportPayloads.ReportContent.class);
+            JsonNode contentNode = objectMapper.readTree(entity.contentJson);
+            hydrateArchivedStockNames(entity, contentNode);
+            AiResearchDailyReportPayloads.ReportContent content = objectMapper.treeToValue(
+                    contentNode, AiResearchDailyReportPayloads.ReportContent.class);
             return AiResearchDailyReportPayloads.ReportView.from(entity, content);
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("投研日报内容解析失败", exception);
         }
+    }
+
+    private void hydrateArchivedStockNames(AiResearchDailyReport entity, JsonNode contentNode) {
+        if (!(contentNode instanceof ObjectNode root) || entity.decisionSnapshotId == null) {
+            return;
+        }
+        List<ObjectNode> unresolvedCards = new ArrayList<>();
+        for (String field : List.of("recommendations", "watches", "avoids", "holdingRisks", "unavailable")) {
+            JsonNode value = root.get(field);
+            if (!(value instanceof ArrayNode cards)) {
+                continue;
+            }
+            for (JsonNode card : cards) {
+                if (card instanceof ObjectNode object && !usableStockName(object.path("stockName").asText(null),
+                        object.path("stockCode").asText(null))) {
+                    unresolvedCards.add(object);
+                }
+            }
+        }
+        if (unresolvedCards.isEmpty()) {
+            return;
+        }
+
+        Map<String, String> names = safeList(itemMapper.selectBySnapshot(entity.userId, entity.decisionSnapshotId)).stream()
+                .filter(item -> usableStockName(item.stockName, item.stockCode))
+                .collect(Collectors.toMap(
+                        item -> item.stockCode,
+                        item -> item.stockName,
+                        (first, ignored) -> first,
+                        LinkedHashMap::new));
+        List<String> missingCodes = unresolvedCards.stream()
+                .map(card -> card.path("stockCode").asText(null))
+                .filter(code -> code != null && !names.containsKey(code))
+                .distinct()
+                .toList();
+        if (!missingCodes.isEmpty()) {
+            safeList(watchStockMapper.selectList(new QueryWrapper<WatchStock>()
+                    .select("stock_code", "stock_name")
+                    .eq("user_id", entity.userId)
+                    .in("stock_code", missingCodes))).stream()
+                    .filter(stock -> usableStockName(stock.stockName, stock.stockCode))
+                    .forEach(stock -> names.putIfAbsent(stock.stockCode, stock.stockName));
+        }
+        for (ObjectNode card : unresolvedCards) {
+            String code = card.path("stockCode").asText(null);
+            String name = names.get(code);
+            if (name != null) {
+                card.put("stockName", name);
+            }
+        }
+    }
+
+    private static boolean usableStockName(String name, String code) {
+        if (name == null || name.isBlank()) {
+            return false;
+        }
+        String normalized = name.trim();
+        return !normalized.equals(code) && !"未知股票".equals(normalized);
     }
 
     private List<AiResearchDailyReportPayloads.FactorCard> aggregateFactors(

@@ -3,6 +3,7 @@ package com.maogou.stock.controller;
 import com.maogou.stock.common.ApiResponse;
 import com.maogou.stock.dto.ai.AiAnalysisReportResponse;
 import com.maogou.stock.dto.ai.AiAnalysisReportPageResponse;
+import com.maogou.stock.dto.ai.AiAnalysisReportSummaryResponse;
 import com.maogou.stock.dto.ai.BatchAiAnalysisReportDeleteRequest;
 import com.maogou.stock.dto.ai.RunAnalysisRequest;
 import com.maogou.stock.dto.ai.RunWatchlistAnalysisRequest;
@@ -14,6 +15,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.format.annotation.DateTimeFormat;
 
 import java.time.LocalDate;
@@ -30,8 +32,18 @@ public class AiAnalysisController {
     }
 
     @GetMapping("/reports")
-    public ApiResponse<List<AiAnalysisReportResponse>> reports(@RequestParam(required = false) String code) {
+    public ApiResponse<List<AiAnalysisReportSummaryResponse>> reports(@RequestParam(required = false) String code) {
         return ApiResponse.ok(aiAnalysisService.listReports(code));
+    }
+
+    @GetMapping("/reports/latest")
+    public ApiResponse<AiAnalysisReportResponse> latestReport(@RequestParam(required = false) String code) {
+        return ApiResponse.ok(aiAnalysisService.latestReport(code));
+    }
+
+    @GetMapping("/reports/{reportId}")
+    public ApiResponse<AiAnalysisReportResponse> report(@PathVariable Long reportId) {
+        return ApiResponse.ok(aiAnalysisService.report(reportId));
     }
 
     @GetMapping("/reports/page")

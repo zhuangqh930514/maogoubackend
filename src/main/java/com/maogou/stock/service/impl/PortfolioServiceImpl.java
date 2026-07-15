@@ -9,6 +9,7 @@ import com.maogou.stock.dto.portfolio.PortfolioSummaryResponse;
 import com.maogou.stock.dto.portfolio.PositionResponse;
 import com.maogou.stock.dto.portfolio.TradeRecordCreateRequest;
 import com.maogou.stock.dto.portfolio.TradeRecordResponse;
+import com.maogou.stock.dto.portfolio.TradePositionAggregate;
 import com.maogou.stock.mapper.TradeRecordMapper;
 import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.MarketDataService;
@@ -21,7 +22,6 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -84,34 +84,35 @@ public class PortfolioServiceImpl implements PortfolioService {
     }
 
     @Override
-    public PortfolioSummaryResponse portfolio() {
-        Map<String, AggregatedPosition> grouped = new LinkedHashMap<>();
-        for (TradeRecord trade : tradeRecordMapper.selectList(baseTradeQuery())) {
-            grouped.computeIfAbsent(trade.stockCode, code -> new AggregatedPosition(trade.stockCode, trade.stockName))
-                    .add(trade);
-        }
-
-        List<AggregatedPosition> activePositions = grouped.values().stream()
-                .filter(position -> position.quantity > 0)
-                .toList();
+    public PortfolioSummaryResponse portfolio(int page, int pageSize) {
+        int normalizedPageSize = Math.max(1, Math.min(pageSize, 100));
+        List<TradePositionAggregate> activePositions = tradeRecordMapper.selectActivePositions(
+                AuthContext.currentUserIdOrDefault());
         Map<String, StockQuoteResponse> quotes = marketDataService.quotesFast(activePositions.stream()
-                .map(position -> position.code)
+                .map(position -> position.stockCode)
                 .toList());
-        List<PositionResponse> positions = activePositions.stream()
-                .map(position -> toPositionResponse(position, quotes.get(position.code)))
+        List<PositionResponse> allPositions = activePositions.stream()
+                .map(position -> toPositionResponse(position, quotes.get(position.stockCode)))
                 .toList();
-        BigDecimal totalCost = positions.stream().map(PositionResponse::cost).reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal totalMarketValue = positions.stream().map(PositionResponse::marketValue).reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal totalCost = allPositions.stream().map(PositionResponse::cost).reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal totalMarketValue = allPositions.stream().map(PositionResponse::marketValue).reduce(BigDecimal.ZERO, BigDecimal::add);
         BigDecimal totalProfit = totalMarketValue.subtract(totalCost);
         BigDecimal profitRate = totalCost.signum() == 0 ? BigDecimal.ZERO : totalProfit
                 .multiply(new BigDecimal("100"))
                 .divide(totalCost, 2, RoundingMode.HALF_UP);
-        BigDecimal todayProfit = positions.stream().map(PositionResponse::todayProfit).reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal todayProfit = allPositions.stream().map(PositionResponse::todayProfit).reduce(BigDecimal.ZERO, BigDecimal::add);
         BigDecimal todayBase = totalMarketValue.subtract(todayProfit);
         BigDecimal todayProfitRate = todayBase.signum() == 0 ? BigDecimal.ZERO : todayProfit
                 .multiply(new BigDecimal("100"))
                 .divide(todayBase, 2, RoundingMode.HALF_UP);
-        return new PortfolioSummaryResponse(totalCost, totalMarketValue, totalProfit, profitRate, todayProfit, todayProfitRate, positions);
+        int totalPages = allPositions.isEmpty() ? 0 : (int) Math.ceil((double) allPositions.size() / normalizedPageSize);
+        int normalizedPage = totalPages == 0 ? 1 : Math.min(Math.max(1, page), totalPages);
+        int fromIndex = Math.min((normalizedPage - 1) * normalizedPageSize, allPositions.size());
+        int toIndex = Math.min(fromIndex + normalizedPageSize, allPositions.size());
+        List<PositionResponse> positions = allPositions.subList(fromIndex, toIndex);
+        return new PortfolioSummaryResponse(
+                totalCost, totalMarketValue, totalProfit, profitRate, todayProfit, todayProfitRate,
+                positions, allPositions.size(), normalizedPage, normalizedPageSize, totalPages);
     }
 
     private QueryWrapper<TradeRecord> baseTradeQuery() {
@@ -131,21 +132,24 @@ public class PortfolioServiceImpl implements PortfolioService {
         );
     }
 
-    private PositionResponse toPositionResponse(AggregatedPosition position, StockQuoteResponse quote) {
+    private PositionResponse toPositionResponse(TradePositionAggregate position, StockQuoteResponse quote) {
         StockQuoteResponse resolvedQuote = quote == null ? fallbackQuote(position) : quote;
-        BigDecimal buyPrice = position.averagePrice();
-        BigDecimal cost = buyPrice.multiply(BigDecimal.valueOf(position.quantity));
-        BigDecimal marketValue = resolvedQuote.price().multiply(BigDecimal.valueOf(position.quantity));
+        int quantity = position.quantity == null ? 0 : position.quantity;
+        BigDecimal totalCost = position.totalCost == null ? BigDecimal.ZERO : position.totalCost;
+        BigDecimal buyPrice = quantity == 0 ? BigDecimal.ZERO
+                : totalCost.divide(BigDecimal.valueOf(quantity), 2, RoundingMode.HALF_UP);
+        BigDecimal cost = buyPrice.multiply(BigDecimal.valueOf(quantity));
+        BigDecimal marketValue = resolvedQuote.price().multiply(BigDecimal.valueOf(quantity));
         BigDecimal profit = marketValue.subtract(cost);
         BigDecimal profitRate = cost.signum() == 0 ? BigDecimal.ZERO : profit
                 .multiply(new BigDecimal("100"))
                 .divide(cost, 2, RoundingMode.HALF_UP);
-        BigDecimal todayProfit = resolvedQuote.change().multiply(BigDecimal.valueOf(position.quantity));
+        BigDecimal todayProfit = resolvedQuote.change().multiply(BigDecimal.valueOf(quantity));
         return new PositionResponse(
-                position.code,
-                position.name,
+                position.stockCode,
+                position.stockName,
                 buyPrice,
-                position.quantity,
+                quantity,
                 resolvedQuote.price(),
                 cost,
                 marketValue,
@@ -156,11 +160,11 @@ public class PortfolioServiceImpl implements PortfolioService {
         );
     }
 
-    private StockQuoteResponse fallbackQuote(AggregatedPosition position) {
-        log.warn("portfolio quote missing, use zero quote fallback, stockCode={}", position.code);
+    private StockQuoteResponse fallbackQuote(TradePositionAggregate position) {
+        log.warn("portfolio quote missing, use zero quote fallback, stockCode={}", position.stockCode);
         return new StockQuoteResponse(
-                position.code,
-                position.name == null ? position.code : position.name,
+                position.stockCode,
+                position.stockName == null ? position.stockCode : position.stockName,
                 BigDecimal.ZERO,
                 BigDecimal.ZERO,
                 BigDecimal.ZERO,
@@ -171,30 +175,4 @@ public class PortfolioServiceImpl implements PortfolioService {
         );
     }
 
-    private static class AggregatedPosition {
-        private final String code;
-        private final String name;
-        private BigDecimal totalCost = BigDecimal.ZERO;
-        private int quantity = 0;
-
-        private AggregatedPosition(String code, String name) {
-            this.code = code;
-            this.name = name;
-        }
-
-        private void add(TradeRecord trade) {
-            BigDecimal amount = trade.price.multiply(BigDecimal.valueOf(trade.quantity));
-            if (trade.side == TradeSide.SELL) {
-                totalCost = totalCost.subtract(amount);
-                quantity -= trade.quantity;
-            } else {
-                totalCost = totalCost.add(amount);
-                quantity += trade.quantity;
-            }
-        }
-
-        private BigDecimal averagePrice() {
-            return quantity == 0 ? BigDecimal.ZERO : totalCost.divide(BigDecimal.valueOf(quantity), 2, RoundingMode.HALF_UP);
-        }
-    }
 }

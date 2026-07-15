@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.RequestParam;
 
 import java.util.List;
 
@@ -42,7 +43,10 @@ public class PortfolioController {
     }
 
     @GetMapping("/positions")
-    public ApiResponse<PortfolioSummaryResponse> positions() {
-        return ApiResponse.ok(portfolioService.portfolio());
+    public ApiResponse<PortfolioSummaryResponse> positions(
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "50") int pageSize
+    ) {
+        return ApiResponse.ok(portfolioService.portfolio(page, pageSize));
     }
 }

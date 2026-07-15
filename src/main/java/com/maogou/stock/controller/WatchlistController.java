@@ -5,6 +5,7 @@ import com.maogou.stock.dto.watchlist.AddWatchStockRequest;
 import com.maogou.stock.dto.watchlist.BatchWatchStockRequest;
 import com.maogou.stock.dto.watchlist.ReorderWatchStockRequest;
 import com.maogou.stock.dto.watchlist.WatchStockResponse;
+import com.maogou.stock.dto.common.PageResponse;
 import com.maogou.stock.service.WatchlistService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -32,6 +33,15 @@ public class WatchlistController {
     @GetMapping
     public ApiResponse<List<WatchStockResponse>> list(@RequestParam(required = false) String groupName) {
         return ApiResponse.ok(watchlistService.list(groupName));
+    }
+
+    @GetMapping("/page")
+    public ApiResponse<PageResponse<WatchStockResponse>> page(
+            @RequestParam(defaultValue = "全部") String view,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "50") int pageSize
+    ) {
+        return ApiResponse.ok(watchlistService.page(view, page, pageSize));
     }
 
     @GetMapping("/codes")

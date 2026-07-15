@@ -13,6 +13,8 @@ import com.maogou.stock.mapper.research.AiPipelineRunMapper;
 import com.maogou.stock.mapper.research.AiPipelineStepMapper;
 import com.maogou.stock.mapper.research.AiResearchDailyReportMapper;
 import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
+import com.maogou.stock.mapper.WatchStockMapper;
+import com.maogou.stock.domain.entity.WatchStock;
 import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.AiResearchDailyReportService;
 import com.maogou.stock.service.TradingCalendarService;
@@ -118,6 +120,24 @@ class AiResearchDailyReportServiceImplTest {
         assertThat(result.get().decisionSnapshotId()).isEqualTo(41L);
     }
 
+    @Test
+    void hydratesLegacyCodeOnlyStockNamesFromThePersistedDecisionSnapshot() {
+        Fixture fixture = fixture();
+        AiResearchDailyReportService.ReportView generated = fixture.service.generate(request("REPORT:LEGACY-NAME"));
+        var reportCaptor = org.mockito.ArgumentCaptor.forClass(AiResearchDailyReport.class);
+        verify(fixture.reportMapper).insert(reportCaptor.capture());
+        AiResearchDailyReport archived = reportCaptor.getValue();
+        archived.contentJson = archived.contentJson.replace(
+                "\"stockName\":\"贵州茅台\"", "\"stockName\":\"600519\"");
+        when(fixture.reportMapper.selectById(archived.id)).thenReturn(archived);
+
+        AiResearchDailyReportService.ReportView detail = AuthContext.callAs(5L,
+                () -> fixture.service.detail(archived.id));
+
+        assertThat(generated.content().recommendations()).hasSize(1);
+        assertThat(detail.content().recommendations().get(0).stockName()).isEqualTo("贵州茅台");
+    }
+
     private static Fixture fixture() {
         AiResearchDailyReportMapper reportMapper = mock(AiResearchDailyReportMapper.class);
         AiDailyDecisionSnapshotMapper snapshotMapper = mock(AiDailyDecisionSnapshotMapper.class);
@@ -126,6 +146,7 @@ class AiResearchDailyReportServiceImplTest {
         AiPipelineRunMapper runMapper = mock(AiPipelineRunMapper.class);
         AiPipelineStepMapper stepMapper = mock(AiPipelineStepMapper.class);
         AiStrategyReleaseMapper releaseMapper = mock(AiStrategyReleaseMapper.class);
+        WatchStockMapper watchStockMapper = mock(WatchStockMapper.class);
         TradingCalendarService calendar = mock(TradingCalendarService.class);
 
         AiDailyDecisionSnapshot snapshot = snapshot();
@@ -152,6 +173,10 @@ class AiResearchDailyReportServiceImplTest {
         release.title = "统一研究基线";
         release.validationMetricsJson = "{\"status\":\"BASELINE_NOT_VALIDATED\"}";
         when(releaseMapper.selectById(91L)).thenReturn(release);
+        WatchStock watchStock = new WatchStock();
+        watchStock.stockCode = "600519";
+        watchStock.stockName = "贵州茅台";
+        when(watchStockMapper.selectList(any())).thenReturn(List.of(watchStock));
 
         List<AiResearchDailyReport> reports = new ArrayList<>();
         AtomicLong ids = new AtomicLong(8000);
@@ -171,7 +196,7 @@ class AiResearchDailyReportServiceImplTest {
 
         AiResearchDailyReportService service = new AiResearchDailyReportServiceImpl(
                 reportMapper, snapshotMapper, itemMapper, linkMapper, runMapper, stepMapper,
-                releaseMapper, new ObjectMapper().findAndRegisterModules(), calendar);
+                releaseMapper, watchStockMapper, new ObjectMapper().findAndRegisterModules(), calendar);
         return new Fixture(service, reportMapper, snapshotMapper, calendar, snapshot, items);
     }
 

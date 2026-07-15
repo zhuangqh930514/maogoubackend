@@ -4,7 +4,7 @@ import java.time.LocalDate;
 import java.util.List;
 
 public record AiAnalysisReportPageResponse(
-        List<AiAnalysisReportResponse> items,
+        List<AiAnalysisReportSummaryResponse> items,
         long total,
         int page,
         int pageSize,

@@ -14,6 +14,7 @@ class QueryPerformanceSchemaContractTest {
             "idx_watch_stock_user_list",
             "idx_watch_stock_user_group_list",
             "idx_trade_record_user_list",
+            "idx_trade_record_user_active_stock",
             "idx_sample_analysis_lookup",
             "idx_sample_lab_list",
             "idx_pipeline_owner_type_time");

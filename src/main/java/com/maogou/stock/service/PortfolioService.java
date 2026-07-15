@@ -13,5 +13,5 @@ public interface PortfolioService {
 
     void removePositions(List<String> codes);
 
-    PortfolioSummaryResponse portfolio();
+    PortfolioSummaryResponse portfolio(int page, int pageSize);
 }

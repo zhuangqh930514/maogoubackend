@@ -10,6 +10,10 @@ public record PortfolioSummaryResponse(
         BigDecimal profitRate,
         BigDecimal todayProfit,
         BigDecimal todayProfitRate,
-        List<PositionResponse> positions
+        List<PositionResponse> positions,
+        long positionTotal,
+        int page,
+        int pageSize,
+        int totalPages
 ) {
 }
