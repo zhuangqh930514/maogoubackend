@@ -32,11 +32,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         if (authorization != null && authorization.startsWith("Bearer ")) {
             jwtService.parse(authorization.substring(7))
                     .ifPresent(claims -> {
-                        AuthPrincipal principal = new AuthPrincipal(claims.userId(), claims.username());
+                        AuthPrincipal principal = new AuthPrincipal(
+                                claims.userId(), claims.username(), claims.systemRole());
                         UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
                                 principal,
                                 null,
-                                List.of(new SimpleGrantedAuthority("ROLE_USER"))
+                                List.of(new SimpleGrantedAuthority("ROLE_" + claims.systemRole()))
                         );
                         SecurityContextHolder.getContext().setAuthentication(authentication);
                     });

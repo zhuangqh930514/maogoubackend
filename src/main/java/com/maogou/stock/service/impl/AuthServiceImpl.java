@@ -61,6 +61,7 @@ public class AuthServiceImpl implements AuthService {
         user.phone = phone;
         user.passwordHash = passwordEncoder.encode(request.password());
         user.status = ACTIVE_STATUS;
+        user.systemRole = "USER";
         user.riskPreference = request.riskPreference() == null || request.riskPreference().isBlank()
                 ? "均衡"
                 : request.riskPreference();
@@ -101,7 +102,7 @@ public class AuthServiceImpl implements AuthService {
 
     private AuthResponse buildAuthResponse(UserAccount user) {
         return new AuthResponse(
-                jwtService.createToken(user.id, user.username),
+                jwtService.createToken(user.id, user.username, user.systemRole),
                 "Bearer",
                 jwtService.expiresAt(),
                 CurrentUserResponse.from(user)

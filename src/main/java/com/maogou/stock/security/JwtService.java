@@ -29,13 +29,14 @@ public class JwtService {
         this.objectMapper = objectMapper;
     }
 
-    public String createToken(Long userId, String username) {
+    public String createToken(Long userId, String username, String systemRole) {
         Instant now = Instant.now();
         Instant expiresAt = now.plusSeconds(properties.getAuth().getAccessTokenTtlMinutes() * 60);
         Map<String, Object> header = Map.of("alg", "HS256", "typ", "JWT");
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("sub", String.valueOf(userId));
         payload.put("username", username);
+        payload.put("role", normalizeRole(systemRole));
         payload.put("iat", now.getEpochSecond());
         payload.put("exp", expiresAt.getEpochSecond());
 
@@ -71,6 +72,7 @@ public class JwtService {
             return Optional.of(new JwtClaims(
                     asLong(payload.get("sub")),
                     String.valueOf(payload.get("username")),
+                    normalizeRole(payload.get("role") == null ? null : String.valueOf(payload.get("role"))),
                     expiresAt
             ));
         } catch (Exception ex) {
@@ -105,5 +107,13 @@ public class JwtService {
             return number.longValue();
         }
         return Long.parseLong(String.valueOf(value));
+    }
+
+    private static String normalizeRole(String role) {
+        String normalized = role == null ? "USER" : role.trim().toUpperCase(java.util.Locale.ROOT);
+        return switch (normalized) {
+            case "ADMIN", "OPERATOR" -> normalized;
+            default -> "USER";
+        };
     }
 }

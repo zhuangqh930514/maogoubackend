@@ -11,6 +11,7 @@ public record CurrentUserResponse(
         String email,
         String phone,
         String status,
+        String systemRole,
         String riskPreference,
         LocalDateTime lastLoginAt
 ) {
@@ -22,6 +23,7 @@ public record CurrentUserResponse(
                 user.email,
                 user.phone,
                 user.status,
+                user.systemRole == null || user.systemRole.isBlank() ? "USER" : user.systemRole,
                 user.riskPreference,
                 user.lastLoginAt
         );

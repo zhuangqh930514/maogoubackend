@@ -17,6 +17,7 @@ public class UserAccount {
     public String phone;
     public String passwordHash;
     public String status;
+    public String systemRole;
     public String riskPreference;
     public LocalDateTime lastLoginAt;
     @TableLogic

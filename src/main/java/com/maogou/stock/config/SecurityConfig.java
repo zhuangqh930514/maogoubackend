@@ -40,6 +40,16 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers("/api/auth/login", "/api/auth/register", "/actuator/health", "/actuator/info").permitAll()
+                        .requestMatchers(HttpMethod.POST,
+                                "/api/ai/research-lab/actions/run-daily",
+                                "/api/ai/research-lab/actions/run-historical-bootstrap",
+                                "/api/ai/research-lab/actions/verify-labels",
+                                "/api/ai/research-lab/actions/run-weekly",
+                                "/api/ai/research-lab/actions/run-training",
+                                "/api/ai/research-lab/strategies/*/promote",
+                                "/api/ai/research-lab/strategies/*/reject",
+                                "/api/ai/research-lab/strategies/*/rollback")
+                        .hasAnyRole("OPERATOR", "ADMIN")
                         .requestMatchers("/api/**").authenticated()
                         .anyRequest().permitAll()
                 )
