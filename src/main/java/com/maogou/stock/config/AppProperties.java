@@ -262,7 +262,7 @@ public class AppProperties {
         private String trainerScript = "ml/train_ranker.py";
         private long trainerTimeoutSeconds = 1800;
         private double modelMinimumTestRocAuc = 0.52d;
-        private String tradingHolidays = "2026-01-01,2026-02-16,2026-02-17,2026-02-18,2026-02-19,2026-02-20,2026-04-06,2026-05-01,2026-05-04,2026-05-05,2026-06-19,2026-09-25,2026-10-01,2026-10-02,2026-10-05,2026-10-06,2026-10-07";
+        private String tradingHolidays = "2026-01-01,2026-01-02,2026-02-16,2026-02-17,2026-02-18,2026-02-19,2026-02-20,2026-02-23,2026-04-06,2026-05-01,2026-05-04,2026-05-05,2026-06-19,2026-09-25,2026-10-01,2026-10-02,2026-10-05,2026-10-06,2026-10-07";
         private String tradingWorkdays = "";
 
         public boolean isEnabled() {

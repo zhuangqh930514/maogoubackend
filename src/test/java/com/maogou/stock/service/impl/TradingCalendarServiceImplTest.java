@@ -14,8 +14,11 @@ class TradingCalendarServiceImplTest {
     void detectsConfiguredHolidayAndWeekdayTradingDay() {
         TradingCalendarServiceImpl service = new TradingCalendarServiceImpl(new AppProperties());
 
+        assertThat(service.isTradingDay(LocalDate.parse("2026-01-02"))).isFalse();
+        assertThat(service.isTradingDay(LocalDate.parse("2026-02-23"))).isFalse();
         assertThat(service.isTradingDay(LocalDate.parse("2026-06-19"))).isFalse();
         assertThat(service.isTradingDay(LocalDate.parse("2026-06-22"))).isTrue();
+        assertThat(service.isTradingDay(LocalDate.parse("2026-07-16"))).isTrue();
         assertThat(service.isTradingDay(LocalDate.parse("2026-06-20"))).isFalse();
     }
 
