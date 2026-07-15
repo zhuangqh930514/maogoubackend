@@ -22,7 +22,7 @@ import com.maogou.stock.mapper.research.AiPredictionMapper;
 import com.maogou.stock.mapper.research.AiSampleMapper;
 import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
 import com.maogou.stock.service.MarketDataService;
-import com.maogou.stock.service.research.AiEvolutionAutomationService;
+import com.maogou.stock.service.research.AiResearchCycleResult;
 import com.maogou.stock.service.research.AiFactorPerformanceService;
 import com.maogou.stock.service.research.AiPortfolioBacktestService;
 import com.maogou.stock.service.research.AiResearchContract;
@@ -54,7 +54,7 @@ class AiWeeklyResearchServiceImplTest {
         when(noChampion.releaseMapper.selectGlobalActiveChampionForUpdate(anyString(), anyString()))
                 .thenReturn(null);
 
-        AiEvolutionAutomationService.CycleResult first = runner(noChampion).run(5L, now());
+        AiResearchCycleResult first = runner(noChampion).run(5L, now());
 
         assertThat(first.status()).isEqualTo("SKIPPED");
         assertThat(first.message()).contains("Champion");
@@ -64,7 +64,7 @@ class AiWeeklyResearchServiceImplTest {
         when(noChallenger.releaseMapper.selectShadowChallengers(10L, "A_SHARE_MULTI_HORIZON"))
                 .thenReturn(List.of());
 
-        AiEvolutionAutomationService.CycleResult second = runner(noChallenger).run(5L, now());
+        AiResearchCycleResult second = runner(noChallenger).run(5L, now());
 
         assertThat(second.status()).isEqualTo("SKIPPED");
         assertThat(second.message()).contains("SHADOW Challenger");
@@ -88,7 +88,7 @@ class AiWeeklyResearchServiceImplTest {
         when(fixture.labelMapper.selectList(any())).thenReturn(List.of(label));
         when(fixture.modelMapper.selectById(81L)).thenReturn(null);
 
-        AiEvolutionAutomationService.CycleResult result = runner(fixture).run(5L, now());
+        AiResearchCycleResult result = runner(fixture).run(5L, now());
 
         assertThat(result.status()).isEqualTo("SUCCESS");
         assertThat(result.successCount()).isEqualTo(1);
@@ -116,7 +116,7 @@ class AiWeeklyResearchServiceImplTest {
                 List.of(prediction(101L, 1001L, 11L, null, "CHAMPION", "0.55")),
                 List.of(prediction(202L, 9999L, 12L, 81L, "CHALLENGER_SHADOW", "0.68")));
 
-        AiEvolutionAutomationService.CycleResult result = runner(fixture).run(5L, now());
+        AiResearchCycleResult result = runner(fixture).run(5L, now());
 
         assertThat(result.status()).isEqualTo("SKIPPED");
         assertThat(result.failedCount()).isZero();
@@ -214,7 +214,7 @@ class AiWeeklyResearchServiceImplTest {
                 new AiPortfolioBacktestService.BacktestResult(
                         backtestRun, List.of(), List.of(), List.of(position)));
 
-        AiEvolutionAutomationService.CycleResult result = runner(fixture).run(5L, now());
+        AiResearchCycleResult result = runner(fixture).run(5L, now());
 
         assertThat(result.status()).isEqualTo("SUCCESS");
         ArgumentCaptor<AiFactorPerformanceService.PerformanceBatch> factorBatch =

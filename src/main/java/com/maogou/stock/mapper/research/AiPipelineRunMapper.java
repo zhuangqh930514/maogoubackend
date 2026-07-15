@@ -8,8 +8,25 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 public interface AiPipelineRunMapper extends BaseMapper<AiPipelineRun> {
+
+    @Select("""
+            SELECT *
+            FROM ai_pipeline_run
+            WHERE scope_type = 'GLOBAL'
+              AND pipeline_type = 'GLOBAL_DAILY_RESEARCH'
+              AND status = 'WAITING_SOURCE'
+              AND next_retry_at IS NOT NULL
+              AND next_retry_at <= #{now}
+            ORDER BY next_retry_at, id
+            LIMIT #{limit}
+            """)
+    List<AiPipelineRun> selectDueGlobalDailyRuns(
+            @Param("now") LocalDateTime now,
+            @Param("limit") int limit
+    );
 
     @Insert("""
             INSERT INTO ai_pipeline_run (

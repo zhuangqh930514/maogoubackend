@@ -4,5 +4,5 @@ import java.time.LocalDateTime;
 
 public interface AiMonthlyTrainingRunner {
 
-    AiEvolutionAutomationService.CycleResult run(Long userId, LocalDateTime triggeredAt);
+    AiResearchCycleResult run(Long actorUserId, LocalDateTime triggeredAt);
 }

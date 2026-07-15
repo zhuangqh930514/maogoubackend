@@ -12,7 +12,7 @@ import com.maogou.stock.mapper.research.AiPipelineRunMapper;
 import com.maogou.stock.mapper.research.AiPipelineStepMapper;
 import com.maogou.stock.mapper.research.AiStrategyGovernanceEventMapper;
 import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
-import com.maogou.stock.service.research.AiEvolutionAutomationService;
+import com.maogou.stock.service.research.AiResearchCycleResult;
 import com.maogou.stock.service.research.AiGlobalDailyResearchService;
 import com.maogou.stock.service.research.AiHistoricalBootstrapService;
 import com.maogou.stock.service.research.AiLabelVerificationCoordinator;
@@ -592,7 +592,7 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
         return new ResearchLabPayloads.ActionAccepted(run.id, current == null ? run.status : current.status);
     }
 
-    private static Counts counts(AiEvolutionAutomationService.CycleResult result) {
+    private static Counts counts(AiResearchCycleResult result) {
         if (result == null) {
             throw new IllegalStateException("研究运行器未返回执行结果");
         }

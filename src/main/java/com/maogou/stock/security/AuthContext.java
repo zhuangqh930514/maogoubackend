@@ -2,13 +2,13 @@ package com.maogou.stock.security;
 
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.access.AccessDeniedException;
 
 import java.util.Optional;
 import java.util.function.Supplier;
 
 public final class AuthContext {
 
-    private static final long DEFAULT_USER_ID = 1L;
     private static final ThreadLocal<Long> USER_OVERRIDE = new ThreadLocal<>();
 
     private AuthContext() {
@@ -27,7 +27,7 @@ public final class AuthContext {
     }
 
     public static long currentUserIdOrDefault() {
-        return currentUserId().orElse(DEFAULT_USER_ID);
+        return currentUserId().orElseThrow(() -> new AccessDeniedException("请先登录"));
     }
 
     public static void runAs(Long userId, Runnable action) {

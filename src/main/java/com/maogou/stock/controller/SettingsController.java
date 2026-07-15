@@ -3,15 +3,15 @@ package com.maogou.stock.controller;
 import com.maogou.stock.config.AppProperties;
 import com.maogou.stock.common.ApiResponse;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
-import com.maogou.stock.domain.entity.AiLearningJobLog;
 import com.maogou.stock.domain.entity.AiModelConfig;
+import com.maogou.stock.domain.entity.research.AiPipelineRun;
 import com.maogou.stock.dto.settings.ConnectionTestResponse;
 import com.maogou.stock.dto.settings.ModelConfigRequest;
 import com.maogou.stock.dto.settings.ModelConfigResponse;
 import com.maogou.stock.dto.settings.SchedulerJobLogResponse;
 import com.maogou.stock.dto.settings.SchedulerStatusResponse;
 import com.maogou.stock.dto.settings.SchedulerToggleRequest;
-import com.maogou.stock.mapper.AiLearningJobLogMapper;
+import com.maogou.stock.mapper.research.AiPipelineRunMapper;
 import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.AiResearchDailyReportService;
 import com.maogou.stock.service.AutoClosePipelineService;
@@ -37,7 +37,7 @@ import java.util.List;
 public class SettingsController {
 
     private final ModelConfigService modelConfigService;
-    private final AiLearningJobLogMapper jobLogMapper;
+    private final AiPipelineRunMapper pipelineRunMapper;
     private final AppProperties properties;
     private final TradingCalendarService tradingCalendarService;
     private final AiResearchDailyReportService aiResearchDailyReportService;
@@ -45,14 +45,14 @@ public class SettingsController {
 
     public SettingsController(
             ModelConfigService modelConfigService,
-            AiLearningJobLogMapper jobLogMapper,
+            AiPipelineRunMapper pipelineRunMapper,
             AppProperties properties,
             TradingCalendarService tradingCalendarService,
             AiResearchDailyReportService aiResearchDailyReportService,
             AutoClosePipelineService autoClosePipelineService
     ) {
         this.modelConfigService = modelConfigService;
-        this.jobLogMapper = jobLogMapper;
+        this.pipelineRunMapper = pipelineRunMapper;
         this.properties = properties;
         this.tradingCalendarService = tradingCalendarService;
         this.aiResearchDailyReportService = aiResearchDailyReportService;
@@ -121,15 +121,20 @@ public class SettingsController {
     @GetMapping("/scheduler/job-logs")
     public ApiResponse<List<SchedulerJobLogResponse>> schedulerJobLogs(Integer limit) {
         int size = Math.max(1, Math.min(limit == null ? 20 : limit, 50));
-        List<AiLearningJobLog> rows = jobLogMapper.selectList(new QueryWrapper<AiLearningJobLog>()
-                .eq("user_id", AuthContext.currentUserIdOrDefault())
-                .orderByDesc("started_at")
+        Long userId = AuthContext.currentUserId().orElseThrow(() ->
+                new org.springframework.security.access.AccessDeniedException("请先登录"));
+        List<AiPipelineRun> rows = pipelineRunMapper.selectList(new QueryWrapper<AiPipelineRun>()
+                .and(scope -> scope.eq("scope_type", "GLOBAL")
+                        .or(owner -> owner.eq("scope_type", "USER").eq("owner_user_id", userId)))
+                .in("pipeline_type", "GLOBAL_DAILY_RESEARCH", "USER_DAILY_PROJECTION",
+                        "GLOBAL_WEEKLY_RESEARCH", "GLOBAL_MONTHLY_TRAINING")
+                .orderByDesc("created_at", "id")
                 .last("LIMIT " + size));
         return ApiResponse.ok(rows.stream()
                 .map(item -> new SchedulerJobLogResponse(
                         item.id,
-                        item.jobName,
-                        item.jobType,
+                        pipelineName(item.pipelineType),
+                        item.pipelineType,
                         item.status,
                         item.startedAt,
                         item.finishedAt,
@@ -182,5 +187,15 @@ public class SettingsController {
 
     private static String nullToEmpty(String value) {
         return value == null ? "" : value;
+    }
+
+    private static String pipelineName(String type) {
+        return switch (nullToEmpty(type)) {
+            case "GLOBAL_DAILY_RESEARCH" -> "全局日度研究";
+            case "USER_DAILY_PROJECTION" -> "用户投研日报投影";
+            case "GLOBAL_WEEKLY_RESEARCH" -> "全局周度策略研究";
+            case "GLOBAL_MONTHLY_TRAINING" -> "全局月度模型训练";
+            default -> "研究流水线";
+        };
     }
 }

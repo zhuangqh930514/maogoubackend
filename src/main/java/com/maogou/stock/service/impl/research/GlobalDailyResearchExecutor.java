@@ -32,6 +32,7 @@ import com.maogou.stock.service.research.AiResearchUniverseService;
 import com.maogou.stock.service.research.AiResearchContract;
 import com.maogou.stock.service.research.AiSampleSnapshotService;
 import com.maogou.stock.service.research.BenchmarkSeriesService;
+import com.maogou.stock.service.research.ExternalIoTransactionGuard;
 import com.maogou.stock.service.research.IndustryMembershipService;
 import com.maogou.stock.service.research.NewsSentimentFeatureService;
 import org.springframework.dao.DuplicateKeyException;
@@ -166,7 +167,8 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
             return resumeExistingSourceData(batch, items, existingObservations);
         }
 
-        ResearchSourceResult<KlineSeriesSnapshot> benchmark = benchmarkSeriesService.load(fetchStartedAt, 80);
+        ResearchSourceResult<KlineSeriesSnapshot> benchmark = ExternalIoTransactionGuard.call(
+                "基准行情调用", () -> benchmarkSeriesService.load(fetchStartedAt, 80));
         storeObservation(sourceObservation(
                 batch, null, "MARKET_BENCHMARK", "KLINE", benchmark.providerCode(),
                 benchmark.sourceUpdatedAt(), null, fetchStartedAt, benchmark.data(),
@@ -175,7 +177,8 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         boolean benchmarkReady = benchmark.formalReady()
                 && latestTradeDate(benchmark.data()).filter(context.tradeDate()::equals).isPresent();
 
-        NewsSentimentFeatureService.NewsBatch newsBatch = newsSentimentFeatureService.load(fetchStartedAt, 100);
+        NewsSentimentFeatureService.NewsBatch newsBatch = ExternalIoTransactionGuard.call(
+                "研究资讯调用", () -> newsSentimentFeatureService.load(fetchStartedAt, 100));
         storeObservation(sourceObservation(
                 batch, null, "NEWS_RAW", "NEWS", newsBatch.providerCode(), null,
                 newsBatch.news().stream().map(NewsFlashResponse::publishedAt).filter(Objects::nonNull)
@@ -195,8 +198,9 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
                 continue;
             }
             context.checkpointLease();
-            IndustryMembershipService.Membership membership = industryMembershipService.resolve(
-                    item.stockCode, fetchStartedAt);
+            IndustryMembershipService.Membership membership = ExternalIoTransactionGuard.call(
+                    "行业归属数据调用",
+                    () -> industryMembershipService.resolve(item.stockCode, fetchStartedAt));
             storeObservation(sourceObservation(
                     batch, item.stockCode, "INDUSTRY_MEMBERSHIP", "INDUSTRY_MEMBERSHIP",
                     membership.providerCode(), membership.effectiveFrom() == null ? null
@@ -206,8 +210,10 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
 
             if (membership.available()) {
                 ResearchSourceResult<KlineSeriesSnapshot> sectorSeries = sectorSeriesByIndustry.computeIfAbsent(
-                        membership.industryCode(), ignored -> resilientMarketDataClient.fetchKlineAt(
-                                membership.industryCode(), "day", 80, fetchStartedAt));
+                        membership.industryCode(), ignored -> ExternalIoTransactionGuard.call(
+                                "行业行情调用",
+                                () -> resilientMarketDataClient.fetchKlineAt(
+                                        membership.industryCode(), "day", 80, fetchStartedAt)));
                 storeObservation(sourceObservation(
                         batch, item.stockCode, "INDUSTRY_BENCHMARK", "KLINE",
                         sectorSeries.providerCode(), sectorSeries.sourceUpdatedAt(), null,
@@ -230,7 +236,9 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
                     newsBatch.available() ? newsFeature.missingReason() : newsBatch.missingReason(),
                     newsFeature.sourceFingerprint()));
             try {
-                StockDetailResponse detail = marketDataService.stockDetailAt(item.stockCode, fetchStartedAt);
+                StockDetailResponse detail = ExternalIoTransactionGuard.call(
+                        "研究个股行情调用",
+                        () -> marketDataService.stockDetailAt(item.stockCode, fetchStartedAt));
                 AiSourceObservation observation = observation(
                         batch, item.stockCode, detail, context.tradeDate(), fetchStartedAt, null);
                 storeObservation(observation);

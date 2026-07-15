@@ -8,7 +8,7 @@ import com.maogou.stock.domain.entity.research.AiTrainingDataset;
 import com.maogou.stock.domain.entity.research.AiTrainingSourceSummary;
 import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
 import com.maogou.stock.mapper.research.AiTrainingDatasetItemMapper;
-import com.maogou.stock.service.research.AiEvolutionAutomationService;
+import com.maogou.stock.service.research.AiResearchCycleResult;
 import com.maogou.stock.service.research.AiModelTrainer;
 import com.maogou.stock.service.research.AiTrainingDatasetService;
 import com.maogou.stock.service.research.AiTrainingReadinessService;
@@ -45,7 +45,7 @@ class AiMonthlyTrainingServiceImplTest {
                 .thenReturn(summary);
         AiMonthlyTrainingServiceImpl runner = runner(fixture);
 
-        AiEvolutionAutomationService.CycleResult result = runner.run(5L, now());
+        AiResearchCycleResult result = runner.run(5L, now());
 
         assertThat(result.status()).isEqualTo("SKIPPED");
         assertThat(result.message()).contains("120 / 20000");
@@ -91,7 +91,7 @@ class AiMonthlyTrainingServiceImplTest {
         });
         AiMonthlyTrainingServiceImpl runner = runner(fixture);
 
-        AiEvolutionAutomationService.CycleResult result = runner.run(5L, now());
+        AiResearchCycleResult result = runner.run(5L, now());
 
         assertThat(result.status()).isEqualTo("SUCCESS");
         assertThat(result.message()).contains("SHADOW Challenger #92");
@@ -140,7 +140,7 @@ class AiMonthlyTrainingServiceImplTest {
         candidate.status = "CANDIDATE";
         when(fixture.datasetService.registerModel(any())).thenReturn(candidate);
 
-        AiEvolutionAutomationService.CycleResult result = runner(fixture).run(5L, now());
+        AiResearchCycleResult result = runner(fixture).run(5L, now());
 
         assertThat(result.status()).isEqualTo("SUCCESS");
         assertThat(result.message()).contains("不创建 Challenger");

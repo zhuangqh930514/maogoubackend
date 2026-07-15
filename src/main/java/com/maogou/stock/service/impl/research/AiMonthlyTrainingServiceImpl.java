@@ -10,12 +10,13 @@ import com.maogou.stock.domain.entity.research.AiTrainingDataset;
 import com.maogou.stock.domain.entity.research.AiTrainingSourceSummary;
 import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
 import com.maogou.stock.mapper.research.AiTrainingDatasetItemMapper;
-import com.maogou.stock.service.research.AiEvolutionAutomationService;
+import com.maogou.stock.service.research.AiResearchCycleResult;
 import com.maogou.stock.service.research.AiResearchContract;
 import com.maogou.stock.service.research.AiModelTrainer;
 import com.maogou.stock.service.research.AiMonthlyTrainingRunner;
 import com.maogou.stock.service.research.AiTrainingDatasetService;
 import com.maogou.stock.service.research.AiTrainingReadinessService;
+import com.maogou.stock.service.research.ExternalIoTransactionGuard;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
@@ -69,12 +70,12 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
     }
 
     @Override
-    public AiEvolutionAutomationService.CycleResult run(Long ignoredUserId, LocalDateTime triggeredAt) {
+    public AiResearchCycleResult run(Long ignoredActorUserId, LocalDateTime triggeredAt) {
         validate(triggeredAt);
         AppProperties.Scheduler scheduler = properties.getScheduler();
         AiTrainingReadinessGate.Readiness readiness = readinessService.assess(triggeredAt);
         if (!"READY".equals(readiness.status())) {
-            return new AiEvolutionAutomationService.CycleResult(
+            return new AiResearchCycleResult(
                     "INSUFFICIENT_DATA", readiness.tradingDays(), 0, 0,
                     readinessMessage(readiness));
         }
@@ -134,13 +135,13 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
                 metrics.path("parameters").toString(), metrics.toString(), calibration.toString(),
                 dataset.rowCount, qualityGatePassed, triggeredAt));
         if (!"VALIDATED".equals(model.status)) {
-            return new AiEvolutionAutomationService.CycleResult(
+            return new AiResearchCycleResult(
                     "SUCCESS", dataset.rowCount, 1, 0,
                     "模型已注册为 CANDIDATE，样本外质量门未通过，不创建 Challenger");
         }
         AiStrategyRelease challenger = createOrGetChallenger(
                 champion.researchUniverseId, model, metrics.toString(), triggeredAt);
-        return new AiEvolutionAutomationService.CycleResult(
+        return new AiResearchCycleResult(
                 "SUCCESS", dataset.rowCount, 1, 0,
                 "已生成 VALIDATED 模型和 SHADOW Challenger #" + challenger.id);
     }
@@ -150,8 +151,11 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
         try {
             Files.createDirectories(versionRoot);
             temporaryDirectory = Files.createTempDirectory(versionRoot, ".model.tmp-");
-            AiModelTrainer.TrainingArtifacts temporaryArtifacts = modelTrainer.train(
-                    new AiModelTrainer.TrainingRequest(datasetPath, temporaryDirectory, RANDOM_SEED));
+            Path trainingDirectory = temporaryDirectory;
+            AiModelTrainer.TrainingArtifacts temporaryArtifacts = ExternalIoTransactionGuard.call(
+                    "模型训练调用",
+                    () -> modelTrainer.train(
+                            new AiModelTrainer.TrainingRequest(datasetPath, trainingDirectory, RANDOM_SEED)));
             VerifiedArtifacts verified = verifyTrainingArtifacts(temporaryArtifacts, temporaryDirectory);
             Path finalDirectory = versionRoot.resolve("model");
             if (Files.exists(finalDirectory)) {
@@ -387,8 +391,8 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
         return value == null ? 0 : value;
     }
 
-    private static AiEvolutionAutomationService.CycleResult skipped(String message) {
-        return new AiEvolutionAutomationService.CycleResult("SKIPPED", 0, 0, 0, message);
+    private static AiResearchCycleResult skipped(String message) {
+        return new AiResearchCycleResult("SKIPPED", 0, 0, 0, message);
     }
 
     private record TrainingWindows(

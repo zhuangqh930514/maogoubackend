@@ -33,6 +33,9 @@ class AiResearchUnifiedArchitectureContractTest {
                 "ai_label_v2",
                 "ai_factor_value_v2",
                 "ai_factor_performance_v2",
+                "AiLearningJobLog",
+                "AiLearningJobLogMapper",
+                "ai_learning_job_log",
                 "LEGACY"
         );
         assertThat(forbidden.stream().filter(productionText::contains).toList()).isEmpty();

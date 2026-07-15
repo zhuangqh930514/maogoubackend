@@ -24,4 +24,9 @@ public class AutoClosePipelineScheduler {
         log.info("auto close pipeline scheduler triggered");
         autoClosePipelineService.runEnabledPipelines();
     }
+
+    @Scheduled(fixedDelayString = "${maogou.scheduler.pipeline-recovery-fixed-delay-ms:60000}")
+    public void retryWaitingPipelines() {
+        autoClosePipelineService.retryWaitingPipelines();
+    }
 }

@@ -1,19 +1,25 @@
 package com.maogou.stock.controller;
 
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.maogou.stock.config.AppProperties;
 import com.maogou.stock.domain.entity.AiModelConfig;
+import com.maogou.stock.domain.entity.research.AiPipelineRun;
 import com.maogou.stock.dto.settings.ModelConfigResponse;
+import com.maogou.stock.dto.settings.SchedulerJobLogResponse;
 import com.maogou.stock.dto.settings.SchedulerStatusResponse;
-import com.maogou.stock.mapper.AiLearningJobLogMapper;
+import com.maogou.stock.mapper.research.AiPipelineRunMapper;
+import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.AiResearchDailyReportService;
 import com.maogou.stock.service.AutoClosePipelineService;
 import com.maogou.stock.service.ModelConfigService;
 import com.maogou.stock.service.TradingCalendarService;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -28,7 +34,7 @@ class SettingsControllerTest {
     @Test
     void schedulerStatusIncludesLatestResearchDailyReportSummary() {
         ModelConfigService modelConfigService = mock(ModelConfigService.class);
-        AiLearningJobLogMapper jobLogMapper = mock(AiLearningJobLogMapper.class);
+        AiPipelineRunMapper pipelineRunMapper = mock(AiPipelineRunMapper.class);
         TradingCalendarService tradingCalendarService = mock(TradingCalendarService.class);
         AiResearchDailyReportService aiResearchDailyReportService = mock(AiResearchDailyReportService.class);
         AutoClosePipelineService autoClosePipelineService = mock(AutoClosePipelineService.class);
@@ -101,14 +107,15 @@ class SettingsControllerTest {
 
         SettingsController controller = new SettingsController(
                 modelConfigService,
-                jobLogMapper,
+                pipelineRunMapper,
                 properties,
                 tradingCalendarService,
                 aiResearchDailyReportService,
                 autoClosePipelineService
         );
 
-        SchedulerStatusResponse response = controller.schedulerStatus().data();
+        SchedulerStatusResponse response = AuthContext.callAs(
+                5L, () -> controller.schedulerStatus().data());
 
         assertThat(response.autoClosePipelineEnabled()).isTrue();
         assertThat(response.autoClosePipelineLastStatus()).isEqualTo("SUCCESS");
@@ -127,13 +134,13 @@ class SettingsControllerTest {
     @Test
     void manualClosePipelineEndpointRunsTheSameBackendPipeline() {
         ModelConfigService modelConfigService = mock(ModelConfigService.class);
-        AiLearningJobLogMapper jobLogMapper = mock(AiLearningJobLogMapper.class);
+        AiPipelineRunMapper pipelineRunMapper = mock(AiPipelineRunMapper.class);
         TradingCalendarService tradingCalendarService = mock(TradingCalendarService.class);
         AiResearchDailyReportService reportService = mock(AiResearchDailyReportService.class);
         AutoClosePipelineService autoClosePipelineService = mock(AutoClosePipelineService.class);
         SettingsController controller = new SettingsController(
                 modelConfigService,
-                jobLogMapper,
+                pipelineRunMapper,
                 new AppProperties(),
                 tradingCalendarService,
                 reportService,
@@ -143,5 +150,47 @@ class SettingsControllerTest {
 
         assertThat(message).isEqualTo("每日收盘投研流水线已执行");
         verify(autoClosePipelineService).runCurrentUserNow();
+    }
+
+    @Test
+    void schedulerLogsReadUnifiedGlobalAndOwnedUserPipelineRuns() {
+        ModelConfigService modelConfigService = mock(ModelConfigService.class);
+        AiPipelineRunMapper pipelineRunMapper = mock(AiPipelineRunMapper.class);
+        TradingCalendarService tradingCalendarService = mock(TradingCalendarService.class);
+        AiResearchDailyReportService reportService = mock(AiResearchDailyReportService.class);
+        AutoClosePipelineService pipelineService = mock(AutoClosePipelineService.class);
+        AiPipelineRun run = new AiPipelineRun();
+        run.id = 91L;
+        run.scopeType = "USER";
+        run.ownerUserId = 5L;
+        run.pipelineType = "USER_DAILY_PROJECTION";
+        run.status = "SUCCESS";
+        run.processedCount = 3;
+        run.successCount = 3;
+        run.failedCount = 0;
+        run.startedAt = LocalDateTime.of(2026, 7, 15, 16, 6);
+        run.finishedAt = LocalDateTime.of(2026, 7, 15, 16, 7);
+        when(pipelineRunMapper.selectList(any(QueryWrapper.class))).thenReturn(List.of(run));
+        SettingsController controller = new SettingsController(
+                modelConfigService, pipelineRunMapper, new AppProperties(),
+                tradingCalendarService, reportService, pipelineService);
+
+        List<SchedulerJobLogResponse> response = AuthContext.callAs(
+                5L, () -> controller.schedulerJobLogs(20).data());
+
+        assertThat(response).singleElement().satisfies(item -> {
+            assertThat(item.id()).isEqualTo(91L);
+            assertThat(item.jobName()).isEqualTo("用户投研日报投影");
+            assertThat(item.jobType()).isEqualTo("USER_DAILY_PROJECTION");
+            assertThat(item.status()).isEqualTo("SUCCESS");
+        });
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<QueryWrapper<AiPipelineRun>> queryCaptor =
+                ArgumentCaptor.forClass(QueryWrapper.class);
+        verify(pipelineRunMapper).selectList(queryCaptor.capture());
+        assertThat(queryCaptor.getValue().getCustomSqlSegment())
+                .contains("scope_type", "owner_user_id", "pipeline_type");
+        assertThat(queryCaptor.getValue().getParamNameValuePairs().values())
+                .contains("GLOBAL", "USER", 5L, "GLOBAL_DAILY_RESEARCH", "USER_DAILY_PROJECTION");
     }
 }

@@ -20,7 +20,9 @@ import com.maogou.stock.mapper.research.AiPredictionEvaluationMapper;
 import com.maogou.stock.mapper.research.AiPredictionMapper;
 import com.maogou.stock.mapper.research.AiSampleMapper;
 import com.maogou.stock.service.research.AiUserDailyProjectionService;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -88,6 +90,24 @@ class AiUserDailyProjectionServiceImplTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("用户隔离");
         verify(fixture.itemMapper, never()).insert(any(AiDailyDecisionItem.class));
+    }
+
+    @Test
+    void aFailedUserProjectionCannotLeakIdentityIntoTheNextProjection() {
+        Fixture fixture = fixture(6L, true);
+        when(fixture.snapshotMapper.lockUser(5L)).thenReturn(null);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> fixture.service.project(request(5L)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("用户不存在");
+        AiUserDailyProjectionService.ProjectionResult result = fixture.service.project(request(6L));
+
+        assertThat(result.snapshot().userId).isEqualTo(6L);
+        ArgumentCaptor<QueryWrapper<WatchStock>> watchQuery = ArgumentCaptor.forClass(QueryWrapper.class);
+        verify(fixture.watchMapper).selectList(watchQuery.capture());
+        assertThat(watchQuery.getValue().getCustomSqlSegment()).contains("user_id");
+        assertThat(watchQuery.getValue().getParamNameValuePairs().values()).contains(6L).doesNotContain(5L);
+        assertThat(com.maogou.stock.security.AuthContext.currentUserId()).isEmpty();
     }
 
     private static Fixture fixture(Long userId, boolean includeT3) {
@@ -166,7 +186,7 @@ class AiUserDailyProjectionServiceImplTest {
                 sampleMapper, predictionMapper, evaluationMapper, factorValueMapper,
                 factorPerformanceMapper, new DecisionPolicyV1(),
                 new ObjectMapper().findAndRegisterModules());
-        return new Fixture(service, snapshotMapper, itemMapper);
+        return new Fixture(service, snapshotMapper, itemMapper, watchMapper);
     }
 
     private static AiPrediction prediction(Long id, Long sampleId, int horizon, String score, String risk) {
@@ -197,7 +217,8 @@ class AiUserDailyProjectionServiceImplTest {
     private record Fixture(
             AiUserDailyProjectionService service,
             AiDailyDecisionSnapshotMapper snapshotMapper,
-            AiDailyDecisionItemMapper itemMapper
+            AiDailyDecisionItemMapper itemMapper,
+            WatchStockMapper watchMapper
     ) {
     }
 }

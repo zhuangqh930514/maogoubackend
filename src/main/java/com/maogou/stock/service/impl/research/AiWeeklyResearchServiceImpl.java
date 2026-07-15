@@ -19,7 +19,7 @@ import com.maogou.stock.mapper.research.AiPredictionMapper;
 import com.maogou.stock.mapper.research.AiSampleMapper;
 import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
 import com.maogou.stock.service.MarketDataService;
-import com.maogou.stock.service.research.AiEvolutionAutomationService;
+import com.maogou.stock.service.research.AiResearchCycleResult;
 import com.maogou.stock.service.research.AiResearchContract;
 import com.maogou.stock.service.research.AiFactorPerformanceService;
 import com.maogou.stock.service.research.AiPortfolioBacktestService;
@@ -99,7 +99,7 @@ public class AiWeeklyResearchServiceImpl implements AiWeeklyEvolutionRunner {
     }
 
     @Override
-    public AiEvolutionAutomationService.CycleResult run(Long ignoredUserId, LocalDateTime triggeredAt) {
+    public AiResearchCycleResult run(Long ignoredActorUserId, LocalDateTime triggeredAt) {
         validate(triggeredAt);
         int processed = 0;
         int success = 0;
@@ -674,7 +674,7 @@ public class AiWeeklyResearchServiceImpl implements AiWeeklyEvolutionRunner {
         return current.getMessage() == null ? current.getClass().getSimpleName() : current.getMessage();
     }
 
-    private static AiEvolutionAutomationService.CycleResult cycleResult(
+    private static AiResearchCycleResult cycleResult(
             int processed,
             int success,
             List<String> errors,
@@ -686,7 +686,7 @@ public class AiWeeklyResearchServiceImpl implements AiWeeklyEvolutionRunner {
         List<String> messages = new ArrayList<>(notices);
         messages.addAll(errors);
         String message = messages.isEmpty() ? "没有可执行的周度评估" : String.join("；", messages);
-        return new AiEvolutionAutomationService.CycleResult(status, processed, success, failed, message);
+        return new AiResearchCycleResult(status, processed, success, failed, message);
     }
 
     private static <T> List<List<T>> chunks(List<T> values, int chunkSize) {

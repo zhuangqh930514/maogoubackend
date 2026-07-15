@@ -35,6 +35,7 @@ import com.maogou.stock.service.PromptTemplateService;
 import com.maogou.stock.service.TradingCalendarService;
 import com.maogou.stock.service.WatchlistService;
 import com.maogou.stock.service.research.AiResearchContract;
+import com.maogou.stock.service.research.ExternalIoTransactionGuard;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -280,15 +281,19 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         Long normalizedPromptTemplateId = normalizePromptTemplateId(promptTemplateId);
         validateTargetReport(userId, targetReportId, code);
         LocalDateTime marketDataAsOf = tradeDate.atTime(16, 0);
-        StockDetailResponse detail = pointInTime
-                ? marketDataService.stockDetailAt(code, marketDataAsOf)
-                : marketDataService.stockDetailForAnalysis(code);
+        StockDetailResponse detail = ExternalIoTransactionGuard.call(
+                "股票分析行情调用",
+                () -> pointInTime
+                        ? marketDataService.stockDetailAt(code, marketDataAsOf)
+                        : marketDataService.stockDetailForAnalysis(code));
         AnalysisFreshness freshness = validateAnalysisFreshness(detail);
         FormalAnalysisContext formalContext = loadFormalContext(detail.quote().code(), tradeDate);
         AiLearningPayloads.AnalysisLearningContext learningContext = formalContext.conditionalContext();
-        List<NewsFlashResponse> realtimeNews = pointInTime
-                ? marketDataService.latestNewsForAnalysisAt(8, marketDataAsOf)
-                : marketDataService.latestNewsForAnalysis(8);
+        List<NewsFlashResponse> realtimeNews = ExternalIoTransactionGuard.call(
+                "股票分析资讯调用",
+                () -> pointInTime
+                        ? marketDataService.latestNewsForAnalysisAt(8, marketDataAsOf)
+                        : marketDataService.latestNewsForAnalysis(8));
         AiConditionalStrategyPayload conditionalStrategy = conditionalTradeStrategyService.build(
                 userId, detail, tradeDate, learningContext);
         String conditionalStrategyJson = writeRequiredJson(conditionalStrategy);
@@ -617,7 +622,8 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         String lastRawResponse = "";
         for (int attempt = 1; attempt <= MAX_ANALYSIS_ATTEMPTS; attempt++) {
             try {
-                String aiText = localAiClient.chat(prompt, config);
+                String aiText = ExternalIoTransactionGuard.call(
+                        "大模型推理调用", () -> localAiClient.chat(prompt, config));
                 lastRawResponse = aiText;
                 AiAnalysisResultPayload payload = parseAiPayload(aiText);
                 validatePayload(payload);
