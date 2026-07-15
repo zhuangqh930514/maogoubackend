@@ -18,15 +18,8 @@ public class AiTrainingReadinessServiceImpl implements AiTrainingReadinessServic
     private final AiTrainingReadinessGate gate;
 
     public AiTrainingReadinessServiceImpl(AiTrainingDatasetItemMapper itemMapper) {
-        this(itemMapper, new AiTrainingReadinessGate());
-    }
-
-    AiTrainingReadinessServiceImpl(
-            AiTrainingDatasetItemMapper itemMapper,
-            AiTrainingReadinessGate gate
-    ) {
         this.itemMapper = itemMapper;
-        this.gate = gate;
+        this.gate = new AiTrainingReadinessGate();
     }
 
     @Override
