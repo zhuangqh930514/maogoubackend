@@ -29,20 +29,8 @@ SET @ai_calendar_backup_min_date = (
 SET @ai_calendar_backup_max_date = (
     SELECT COALESCE(MAX(trade_date), '1900-01-01') FROM tmp_ai_trading_calendar_backup
 );
-
-CREATE TEMPORARY TABLE tmp_ai_calendar_coverage_guard (
-    id TINYINT PRIMARY KEY,
-    coverage_ok TINYINT NOT NULL,
-    CONSTRAINT chk_tmp_ai_calendar_coverage CHECK (coverage_ok = 1)
-);
-INSERT INTO tmp_ai_calendar_coverage_guard (id, coverage_ok)
-SELECT 1, CASE WHEN EXISTS (
-    SELECT 1
-    FROM tmp_ai_trading_calendar_backup
-    WHERE market_code = 'CN_A'
-      AND is_trade_day = 1
-      AND trade_date >= CURRENT_DATE
-) THEN 1 ELSE 0 END;
+-- 旧环境可能尚未积累正式交易日历。空表也必须原样迁移，禁止用工作日近似值伪造交易日；
+-- 首次成熟标签验证会根据带来源指纹的基准指数 K 线写入正式日历。
 
 SET FOREIGN_KEY_CHECKS = 0;
 DROP TABLE IF EXISTS ai_analysis_report;
@@ -1583,5 +1571,4 @@ WHERE version_no = '20260714-unified-1.1'
   AND status = 'APPLYING';
 
 DROP TEMPORARY TABLE IF EXISTS tmp_ai_calendar_restore_guard;
-DROP TEMPORARY TABLE IF EXISTS tmp_ai_calendar_coverage_guard;
 DROP TEMPORARY TABLE IF EXISTS tmp_ai_trading_calendar_backup;

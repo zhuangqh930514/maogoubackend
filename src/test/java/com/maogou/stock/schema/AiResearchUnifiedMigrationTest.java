@@ -179,6 +179,27 @@ class AiResearchUnifiedMigrationTest {
     }
 
     @Test
+    void resetMigrationAcceptsAnEmptyLegacyCalendarWithoutInventingTradingDays() throws Exception {
+        try (Connection connection = MYSQL.createConnection("")) {
+            executeResource(connection, CURRENT_SCHEMA);
+            seedProtectedBusinessData(connection);
+            seedKeepTables(connection);
+
+            Map<String, List<Map<String, Object>>> protectedBefore = snapshot(connection, PROTECTED_BUSINESS_TABLES);
+            Map<String, List<Map<String, Object>>> keepBefore = snapshot(connection, KEEP_TABLES);
+
+            executeResource(connection, MIGRATION);
+
+            assertUnifiedTables(connection);
+            assertProtectedBusinessRowsUnchanged(connection, protectedBefore);
+            assertRowsUnchanged(connection, keepBefore);
+            assertThat(scalarLong(connection, "SELECT COUNT(*) FROM ai_trading_calendar")).isZero();
+            assertBaselineSeedIsRunnable(connection, 1001, false);
+            assertMigrationVersion(connection);
+        }
+    }
+
+    @Test
     void freshMySqlSchemaBuildsTheSameRunnableResearchDomain() throws Exception {
         try (Connection connection = MYSQL.createConnection("")) {
             executeResource(connection, FRESH_SCHEMA);
