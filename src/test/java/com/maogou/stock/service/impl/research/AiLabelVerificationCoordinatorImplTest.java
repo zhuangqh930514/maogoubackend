@@ -16,11 +16,14 @@ import com.maogou.stock.service.research.AiLabelVerificationCoordinator;
 import com.maogou.stock.service.research.AiPredictionEvaluationService;
 import com.maogou.stock.service.research.AiSampleLabelService;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.math.BigDecimal;
+import java.time.Clock;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.ZoneId;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -33,6 +36,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class AiLabelVerificationCoordinatorImplTest {
+
+    private static final LocalDateTime EVIDENCE_VERIFIED_AT =
+            LocalDateTime.of(2026, 7, 10, 16, 0, 5);
 
     @Test
     void maturesMarketLabelsOnceAndKeepsPerStockFailuresAsWarnings() {
@@ -62,6 +68,13 @@ class AiLabelVerificationCoordinatorImplTest {
         assertThat(result.successCount()).isEqualTo(1);
         assertThat(result.failedCount()).isEqualTo(1);
         assertThat(result.errors()).containsExactly("300058: K线暂不可用");
+        ArgumentCaptor<AiSampleLabelService.LabelBatch> batchCaptor =
+                ArgumentCaptor.forClass(AiSampleLabelService.LabelBatch.class);
+        verify(fixture.labelService).matureAndStore(batchCaptor.capture());
+        assertThat(batchCaptor.getValue().verifiedAt()).isEqualTo(EVIDENCE_VERIFIED_AT);
+        assertThat(batchCaptor.getValue().samples())
+                .allSatisfy(input -> assertThat(input.stockSeries().fetchedAt())
+                        .isBeforeOrEqualTo(batchCaptor.getValue().verifiedAt()));
         verify(fixture.evaluationService, never()).evaluateAndStore(any());
     }
 
@@ -99,9 +112,11 @@ class AiLabelVerificationCoordinatorImplTest {
         MarketDataService marketDataService = mock(MarketDataService.class);
         AiSampleLabelService labelService = mock(AiSampleLabelService.class);
         AiPredictionEvaluationService evaluationService = mock(AiPredictionEvaluationService.class);
+        ZoneId zone = ZoneId.systemDefault();
+        Clock clock = Clock.fixed(EVIDENCE_VERIFIED_AT.atZone(zone).toInstant(), zone);
         AiLabelVerificationCoordinator service = new AiLabelVerificationCoordinatorImpl(
                 predictionMapper, sampleMapper, labelMapper, calendarMapper, marketDataService,
-                labelService, evaluationService);
+                labelService, evaluationService, clock);
         return new Fixture(predictionMapper, sampleMapper, labelMapper, calendarMapper,
                 marketDataService, labelService, evaluationService, service);
     }
@@ -134,7 +149,7 @@ class AiLabelVerificationCoordinatorImplTest {
 
     private static KlineSeriesSnapshot series(String symbol, LocalDateTime asOf) {
         return KlineSeriesSnapshot.create(symbol, "day", "NONE", "EASTMONEY", asOf,
-                asOf.minusSeconds(1), List.of(
+                asOf.plusSeconds(3), List.of(
                         point(LocalDate.of(2026, 7, 6)),
                         point(LocalDate.of(2026, 7, 7)),
                         point(LocalDate.of(2026, 7, 8))));

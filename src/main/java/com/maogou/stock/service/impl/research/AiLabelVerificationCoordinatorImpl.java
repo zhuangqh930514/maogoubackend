@@ -22,6 +22,7 @@ import org.springframework.stereotype.Service;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Clock;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -44,6 +45,7 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
     private final MarketDataService marketDataService;
     private final AiSampleLabelService labelService;
     private final AiPredictionEvaluationService evaluationService;
+    private final Clock clock;
 
     public AiLabelVerificationCoordinatorImpl(
             AiPredictionMapper predictionMapper,
@@ -54,6 +56,20 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
             AiSampleLabelService labelService,
             AiPredictionEvaluationService evaluationService
     ) {
+        this(predictionMapper, sampleMapper, labelMapper, calendarMapper, marketDataService,
+                labelService, evaluationService, Clock.systemDefaultZone());
+    }
+
+    AiLabelVerificationCoordinatorImpl(
+            AiPredictionMapper predictionMapper,
+            AiSampleMapper sampleMapper,
+            AiSampleLabelMapper labelMapper,
+            AiTradingCalendarMapper calendarMapper,
+            MarketDataService marketDataService,
+            AiSampleLabelService labelService,
+            AiPredictionEvaluationService evaluationService,
+            Clock clock
+    ) {
         this.predictionMapper = predictionMapper;
         this.sampleMapper = sampleMapper;
         this.labelMapper = labelMapper;
@@ -61,6 +77,7 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
         this.marketDataService = marketDataService;
         this.labelService = labelService;
         this.evaluationService = evaluationService;
+        this.clock = Objects.requireNonNull(clock, "clock");
     }
 
     @Override
@@ -109,13 +126,14 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
                     sha256("MATURE_EMPTY|" + tradeDate + "|" + errors));
         }
 
+        LocalDateTime evidenceVerifiedAt = LocalDateTime.now(clock);
         List<AiSampleLabel> labels = labelService.matureAndStore(new AiSampleLabelService.LabelBatch(
                 inputs,
                 calendars.stream().map(this::tradingDay).toList(),
                 AiResearchContract.CALENDAR_VERSION,
                 AiResearchContract.LABEL_VERSION,
                 HORIZONS,
-                verifiedAt));
+                evidenceVerifiedAt));
         int matured = (int) labels.stream().filter(label -> "MATURED".equals(label.labelStatus)).count();
         int failed = errors.size();
         return new VerificationResult(samples.size(), matured, failed, errors,
