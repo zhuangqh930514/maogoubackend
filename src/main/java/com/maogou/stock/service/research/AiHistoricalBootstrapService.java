@@ -17,8 +17,20 @@ public interface AiHistoricalBootstrapService {
             Long strategyReleaseId,
             Long modelVersionId,
             String idempotencyKey,
-            LocalDateTime requestedAt
+            LocalDateTime requestedAt,
+            AiHistoricalEvidenceImportService.ColdStartPlan coldStartPlan
     ) {
+        public BootstrapRequest(
+                LocalDate startDate,
+                LocalDate endDate,
+                Long strategyReleaseId,
+                Long modelVersionId,
+                String idempotencyKey,
+                LocalDateTime requestedAt
+        ) {
+            this(startDate, endDate, strategyReleaseId, modelVersionId,
+                    idempotencyKey, requestedAt, null);
+        }
     }
 
     record BootstrapResult(

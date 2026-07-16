@@ -45,4 +45,24 @@ public interface AiSampleMapper extends BaseMapper<AiSample> {
             @Param("stockCode") String stockCode,
             @Param("tradeDate") LocalDate tradeDate
     );
+
+    @Select("""
+            SELECT s.*
+            FROM ai_sample s
+            WHERE s.trade_date < #{tradeDate}
+              AND s.quality_status IN ('READY', 'PARTIAL')
+              AND (
+                  SELECT COUNT(*)
+                  FROM ai_sample_label l
+                  WHERE l.sample_id = s.id
+                    AND l.label_version = #{labelVersion}
+              ) < 4
+            ORDER BY s.trade_date, s.stock_code, s.id
+            LIMIT #{limit}
+            """)
+    List<AiSample> selectPendingLabelCandidates(
+            @Param("tradeDate") LocalDate tradeDate,
+            @Param("labelVersion") String labelVersion,
+            @Param("limit") int limit
+    );
 }

@@ -27,10 +27,20 @@ public interface AiResearchUniverseService {
             LocalDate tradeDate,
             LocalDateTime asOfTime,
             String calendarVersion,
-            List<UniverseCandidate> configuredComponents
+            List<UniverseCandidate> configuredComponents,
+            boolean includeUserInterests
     ) {
         public SnapshotRequest {
             configuredComponents = configuredComponents == null ? List.of() : List.copyOf(configuredComponents);
+        }
+
+        public SnapshotRequest(
+                LocalDate tradeDate,
+                LocalDateTime asOfTime,
+                String calendarVersion,
+                List<UniverseCandidate> configuredComponents
+        ) {
+            this(tradeDate, asOfTime, calendarVersion, configuredComponents, true);
         }
     }
 

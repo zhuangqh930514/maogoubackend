@@ -64,6 +64,8 @@ import java.util.stream.Collectors;
 public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecutor {
 
     private static final List<Integer> PREDICTION_HORIZONS = List.of(1, 2, 3, 5);
+    private static final int HISTORICAL_LABEL_LIMIT = 50_000;
+    private static final int HISTORICAL_EVALUATION_LIMIT = 200_000;
 
     private final AiResearchUniverseService universeService;
     private final AiResearchUniverseSnapshotMapper universeSnapshotMapper;
@@ -127,9 +129,13 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
             case "WAIT_DATA_READY" -> waitDataReady(context);
             case "BUILD_SAMPLES" -> buildSamples(context);
             case "MATURE_SAMPLE_LABELS" -> matureSampleLabels(context);
+            case "MATURE_HISTORICAL_SAMPLE_LABELS" -> matureSampleLabels(
+                    context, "MATURE_HISTORICAL_SAMPLE_LABELS", HISTORICAL_LABEL_LIMIT);
             case "COMPUTE_FACTORS" -> computeFactors(context);
             case "GENERATE_PREDICTIONS" -> generatePredictions(context);
             case "EVALUATE_PREDICTIONS" -> evaluatePredictions(context);
+            case "EVALUATE_HISTORICAL_PREDICTIONS" -> evaluatePredictions(
+                    context, "EVALUATE_HISTORICAL_PREDICTIONS", HISTORICAL_EVALUATION_LIMIT);
             default -> throw new IllegalArgumentException("未知全局日研究步骤：" + stepKey);
         };
         context.checkpointLease();
@@ -441,13 +447,20 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
     }
 
     private StepOutcome matureSampleLabels(PipelineContext context) {
+        return matureSampleLabels(context, "MATURE_SAMPLE_LABELS", null);
+    }
+
+    private StepOutcome matureSampleLabels(PipelineContext context, String stepKey, Integer candidateLimit) {
         AiLabelVerificationCoordinator.VerificationResult result =
-                labelCoordinator.matureSampleLabels(context.tradeDate(), LocalDateTime.now());
+                candidateLimit == null
+                        ? labelCoordinator.matureSampleLabels(context.tradeDate(), context.startedAt())
+                        : labelCoordinator.matureSampleLabels(
+                                context.tradeDate(), context.startedAt(), candidateLimit);
         Map<String, Object> checkpoint = Map.of(
                 "maturedCount", result.successCount(),
                 "failedCount", result.failedCount(),
                 "labelFingerprint", result.outputFingerprint());
-        return success("MATURE_SAMPLE_LABELS", result.processedCount(), result.successCount(),
+        return success(stepKey, result.processedCount(), result.successCount(),
                 result.failedCount(), checkpoint, null, result.errors());
     }
 
@@ -506,7 +519,7 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
                     inputs, context.strategyReleaseId(), context.modelVersionId(), horizon,
                     Math.max(3, Math.min(10, samples.size())),
                     context.modelVersionId() == null ? "RULE_BASELINE" : "CHAMPION",
-                    LocalDateTime.now())));
+                    context.startedAt())));
         }
         Map<String, Object> checkpoint = Map.of(
                 "dataBatchId", batchId,
@@ -519,13 +532,20 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
     }
 
     private StepOutcome evaluatePredictions(PipelineContext context) {
+        return evaluatePredictions(context, "EVALUATE_PREDICTIONS", null);
+    }
+
+    private StepOutcome evaluatePredictions(PipelineContext context, String stepKey, Integer candidateLimit) {
         AiLabelVerificationCoordinator.VerificationResult result =
-                labelCoordinator.evaluatePredictions(context.tradeDate(), LocalDateTime.now());
+                candidateLimit == null
+                        ? labelCoordinator.evaluatePredictions(context.tradeDate(), LocalDateTime.now())
+                        : labelCoordinator.evaluatePredictions(
+                                context.tradeDate(), LocalDateTime.now(), candidateLimit);
         Map<String, Object> checkpoint = Map.of(
                 "evaluationCount", result.successCount(),
                 "failedCount", result.failedCount(),
                 "evaluationFingerprint", result.outputFingerprint());
-        return success("EVALUATE_PREDICTIONS", result.processedCount(), result.successCount(),
+        return success(stepKey, result.processedCount(), result.successCount(),
                 result.failedCount(), checkpoint, null, result.errors());
     }
 

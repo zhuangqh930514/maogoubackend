@@ -91,10 +91,26 @@ public final class ResearchLabPayloads {
             Long modelVersionId,
             Long parentPipelineRunId,
             Long userId,
-            String idempotencyKey
+            String idempotencyKey,
+            Integer historyTradingDays,
+            Integer historyStockCount
     ) {
         public ActionRequest {
             idempotencyKey = trim(idempotencyKey);
+        }
+
+        public ActionRequest(
+                LocalDate tradeDate,
+                LocalDate startDate,
+                LocalDate endDate,
+                Long strategyReleaseId,
+                Long modelVersionId,
+                Long parentPipelineRunId,
+                Long userId,
+                String idempotencyKey
+        ) {
+            this(tradeDate, startDate, endDate, strategyReleaseId, modelVersionId,
+                    parentPipelineRunId, userId, idempotencyKey, null, null);
         }
     }
 

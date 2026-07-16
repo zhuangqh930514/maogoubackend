@@ -1,6 +1,5 @@
 package com.maogou.stock.service.impl.research;
 
-import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.maogou.stock.domain.entity.research.AiPrediction;
 import com.maogou.stock.domain.entity.research.AiPredictionEvaluation;
 import com.maogou.stock.domain.entity.research.AiSample;
@@ -29,14 +28,20 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HexFormat;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 @Service
 public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCoordinator {
 
     private static final int CANDIDATE_LIMIT = 2000;
+    private static final int LABEL_BATCH_SIZE = 500;
+    private static final int EVALUATION_BATCH_SIZE = 2000;
     private static final List<Integer> HORIZONS = List.of(1, 2, 3, 5);
 
     private final AiPredictionMapper predictionMapper;
@@ -84,13 +89,19 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
 
     @Override
     public VerificationResult matureSampleLabels(LocalDate tradeDate, LocalDateTime verifiedAt) {
+        return matureSampleLabels(tradeDate, verifiedAt, CANDIDATE_LIMIT);
+    }
+
+    @Override
+    public VerificationResult matureSampleLabels(
+            LocalDate tradeDate,
+            LocalDateTime verifiedAt,
+            int candidateLimit
+    ) {
         requireTime(tradeDate, verifiedAt, "标签成熟");
-        List<AiSample> samples = sampleMapper.selectList(new QueryWrapper<AiSample>()
-                .lt("trade_date", tradeDate)
-                .in("quality_status", "READY", "PARTIAL")
-                .orderByAsc("trade_date")
-                .orderByAsc("stock_code")
-                .last("LIMIT " + CANDIDATE_LIMIT));
+        requireLimit(candidateLimit);
+        List<AiSample> samples = sampleMapper.selectPendingLabelCandidates(
+                tradeDate, AiResearchContract.LABEL_VERSION, candidateLimit);
         if (samples == null || samples.isEmpty()) {
             return empty("MATURE_LABELS", tradeDate);
         }
@@ -111,11 +122,24 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
                     sha256("MATURE_FAILED|" + tradeDate + "|" + message));
         }
 
+        Map<String, KlineSeriesSnapshot> stockSeries = new HashMap<>();
+        Set<String> unavailableStocks = new LinkedHashSet<>();
         List<AiSampleLabelService.SampleInput> inputs = new ArrayList<>();
         for (AiSample sample : samples) {
             try {
-                KlineSeriesSnapshot stock = marketDataService.klineAt(
-                        sample.stockCode, "day", 320, verifiedAt);
+                KlineSeriesSnapshot stock = stockSeries.get(sample.stockCode);
+                if (stock == null && !unavailableStocks.contains(sample.stockCode)) {
+                    try {
+                        stock = marketDataService.klineAt(sample.stockCode, "day", 320, verifiedAt);
+                        stockSeries.put(sample.stockCode, stock);
+                    } catch (RuntimeException exception) {
+                        unavailableStocks.add(sample.stockCode);
+                        errors.add(sample.stockCode + ": " + rootMessage(exception));
+                    }
+                }
+                if (stock == null) {
+                    continue;
+                }
                 inputs.add(new AiSampleLabelService.SampleInput(
                         sample.id, sample.stockCode, sample.tradeDate, sample.tradableStatus,
                         sample.sourceFingerprint, stock, benchmark, null));
@@ -129,15 +153,20 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
         }
 
         LocalDateTime evidenceVerifiedAt = LocalDateTime.now(clock);
-        List<AiSampleLabel> labels = labelService.matureAndStore(new AiSampleLabelService.LabelBatch(
-                inputs,
-                calendars.stream().map(this::tradingDay).toList(),
-                AiResearchContract.CALENDAR_VERSION,
-                AiResearchContract.LABEL_VERSION,
-                HORIZONS,
-                evidenceVerifiedAt));
+        List<AiSampleLabel> labels = new ArrayList<>();
+        for (int offset = 0; offset < inputs.size(); offset += LABEL_BATCH_SIZE) {
+            List<AiSampleLabelService.SampleInput> chunk = inputs.subList(
+                    offset, Math.min(offset + LABEL_BATCH_SIZE, inputs.size()));
+            labels.addAll(labelService.matureAndStore(new AiSampleLabelService.LabelBatch(
+                    chunk,
+                    calendars.stream().map(this::tradingDay).toList(),
+                    AiResearchContract.CALENDAR_VERSION,
+                    AiResearchContract.LABEL_VERSION,
+                    HORIZONS,
+                    evidenceVerifiedAt)));
+        }
         int matured = (int) labels.stream().filter(label -> "MATURED".equals(label.labelStatus)).count();
-        int failed = errors.size();
+        int failed = unavailableStocks.size();
         return new VerificationResult(samples.size(), matured, failed, errors,
                 sha256("MATURE|" + tradeDate + "|" + labels.stream().map(label -> String.valueOf(label.id)).toList()
                         + "|" + errors));
@@ -145,27 +174,52 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
 
     @Override
     public VerificationResult evaluatePredictions(LocalDate tradeDate, LocalDateTime evaluatedAt) {
+        return evaluatePredictions(tradeDate, evaluatedAt, CANDIDATE_LIMIT);
+    }
+
+    @Override
+    public VerificationResult evaluatePredictions(
+            LocalDate tradeDate,
+            LocalDateTime evaluatedAt,
+            int candidateLimit
+    ) {
         requireTime(tradeDate, evaluatedAt, "预测评价");
-        List<AiPrediction> predictions = predictionMapper.selectUnevaluatedCandidates(
-                tradeDate, AiPredictionEvaluationServiceImpl.VERSION, CANDIDATE_LIMIT);
-        if (predictions == null || predictions.isEmpty()) {
+        requireLimit(candidateLimit);
+        int processed = 0;
+        List<AiPredictionEvaluation> evaluations = new ArrayList<>();
+        List<String> errors = new ArrayList<>();
+        while (processed < candidateLimit) {
+            int limit = Math.min(EVALUATION_BATCH_SIZE, candidateLimit - processed);
+            List<AiPrediction> predictions = predictionMapper.selectUnevaluatedCandidates(
+                    tradeDate, AiResearchContract.LABEL_VERSION,
+                    AiPredictionEvaluationServiceImpl.VERSION, limit);
+            if (predictions == null || predictions.isEmpty()) {
+                break;
+            }
+            List<Long> sampleIds = predictions.stream().map(prediction -> prediction.sampleId)
+                    .filter(Objects::nonNull).distinct().toList();
+            List<AiSampleLabel> labels = sampleIds.isEmpty() ? List.of()
+                    : labelMapper.selectMaturedForSamples(sampleIds, AiResearchContract.LABEL_VERSION);
+            List<AiPredictionEvaluation> stored = evaluationService.evaluateAndStore(
+                    new AiPredictionEvaluationService.EvaluationBatch(
+                            predictions.stream().map(this::predictionInput).toList(),
+                            labels == null ? List.of() : labels,
+                            AiPredictionEvaluationServiceImpl.VERSION,
+                            evaluatedAt));
+            processed += predictions.size();
+            if (stored == null || stored.isEmpty()) {
+                errors.add("成熟标签存在但没有生成预测评价，已停止本轮批量评价");
+                break;
+            }
+            evaluations.addAll(stored);
+        }
+        if (processed == 0) {
             return empty("EVALUATE_PREDICTIONS", tradeDate);
         }
-        List<Long> sampleIds = predictions.stream().map(prediction -> prediction.sampleId)
-                .filter(Objects::nonNull).distinct().toList();
-        List<AiSampleLabel> labels = labelMapper.selectList(new QueryWrapper<AiSampleLabel>()
-                .in("sample_id", sampleIds)
-                .eq("label_version", AiResearchContract.LABEL_VERSION)
-                .eq("label_status", "MATURED"));
-        List<AiPredictionEvaluation> evaluations = evaluationService.evaluateAndStore(
-                new AiPredictionEvaluationService.EvaluationBatch(
-                        predictions.stream().map(this::predictionInput).toList(),
-                        labels,
-                        AiPredictionEvaluationServiceImpl.VERSION,
-                        evaluatedAt));
-        return new VerificationResult(predictions.size(), evaluations.size(), 0, List.of(),
+        return new VerificationResult(processed, evaluations.size(), errors.size(), errors,
                 sha256("EVALUATE|" + tradeDate + "|"
-                        + evaluations.stream().map(value -> String.valueOf(value.id)).toList()));
+                        + evaluations.stream().map(value -> String.valueOf(value.id)).toList()
+                        + "|" + errors));
     }
 
     private List<AiTradingCalendar> ensureCalendars(KlineSeriesSnapshot benchmark, LocalDateTime verifiedAt) {
@@ -218,6 +272,12 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
     private static void requireTime(LocalDate tradeDate, LocalDateTime at, String type) {
         if (tradeDate == null || at == null) {
             throw new IllegalArgumentException(type + "缺少交易日或执行时点");
+        }
+    }
+
+    private static void requireLimit(int candidateLimit) {
+        if (candidateLimit <= 0 || candidateLimit > 200_000) {
+            throw new IllegalArgumentException("候选样本上限必须在 1 到 200000 之间");
         }
     }
 

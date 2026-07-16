@@ -7,6 +7,10 @@ import com.maogou.stock.mapper.research.AiPipelineRunMapper;
 import com.maogou.stock.mapper.research.AiPipelineStepMapper;
 import com.maogou.stock.service.research.AiGlobalDailyResearchExecutor;
 import com.maogou.stock.service.research.AiHistoricalBootstrapService;
+import com.maogou.stock.service.research.AiHistoricalEvidenceImportService;
+import com.maogou.stock.service.research.AiMonthlyTrainingRunner;
+import com.maogou.stock.service.research.AiResearchCycleResult;
+import com.maogou.stock.service.research.AiWeeklyEvolutionRunner;
 import com.maogou.stock.service.research.HistoricalUniverseSourceService;
 import org.junit.jupiter.api.Test;
 
@@ -31,8 +35,7 @@ import static org.mockito.Mockito.when;
 class AiHistoricalBootstrapServiceImplTest {
 
     private static final List<String> REPLAY_STEPS = List.of(
-            "BUILD_SAMPLES", "MATURE_SAMPLE_LABELS", "COMPUTE_FACTORS",
-            "GENERATE_PREDICTIONS", "EVALUATE_PREDICTIONS");
+            "BUILD_SAMPLES", "COMPUTE_FACTORS", "GENERATE_PREDICTIONS");
 
     @Test
     void rejectsMissingHistoricalUniverseWithoutUsingCurrentUniverseOrFetchingData() {
@@ -94,12 +97,79 @@ class AiHistoricalBootstrapServiceImplTest {
         for (int index = 0; index < 24; index++) {
             assertThat(executions.get(dates.get(index))).isEqualTo(REPLAY_STEPS.size());
         }
-        assertThat(executions.get(failedDate)).isEqualTo(REPLAY_STEPS.size() + 3);
-        for (int index = 25; index < dates.size(); index++) {
+        assertThat(executions.get(failedDate)).isEqualTo(REPLAY_STEPS.size() + 2);
+        for (int index = 25; index < dates.size() - 1; index++) {
             assertThat(executions.get(dates.get(index))).isEqualTo(REPLAY_STEPS.size());
         }
+        assertThat(executions.get(dates.get(dates.size() - 1)))
+                .isEqualTo(REPLAY_STEPS.size() + 2);
         assertThat(fixture.runStore).hasSize(1);
         assertThat(fixture.stepStore).hasSize(3);
+    }
+
+    @Test
+    void importsHistoricalEvidenceBeforeReplayingTheColdStartPlan() {
+        Fixture fixture = fixture();
+        LocalDate date = LocalDate.of(2026, 1, 5);
+        AiHistoricalEvidenceImportService importer = mock(AiHistoricalEvidenceImportService.class);
+        AiHistoricalEvidenceImportService.ColdStartPlan plan = new AiHistoricalEvidenceImportService.ColdStartPlan(
+                date, date, 120, 125, 200, List.of(date));
+        when(importer.importEvidence(any())).thenReturn(new AiHistoricalEvidenceImportService.ImportResult(
+                1, 0, 200, "imported", List.of()));
+        when(fixture.sourceService.load(any(), any())).thenReturn(ready(date, 1));
+        when(fixture.executor.execute(anyString(), any())).thenAnswer(invocation -> {
+            AiGlobalDailyResearchExecutor.PipelineContext context = invocation.getArgument(1);
+            return outcome(invocation.getArgument(0), context.tradeDate());
+        });
+        AiHistoricalBootstrapService service = new AiHistoricalBootstrapServiceImpl(
+                fixture.runMapper, fixture.stepMapper, importer, fixture.sourceService,
+                fixture.executor, new ObjectMapper().findAndRegisterModules());
+
+        AiHistoricalBootstrapService.BootstrapResult result = service.run(
+                new AiHistoricalBootstrapService.BootstrapRequest(
+                        date, date, 11L, null, "HISTORICAL:IMPORTED", LocalDateTime.of(2026, 7, 14, 10, 0), plan));
+
+        assertThat(result.status()).isEqualTo("SUCCESS");
+        verify(importer).importEvidence(any());
+        verify(fixture.sourceService).load(date, date.atTime(16, 0));
+        verify(fixture.executor).execute(
+                org.mockito.ArgumentMatchers.eq("MATURE_HISTORICAL_SAMPLE_LABELS"), any());
+        verify(fixture.executor).execute(
+                org.mockito.ArgumentMatchers.eq("EVALUATE_HISTORICAL_PREDICTIONS"), any());
+    }
+
+    @Test
+    void updatesResearchAndTrainsCandidateAfterHistoricalReplay() {
+        Fixture fixture = fixture();
+        LocalDate date = LocalDate.of(2026, 1, 5);
+        AiHistoricalEvidenceImportService importer = mock(AiHistoricalEvidenceImportService.class);
+        AiWeeklyEvolutionRunner weeklyRunner = mock(AiWeeklyEvolutionRunner.class);
+        AiMonthlyTrainingRunner trainingRunner = mock(AiMonthlyTrainingRunner.class);
+        AiHistoricalEvidenceImportService.ColdStartPlan plan = new AiHistoricalEvidenceImportService.ColdStartPlan(
+                date, date, 120, 125, 200, List.of(date));
+        when(importer.importEvidence(any())).thenReturn(new AiHistoricalEvidenceImportService.ImportResult(
+                1, 0, 200, "imported", List.of()));
+        when(weeklyRunner.run(any(), any())).thenReturn(
+                new AiResearchCycleResult("SUCCESS", 10, 10, 0, "因子研究已更新"));
+        when(trainingRunner.run(any(), any())).thenReturn(
+                new AiResearchCycleResult("SUCCESS", 24000, 1, 0, "候选模型已生成"));
+        when(fixture.sourceService.load(any(), any())).thenReturn(ready(date, 1));
+        when(fixture.executor.execute(anyString(), any())).thenAnswer(invocation -> {
+            AiGlobalDailyResearchExecutor.PipelineContext context = invocation.getArgument(1);
+            return outcome(invocation.getArgument(0), context.tradeDate());
+        });
+        AiHistoricalBootstrapService service = new AiHistoricalBootstrapServiceImpl(
+                fixture.runMapper, fixture.stepMapper, importer, fixture.sourceService,
+                fixture.executor, weeklyRunner, trainingRunner,
+                new ObjectMapper().findAndRegisterModules());
+
+        AiHistoricalBootstrapService.BootstrapResult result = service.run(
+                new AiHistoricalBootstrapService.BootstrapRequest(
+                        date, date, 11L, null, "HISTORICAL:TRAIN", LocalDateTime.of(2026, 7, 14, 10, 0), plan));
+
+        assertThat(result.status()).isEqualTo("SUCCESS");
+        verify(weeklyRunner).run(any(), any());
+        verify(trainingRunner).run(any(), any());
     }
 
     private static AiHistoricalBootstrapService service(Fixture fixture) {

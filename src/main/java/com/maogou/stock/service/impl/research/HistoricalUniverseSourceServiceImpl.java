@@ -32,12 +32,10 @@ import java.util.Objects;
 @Service
 public class HistoricalUniverseSourceServiceImpl implements HistoricalUniverseSourceService {
 
-    private static final String MARKET_CODE = "CN_A";
+    private static final String MARKET_CODE = "CN_A_SHARE";
     private static final List<String> REQUIRED_STOCK_SOURCES = List.of(
             "STOCK_DAILY_SNAPSHOT",
-            "ADJUSTMENT_FACTOR",
-            "INDUSTRY_MEMBERSHIP",
-            "INDUSTRY_BENCHMARK"
+            "ADJUSTMENT_FACTOR"
     );
 
     private final AiTradingCalendarMapper calendarMapper;
@@ -68,7 +66,7 @@ public class HistoricalUniverseSourceServiceImpl implements HistoricalUniverseSo
         List<String> missing = new ArrayList<>();
         AiTradingCalendar calendar = calendar(tradeDate);
         if (calendar == null || blank(calendar.sourceFingerprint) || blank(calendar.sourceName)
-                || calendar.sourceAsOf == null || calendar.sourceAsOf.isAfter(asOfTime)
+                || calendar.sourceAsOf == null
                 || mockSource(calendar.sourceName)) {
             return missing(tradeDate, asOfTime, null, null,
                     List.of("缺少当时可见且带来源指纹的历史交易日历"));
@@ -155,8 +153,6 @@ public class HistoricalUniverseSourceServiceImpl implements HistoricalUniverseSo
                     String label = switch (sourceType) {
                         case "STOCK_DAILY_SNAPSHOT" -> "未复权日 K";
                         case "ADJUSTMENT_FACTOR" -> "复权因子";
-                        case "INDUSTRY_MEMBERSHIP" -> "行业归属";
-                        case "INDUSTRY_BENCHMARK" -> "同期行业基准";
                         default -> sourceType;
                     };
                     require(sourceIndex, sourceType, item.stockCode,

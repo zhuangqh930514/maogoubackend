@@ -8,7 +8,19 @@ public interface AiLabelVerificationCoordinator {
 
     VerificationResult matureSampleLabels(LocalDate tradeDate, LocalDateTime verifiedAt);
 
+    VerificationResult matureSampleLabels(
+            LocalDate tradeDate,
+            LocalDateTime verifiedAt,
+            int candidateLimit
+    );
+
     VerificationResult evaluatePredictions(LocalDate tradeDate, LocalDateTime evaluatedAt);
+
+    VerificationResult evaluatePredictions(
+            LocalDate tradeDate,
+            LocalDateTime evaluatedAt,
+            int candidateLimit
+    );
 
     record VerificationResult(
             int processedCount,

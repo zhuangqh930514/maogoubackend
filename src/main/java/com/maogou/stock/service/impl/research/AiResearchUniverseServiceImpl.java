@@ -141,44 +141,46 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
             add(merged, configured);
         }
 
-        List<WatchStock> watchStocks = watchStockMapper.selectList(new QueryWrapper<WatchStock>());
-        for (WatchStock watch : watchStocks) {
-            add(merged, new UniverseCandidate(
-                    watch.stockCode,
-                    watch.stockName,
-                    watch.market,
-                    "USER_WATCHLIST",
-                    true,
-                    null,
-                    dateOrDefault(watch.createdAt, request.tradeDate())
-            ));
-        }
+        if (request.includeUserInterests()) {
+            List<WatchStock> watchStocks = watchStockMapper.selectList(new QueryWrapper<WatchStock>());
+            for (WatchStock watch : watchStocks) {
+                add(merged, new UniverseCandidate(
+                        watch.stockCode,
+                        watch.stockName,
+                        watch.market,
+                        "USER_WATCHLIST",
+                        true,
+                        null,
+                        dateOrDefault(watch.createdAt, request.tradeDate())
+                ));
+            }
 
-        Map<String, Integer> positionQuantity = new LinkedHashMap<>();
-        Map<String, TradeRecord> latestTrade = new LinkedHashMap<>();
-        for (TradeRecord trade : tradeRecordMapper.selectList(new QueryWrapper<TradeRecord>())) {
-            if (trade.stockCode == null || trade.quantity == null) {
-                continue;
+            Map<String, Integer> positionQuantity = new LinkedHashMap<>();
+            Map<String, TradeRecord> latestTrade = new LinkedHashMap<>();
+            for (TradeRecord trade : tradeRecordMapper.selectList(new QueryWrapper<TradeRecord>())) {
+                if (trade.stockCode == null || trade.quantity == null) {
+                    continue;
+                }
+                String accountPosition = trade.userId + "|" + normalizeCode(trade.stockCode);
+                int signedQuantity = trade.side == TradeSide.SELL ? -trade.quantity : trade.quantity;
+                positionQuantity.merge(accountPosition, signedQuantity, Integer::sum);
+                latestTrade.put(accountPosition, trade);
             }
-            String accountPosition = trade.userId + "|" + normalizeCode(trade.stockCode);
-            int signedQuantity = trade.side == TradeSide.SELL ? -trade.quantity : trade.quantity;
-            positionQuantity.merge(accountPosition, signedQuantity, Integer::sum);
-            latestTrade.put(accountPosition, trade);
-        }
-        for (Map.Entry<String, Integer> position : positionQuantity.entrySet()) {
-            if (position.getValue() <= 0) {
-                continue;
+            for (Map.Entry<String, Integer> position : positionQuantity.entrySet()) {
+                if (position.getValue() <= 0) {
+                    continue;
+                }
+                TradeRecord trade = latestTrade.get(position.getKey());
+                add(merged, new UniverseCandidate(
+                        trade.stockCode,
+                        trade.stockName,
+                        inferMarket(trade.stockCode),
+                        "USER_HOLDING",
+                        true,
+                        null,
+                        dateOrDefault(trade.tradedAt, request.tradeDate())
+                ));
             }
-            TradeRecord trade = latestTrade.get(position.getKey());
-            add(merged, new UniverseCandidate(
-                    trade.stockCode,
-                    trade.stockName,
-                    inferMarket(trade.stockCode),
-                    "USER_HOLDING",
-                    true,
-                    null,
-                    dateOrDefault(trade.tradedAt, request.tradeDate())
-            ));
         }
 
         return merged.values().stream()
@@ -199,15 +201,19 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
         item.market = candidate.market();
         item.listedStatus = "LISTED";
         item.sourceType = String.join(",", candidate.sourceTypes());
-        item.included = candidate.included() ? 1 : 0;
-        item.inclusionReason = candidate.included()
+        boolean effective = candidate.included()
+                && (candidate.effectiveFrom() == null || !candidate.effectiveFrom().isAfter(tradeDate));
+        item.included = effective ? 1 : 0;
+        item.inclusionReason = effective
                 ? "由" + String.join("、", candidate.sourceTypes()) + "纳入研究池"
                 : null;
-        item.excludeReason = candidate.included() ? null : candidate.excludeReason();
+        item.excludeReason = effective ? null
+                : candidate.effectiveFrom() != null && candidate.effectiveFrom().isAfter(tradeDate)
+                ? "目标交易日尚未进入研究范围" : candidate.excludeReason();
         item.effectiveFrom = candidate.effectiveFrom() == null ? tradeDate : candidate.effectiveFrom();
         item.evidenceJson = json(Map.of(
                 "sourceTypes", candidate.sourceTypes(),
-                "included", candidate.included(),
+                "included", effective,
                 "effectiveFrom", item.effectiveFrom.toString(),
                 "excludeReason", candidate.excludeReason() == null ? "" : candidate.excludeReason()
         ));

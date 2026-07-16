@@ -98,7 +98,8 @@ public class ResearchOperationsController {
 
     private static ResearchLabPayloads.ActionRequest value(ResearchLabPayloads.ActionRequest request) {
         return request == null
-                ? new ResearchLabPayloads.ActionRequest(null, null, null, null, null, null, null, null)
+                ? new ResearchLabPayloads.ActionRequest(
+                        null, null, null, null, null, null, null, null, null, null)
                 : request;
     }
 }

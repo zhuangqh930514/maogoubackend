@@ -15,6 +15,7 @@ import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
 import com.maogou.stock.service.research.AiResearchCycleResult;
 import com.maogou.stock.service.research.AiGlobalDailyResearchService;
 import com.maogou.stock.service.research.AiHistoricalBootstrapService;
+import com.maogou.stock.service.research.AiHistoricalEvidenceImportService;
 import com.maogou.stock.service.research.AiLabelVerificationCoordinator;
 import com.maogou.stock.service.research.AiMonthlyTrainingRunner;
 import com.maogou.stock.service.research.AiResearchOperationsService;
@@ -49,6 +50,7 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
     private final AiStrategyGovernanceEventMapper eventMapper;
     private final AiGlobalDailyResearchService dailyResearchService;
     private final AiHistoricalBootstrapService bootstrapService;
+    private final AiHistoricalEvidenceImportService historicalEvidenceImportService;
     private final AiLabelVerificationCoordinator labelCoordinator;
     private final AiWeeklyEvolutionRunner weeklyRunner;
     private final AiMonthlyTrainingRunner trainingRunner;
@@ -65,6 +67,7 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
             AiStrategyGovernanceEventMapper eventMapper,
             AiGlobalDailyResearchService dailyResearchService,
             AiHistoricalBootstrapService bootstrapService,
+            AiHistoricalEvidenceImportService historicalEvidenceImportService,
             AiLabelVerificationCoordinator labelCoordinator,
             AiWeeklyEvolutionRunner weeklyRunner,
             AiMonthlyTrainingRunner trainingRunner,
@@ -80,6 +83,7 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
         this.eventMapper = eventMapper;
         this.dailyResearchService = dailyResearchService;
         this.bootstrapService = bootstrapService;
+        this.historicalEvidenceImportService = historicalEvidenceImportService;
         this.labelCoordinator = labelCoordinator;
         this.weeklyRunner = weeklyRunner;
         this.trainingRunner = trainingRunner;
@@ -109,19 +113,30 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
             Long actorUserId,
             ResearchLabPayloads.ActionRequest request
     ) {
-        if (request.startDate() == null || request.endDate() == null) {
-            throw new IllegalArgumentException("历史冷启动必须指定开始和结束日期");
+        int trainingTradingDays = request.historyTradingDays() == null ? 120 : request.historyTradingDays();
+        int targetStockCount = request.historyStockCount() == null ? 200 : request.historyStockCount();
+        if (trainingTradingDays < 120 || trainingTradingDays > 180) {
+            throw new IllegalArgumentException("历史训练交易日必须在 120 到 180 之间");
         }
+        if (targetStockCount < 200 || targetStockCount > 250) {
+            throw new IllegalArgumentException("历史训练股票数必须在 200 到 250 之间");
+        }
+        LocalDate requestedEndDate = request.endDate() == null
+                ? request.tradeDate() == null ? LocalDate.now() : request.tradeDate()
+                : request.endDate();
+        AiHistoricalEvidenceImportService.ColdStartPlan plan = historicalEvidenceImportService.plan(
+                requestedEndDate, trainingTradingDays, targetStockCount);
         AiStrategyRelease strategy = strategy(request.strategyReleaseId());
         Long modelId = request.modelVersionId() == null ? strategy.modelVersionId : request.modelVersionId();
-        String input = fingerprint("GLOBAL_HISTORICAL_BOOTSTRAP/1.0.0", request.startDate(),
-                request.endDate(), strategy.id, modelId);
+        String input = fingerprint("GLOBAL_HISTORICAL_BOOTSTRAP/2.0.0", plan.startDate(),
+                plan.endDate(), plan.trainingTradingDays(), plan.targetStockCount(), strategy.id, modelId);
         String key = key(request.idempotencyKey(), "MANUAL:GLOBAL_HISTORICAL_BOOTSTRAP:"
-                + request.startDate() + ":" + request.endDate() + ":" + strategy.id);
-        AiPipelineRun run = prepareRun("GLOBAL", null, null, request.endDate(),
+                + plan.startDate() + ":" + plan.endDate() + ":" + plan.trainingTradingDays()
+                + ":" + plan.targetStockCount() + ":" + strategy.id);
+        AiPipelineRun run = prepareRun("GLOBAL", null, null, plan.endDate(),
                 "GLOBAL_HISTORICAL_BOOTSTRAP", strategy.id, modelId, key, input, actorUserId, null);
         submitExistingRun(run, () -> bootstrapService.run(new AiHistoricalBootstrapService.BootstrapRequest(
-                request.startDate(), request.endDate(), strategy.id, modelId, key, LocalDateTime.now())));
+                plan.startDate(), plan.endDate(), strategy.id, modelId, key, LocalDateTime.now(), plan)));
         return accepted(run);
     }
 

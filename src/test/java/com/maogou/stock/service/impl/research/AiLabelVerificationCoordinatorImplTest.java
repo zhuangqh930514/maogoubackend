@@ -32,6 +32,7 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -45,8 +46,9 @@ class AiLabelVerificationCoordinatorImplTest {
         Fixture fixture = fixture();
         LocalDate tradeDate = LocalDate.of(2026, 7, 10);
         LocalDateTime verifiedAt = tradeDate.atTime(16, 0);
-        when(fixture.sampleMapper.selectList(any())).thenReturn(List.of(
-                sample(21L, "600519"), sample(22L, "300058")));
+        when(fixture.sampleMapper.selectPendingLabelCandidates(
+                tradeDate, "LABEL/1.0.0", 2000)).thenReturn(List.of(
+                sample(21L, "600519"), sample(23L, "600519"), sample(22L, "300058")));
         when(fixture.marketDataService.klineAt("000300.SH", "day", 320, verifiedAt))
                 .thenReturn(series("000300.SH", verifiedAt));
         when(fixture.marketDataService.klineAt("600519", "day", 320, verifiedAt))
@@ -64,7 +66,7 @@ class AiLabelVerificationCoordinatorImplTest {
         AiLabelVerificationCoordinator.VerificationResult result = fixture.service.matureSampleLabels(
                 tradeDate, verifiedAt);
 
-        assertThat(result.processedCount()).isEqualTo(2);
+        assertThat(result.processedCount()).isEqualTo(3);
         assertThat(result.successCount()).isEqualTo(1);
         assertThat(result.failedCount()).isEqualTo(1);
         assertThat(result.errors()).containsExactly("300058: K线暂不可用");
@@ -72,10 +74,12 @@ class AiLabelVerificationCoordinatorImplTest {
                 ArgumentCaptor.forClass(AiSampleLabelService.LabelBatch.class);
         verify(fixture.labelService).matureAndStore(batchCaptor.capture());
         assertThat(batchCaptor.getValue().verifiedAt()).isEqualTo(EVIDENCE_VERIFIED_AT);
+        assertThat(batchCaptor.getValue().samples()).hasSize(2);
         assertThat(batchCaptor.getValue().samples())
                 .allSatisfy(input -> assertThat(input.stockSeries().fetchedAt())
                         .isBeforeOrEqualTo(batchCaptor.getValue().verifiedAt()));
         verify(fixture.evaluationService, never()).evaluateAndStore(any());
+        verify(fixture.marketDataService, times(1)).klineAt("600519", "day", 320, verifiedAt);
     }
 
     @Test
@@ -84,13 +88,14 @@ class AiLabelVerificationCoordinatorImplTest {
         LocalDate tradeDate = LocalDate.of(2026, 7, 10);
         AiPrediction prediction = prediction(31L, 21L, "600519");
         when(fixture.predictionMapper.selectUnevaluatedCandidates(
-                tradeDate, AiPredictionEvaluationServiceImpl.VERSION, 2000))
-                .thenReturn(List.of(prediction));
+                tradeDate, "LABEL/1.0.0", AiPredictionEvaluationServiceImpl.VERSION, 2000))
+                .thenReturn(List.of(prediction), List.of());
         AiSampleLabel label = new AiSampleLabel();
         label.id = 81L;
         label.sampleId = 21L;
         label.labelStatus = "MATURED";
-        when(fixture.labelMapper.selectList(any())).thenReturn(List.of(label));
+        when(fixture.labelMapper.selectMaturedForSamples(List.of(21L), "LABEL/1.0.0"))
+                .thenReturn(List.of(label));
         AiPredictionEvaluation evaluation = new AiPredictionEvaluation();
         evaluation.id = 82L;
         when(fixture.evaluationService.evaluateAndStore(any())).thenReturn(List.of(evaluation));

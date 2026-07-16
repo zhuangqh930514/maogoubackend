@@ -12,6 +12,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.client.RestClientException;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import java.math.BigDecimal;
@@ -29,12 +30,14 @@ import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 @Component
-public class EastMoneyMarketDataClient implements ResearchMarketDataProvider {
+public class EastMoneyMarketDataClient implements ResearchMarketDataProvider, HistoricalMarketDataProvider {
 
     private static final Pattern NEWS_PATTERN = Pattern.compile("var ajaxResult=(\\{.*});?", Pattern.DOTALL);
     private static final DateTimeFormatter NEWS_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
@@ -69,20 +72,48 @@ public class EastMoneyMarketDataClient implements ResearchMarketDataProvider {
             int limit,
             LocalDateTime asOfTime
     ) {
+        return fetchKline(symbol, period, limit, asOfTime, "NONE");
+    }
+
+    @Override
+    public KlineSeriesSnapshot fetchHistoricalKline(
+            String symbol,
+            int limit,
+            LocalDateTime asOfTime,
+            String adjustmentMode
+    ) {
+        return fetchKline(symbol, "day", limit, asOfTime, adjustmentMode);
+    }
+
+    private KlineSeriesSnapshot fetchKline(
+            String symbol,
+            String period,
+            int limit,
+            LocalDateTime asOfTime,
+            String adjustmentMode
+    ) {
         if (asOfTime == null) {
             throw new IllegalArgumentException("K 线 asOfTime 不能为空");
         }
-        String normalizedPeriod = period == null || period.isBlank() ? "day" : period.toLowerCase(Locale.ROOT);
+        String normalizedPeriod = period == null || period.isBlank()
+                ? "day" : period.toLowerCase(Locale.ROOT);
         String klt = switch (normalizedPeriod) {
             case "week", "weekly" -> "102";
             case "month", "monthly" -> "103";
             default -> "101";
         };
+        String normalizedAdjustment = adjustmentMode == null
+                ? "NONE" : adjustmentMode.trim().toUpperCase(Locale.ROOT);
+        String fqt = switch (normalizedAdjustment) {
+            case "NONE" -> "0";
+            case "QFQ" -> "1";
+            default -> throw new IllegalArgumentException("不支持的历史复权模式：" + adjustmentMode);
+        };
         URI uri = UriComponentsBuilder
                 .fromHttpUrl("https://push2his.eastmoney.com/api/qt/stock/kline/get")
                 .queryParam("secid", eastMoneySecurityId(symbol))
                 .queryParam("klt", klt)
-                .queryParam("fqt", "0")
+                .queryParam("fqt", fqt)
                 .queryParam("lmt", Math.max(1, Math.min(limit, 500)))
                 .queryParam("end", asOfTime.toLocalDate().format(DateTimeFormatter.BASIC_ISO_DATE))
                 .queryParam("fields1", "f1,f2,f3,f4,f5,f6")
@@ -126,11 +157,91 @@ public class EastMoneyMarketDataClient implements ResearchMarketDataProvider {
                 throw new IllegalStateException("指定研究时点前没有东方财富 K 线");
             }
             return KlineSeriesSnapshot.create(
-                    symbol, normalizedPeriod, "NONE", providerCode(), asOfTime, LocalDateTime.now(), visible);
+                    symbol, normalizedPeriod, normalizedAdjustment,
+                    providerCode(), asOfTime, LocalDateTime.now(), visible);
         } catch (RuntimeException exception) {
             throw exception;
         } catch (Exception exception) {
             throw new IllegalStateException("获取东方财富 K 线失败：" + exception.getMessage(), exception);
+        }
+    }
+
+    @Override
+    public UniverseCatalog fetchCurrentListedUniverse(int limit, LocalDateTime requestedAt) {
+        if (requestedAt == null) {
+            throw new IllegalArgumentException("历史股票目录缺少请求时间");
+        }
+        int size = Math.max(1, Math.min(limit, 1000));
+        int bucketSize = Math.min(1000, Math.max(50, (int) Math.ceil(size / 4d) + 25));
+        List<CatalogBucket> buckets = List.of(
+                new CatalogBucket("m:0+t:6", "SZ"),
+                new CatalogBucket("m:0+t:80", "SZ"),
+                new CatalogBucket("m:1+t:2", "SH"),
+                new CatalogBucket("m:1+t:23", "SH")
+        );
+        Map<String, Security> byCode = new LinkedHashMap<>();
+        for (CatalogBucket bucket : buckets) {
+            fetchCatalogBucket(bucket, bucketSize, requestedAt).forEach(
+                    security -> byCode.putIfAbsent(security.stockCode(), security));
+        }
+        List<Security> securities = byCode.values().stream()
+                .sorted(Comparator.comparing(security -> sha256(security.stockCode())))
+                .limit(size)
+                .toList();
+        if (securities.isEmpty()) {
+            throw new IllegalStateException("东方财富 A 股目录没有带上市日期的有效证券");
+        }
+        String fingerprint = sha256(securities.toString());
+        return new UniverseCatalog(
+                providerCode(), LocalDateTime.now(),
+                "https://push2.eastmoney.com/api/qt/clist/get#four-board-current-listed",
+                fingerprint, securities);
+    }
+
+    private List<Security> fetchCatalogBucket(
+            CatalogBucket bucket,
+            int size,
+            LocalDateTime requestedAt
+    ) {
+        URI uri = UriComponentsBuilder
+                .fromHttpUrl("https://push2.eastmoney.com/api/qt/clist/get")
+                .queryParam("pn", 1)
+                .queryParam("pz", size)
+                .queryParam("po", 0)
+                .queryParam("np", 1)
+                .queryParam("fltt", 2)
+                .queryParam("invt", 2)
+                .queryParam("fid", "f12")
+                .queryParam("fs", bucket.filter())
+                .queryParam("fields", "f12,f14,f13,f26")
+                .build(false)
+                .toUri();
+        try {
+            JsonNode rows = objectMapper.readTree(getText(uri, "https://quote.eastmoney.com/"))
+                    .path("data").path("diff");
+            if (!rows.isArray()) {
+                throw new IllegalStateException("东方财富 A 股目录返回为空");
+            }
+            List<Security> securities = new ArrayList<>();
+            for (JsonNode row : rows) {
+                String code = row.path("f12").asText("").trim();
+                String name = row.path("f14").asText("").trim();
+                LocalDate listedOn = compactDate(row.path("f26").asText(null));
+                if (!code.matches("[036]\\d{5}") || name.isBlank() || listedOn == null
+                        || listedOn.isAfter(requestedAt.toLocalDate())) {
+                    continue;
+                }
+                securities.add(new Security(
+                        code,
+                        name,
+                        bucket.market(),
+                        listedOn));
+            }
+            return securities;
+        } catch (RuntimeException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw new IllegalStateException("获取东方财富历史股票目录失败：" + exception.getMessage(), exception);
         }
     }
 
@@ -213,16 +324,36 @@ public class EastMoneyMarketDataClient implements ResearchMarketDataProvider {
     }
 
     private String getText(URI uri, String referer) {
-        HttpHeaders headers = new HttpHeaders();
-        headers.set(HttpHeaders.USER_AGENT, "Mozilla/5.0 MaogouResearch/1.0");
-        headers.set(HttpHeaders.REFERER, referer);
-        ResponseEntity<byte[]> response = restTemplate.exchange(
-                uri, HttpMethod.GET, new HttpEntity<>(headers), byte[].class);
-        byte[] body = response.getBody();
-        if (body == null || body.length == 0) {
-            throw new IllegalStateException("东方财富返回空响应");
+        RuntimeException lastFailure = null;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+                HttpHeaders headers = new HttpHeaders();
+                headers.set(HttpHeaders.USER_AGENT, "Mozilla/5.0 MaogouResearch/1.0");
+                headers.set(HttpHeaders.REFERER, referer);
+                ResponseEntity<byte[]> response = restTemplate.exchange(
+                        uri, HttpMethod.GET, new HttpEntity<>(headers), byte[].class);
+                byte[] body = response.getBody();
+                if (body == null || body.length == 0) {
+                    throw new IllegalStateException("东方财富返回空响应");
+                }
+                return new String(body, StandardCharsets.UTF_8);
+            } catch (RestClientException | IllegalStateException exception) {
+                lastFailure = exception;
+                if (attempt < 3) {
+                    sleepBeforeRetry(attempt);
+                }
+            }
         }
-        return new String(body, StandardCharsets.UTF_8);
+        throw lastFailure == null ? new IllegalStateException("东方财富请求失败") : lastFailure;
+    }
+
+    private static void sleepBeforeRetry(int attempt) {
+        try {
+            Thread.sleep(200L * attempt);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("东方财富请求重试被中断", exception);
+        }
     }
 
     private static JsonNode firstArray(JsonNode root, String... names) {
@@ -326,6 +457,17 @@ public class EastMoneyMarketDataClient implements ResearchMarketDataProvider {
         }
     }
 
+    private static LocalDate compactDate(String value) {
+        if (value == null || !value.matches("\\d{8}")) {
+            return null;
+        }
+        try {
+            return LocalDate.parse(value, DateTimeFormatter.BASIC_ISO_DATE);
+        } catch (DateTimeParseException ignored) {
+            return null;
+        }
+    }
+
     private static String sha256(String value) {
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
@@ -333,5 +475,8 @@ public class EastMoneyMarketDataClient implements ResearchMarketDataProvider {
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("SHA-256 不可用", exception);
         }
+    }
+
+    private record CatalogBucket(String filter, String market) {
     }
 }

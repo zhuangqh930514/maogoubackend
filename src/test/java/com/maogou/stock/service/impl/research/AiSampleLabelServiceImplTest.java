@@ -14,13 +14,13 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -31,13 +31,22 @@ class AiSampleLabelServiceImplTest {
         AiSampleLabelMapper labelMapper = mock(AiSampleLabelMapper.class);
         AiLabelCostEvidenceMapper costMapper = mock(AiLabelCostEvidenceMapper.class);
         DefaultLabelPolicy policy = new DefaultLabelPolicy(new ObjectMapper().findAndRegisterModules());
-        when(labelMapper.selectOne(any())).thenReturn(null);
-        when(costMapper.selectOne(any())).thenReturn(null);
+        List<AiSampleLabel> labels = new ArrayList<>();
+        List<AiLabelCostEvidence> costs = new ArrayList<>();
+        when(labelMapper.selectForSamplesAndVersion(any(), any())).thenAnswer(ignored -> List.copyOf(labels));
+        when(costMapper.selectForLabelsAndVersion(any(), any())).thenAnswer(ignored -> List.copyOf(costs));
         AtomicLong ids = new AtomicLong(100);
-        when(labelMapper.insert(any(AiSampleLabel.class))).thenAnswer(invocation -> {
-            AiSampleLabel inserted = invocation.getArgument(0);
-            inserted.id = ids.getAndIncrement();
-            return 1;
+        when(labelMapper.insertBatchImmutable(any())).thenAnswer(invocation -> {
+            List<AiSampleLabel> inserted = invocation.getArgument(0);
+            inserted.forEach(value -> value.id = ids.getAndIncrement());
+            labels.addAll(inserted);
+            return inserted.size();
+        });
+        when(costMapper.insertBatchImmutable(any())).thenAnswer(invocation -> {
+            List<AiLabelCostEvidence> inserted = invocation.getArgument(0);
+            inserted.forEach(value -> value.id = ids.getAndIncrement());
+            costs.addAll(inserted);
+            return inserted.size();
         });
         AiSampleLabelService.SampleInput sample = sample();
         AiSampleLabelService service = new AiSampleLabelServiceImpl(labelMapper, costMapper, policy);
@@ -46,8 +55,8 @@ class AiSampleLabelServiceImplTest {
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).executionStatus).isEqualTo("EXECUTED");
-        verify(labelMapper, times(1)).insert(any(AiSampleLabel.class));
-        verify(costMapper, times(1)).insert(any(AiLabelCostEvidence.class));
+        verify(labelMapper).insertBatchImmutable(any());
+        verify(costMapper).insertBatchImmutable(any());
     }
 
     @Test
@@ -57,7 +66,7 @@ class AiSampleLabelServiceImplTest {
         DefaultLabelPolicy policy = new DefaultLabelPolicy(new ObjectMapper().findAndRegisterModules());
         AiSampleLabel existing = label("old-fingerprint");
         existing.id = 44L;
-        when(labelMapper.selectOne(any())).thenReturn(existing);
+        when(labelMapper.selectForSamplesAndVersion(any(), any())).thenReturn(List.of(existing));
         AiSampleLabelService service = new AiSampleLabelServiceImpl(labelMapper, costMapper, policy);
 
         assertThatThrownBy(() -> service.matureAndStore(batch(List.of(sample()))))

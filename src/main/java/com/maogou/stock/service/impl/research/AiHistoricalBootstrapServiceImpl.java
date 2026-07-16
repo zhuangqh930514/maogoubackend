@@ -8,7 +8,12 @@ import com.maogou.stock.mapper.research.AiPipelineRunMapper;
 import com.maogou.stock.mapper.research.AiPipelineStepMapper;
 import com.maogou.stock.service.research.AiGlobalDailyResearchExecutor;
 import com.maogou.stock.service.research.AiHistoricalBootstrapService;
+import com.maogou.stock.service.research.AiHistoricalEvidenceImportService;
+import com.maogou.stock.service.research.AiMonthlyTrainingRunner;
+import com.maogou.stock.service.research.AiResearchCycleResult;
+import com.maogou.stock.service.research.AiWeeklyEvolutionRunner;
 import com.maogou.stock.service.research.HistoricalUniverseSourceService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
@@ -36,30 +41,64 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
     private static final Duration LEASE_DURATION = Duration.ofHours(6);
     private static final List<String> REPLAY_STEPS = List.of(
             "BUILD_SAMPLES",
-            "MATURE_SAMPLE_LABELS",
             "COMPUTE_FACTORS",
-            "GENERATE_PREDICTIONS",
-            "EVALUATE_PREDICTIONS"
+            "GENERATE_PREDICTIONS"
+    );
+    private static final List<String> FINALIZE_STEPS = List.of(
+            "MATURE_HISTORICAL_SAMPLE_LABELS",
+            "EVALUATE_HISTORICAL_PREDICTIONS"
     );
 
     private final AiPipelineRunMapper runMapper;
     private final AiPipelineStepMapper stepMapper;
+    private final AiHistoricalEvidenceImportService evidenceImportService;
     private final HistoricalUniverseSourceService sourceService;
     private final AiGlobalDailyResearchExecutor executor;
+    private final AiWeeklyEvolutionRunner weeklyRunner;
+    private final AiMonthlyTrainingRunner trainingRunner;
     private final ObjectMapper objectMapper;
 
+    @Autowired
     public AiHistoricalBootstrapServiceImpl(
+            AiPipelineRunMapper runMapper,
+            AiPipelineStepMapper stepMapper,
+            AiHistoricalEvidenceImportService evidenceImportService,
+            HistoricalUniverseSourceService sourceService,
+            AiGlobalDailyResearchExecutor executor,
+            AiWeeklyEvolutionRunner weeklyRunner,
+            AiMonthlyTrainingRunner trainingRunner,
+            ObjectMapper objectMapper
+    ) {
+        this.runMapper = runMapper;
+        this.stepMapper = stepMapper;
+        this.evidenceImportService = evidenceImportService;
+        this.sourceService = sourceService;
+        this.executor = executor;
+        this.weeklyRunner = weeklyRunner;
+        this.trainingRunner = trainingRunner;
+        this.objectMapper = objectMapper;
+    }
+
+    AiHistoricalBootstrapServiceImpl(
+            AiPipelineRunMapper runMapper,
+            AiPipelineStepMapper stepMapper,
+            AiHistoricalEvidenceImportService evidenceImportService,
+            HistoricalUniverseSourceService sourceService,
+            AiGlobalDailyResearchExecutor executor,
+            ObjectMapper objectMapper
+    ) {
+        this(runMapper, stepMapper, evidenceImportService, sourceService, executor,
+                null, null, objectMapper);
+    }
+
+    AiHistoricalBootstrapServiceImpl(
             AiPipelineRunMapper runMapper,
             AiPipelineStepMapper stepMapper,
             HistoricalUniverseSourceService sourceService,
             AiGlobalDailyResearchExecutor executor,
             ObjectMapper objectMapper
     ) {
-        this.runMapper = runMapper;
-        this.stepMapper = stepMapper;
-        this.sourceService = sourceService;
-        this.executor = executor;
-        this.objectMapper = objectMapper;
+        this(runMapper, stepMapper, null, sourceService, executor, null, null, objectMapper);
     }
 
     @Override
@@ -87,6 +126,32 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
             run.startedAt = run.startedAt == null ? request.requestedAt() : run.startedAt;
             run.updatedAt = now;
             updateRun(run, owner);
+
+            if (request.coldStartPlan() != null) {
+                if (evidenceImportService == null) {
+                    throw new IllegalStateException("历史冷启动没有配置历史证据导入服务");
+                }
+                run.currentStep = "IMPORT_HISTORICAL_EVIDENCE";
+                run.updatedAt = LocalDateTime.now();
+                updateRun(run, owner);
+                try {
+                    AiHistoricalEvidenceImportService.ImportResult imported =
+                            evidenceImportService.importEvidence(
+                                    new AiHistoricalEvidenceImportService.ImportRequest(
+                                            request.coldStartPlan(), request.idempotencyKey(), request.requestedAt()));
+                    run.processedCount = imported.importedTradingDays() + imported.reusedTradingDays();
+                    run.successCount = run.processedCount;
+                    run.failedCount = 0;
+                    run.errorMessage = imported.warnings().isEmpty()
+                            ? null : String.join("；", imported.warnings());
+                    run.updatedAt = LocalDateTime.now();
+                    updateRun(run, owner);
+                } catch (RuntimeException exception) {
+                    List<String> errors = List.of(rootMessage(exception));
+                    failRun(run, "FAILED", errors, owner);
+                    return result("FAILED", run, orderedSteps(run.id), 0, errors);
+                }
+            }
 
             EvidenceLoad evidenceLoad = loadEvidence(request, run, owner);
             if (!evidenceLoad.errors().isEmpty()) {
@@ -117,18 +182,98 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
             }
 
             steps = orderedSteps(run.id);
-            run.status = "SUCCESS";
-            run.currentStep = steps.isEmpty() ? "NO_TRADING_DAYS" : steps.get(steps.size() - 1).stepKey;
+            try {
+                finalizeHistoricalResearch(run, request, evidenceLoad, owner);
+            } catch (RuntimeException exception) {
+                List<String> errors = List.of(rootMessage(exception));
+                failRun(run, "FAILED", errors, owner);
+                return result("FAILED", run, steps, completedTradingDays(steps), errors);
+            }
+            List<String> completionWarnings = request.coldStartPlan() == null
+                    ? List.of() : runPostBootstrapResearch(run, owner);
+            String completedStatus = completionWarnings.isEmpty() ? "SUCCESS" : "PARTIAL_SUCCESS";
+            run.status = completedStatus;
+            run.currentStep = steps.isEmpty() ? "NO_TRADING_DAYS" : "HISTORICAL_RESEARCH_READY";
             run.processedCount = evidenceLoad.evidence().size();
             run.successCount = evidenceLoad.evidence().size();
             run.failedCount = 0;
-            run.errorMessage = null;
+            run.errorMessage = completionWarnings.isEmpty() ? null : String.join("；", completionWarnings);
             run.finishedAt = LocalDateTime.now();
             run.updatedAt = run.finishedAt;
             updateRun(run, owner);
-            return result("SUCCESS", run, steps, evidenceLoad.evidence().size(), List.of());
+            return result(completedStatus, run, steps, evidenceLoad.evidence().size(), completionWarnings);
         } finally {
             runMapper.releaseExecution(run.id, owner, LocalDateTime.now());
+        }
+    }
+
+    private List<String> runPostBootstrapResearch(AiPipelineRun run, String owner) {
+        if (weeklyRunner == null || trainingRunner == null) {
+            return List.of();
+        }
+        List<String> warnings = new ArrayList<>();
+        LocalDateTime now = LocalDateTime.now();
+        run.currentStep = "UPDATE_HISTORICAL_RESEARCH";
+        run.updatedAt = now;
+        updateRun(run, owner);
+        try {
+            AiResearchCycleResult weekly = weeklyRunner.run(null, now);
+            if (weekly == null || !weekly.successful() || weekly.failedCount() > 0) {
+                warnings.add("历史因子与策略研究未完全更新：" + cycleMessage(weekly));
+            }
+        } catch (RuntimeException exception) {
+            warnings.add("历史因子与策略研究失败：" + rootMessage(exception));
+        }
+
+        renewLease(run.id, owner);
+        run.currentStep = "TRAIN_HISTORICAL_MODEL";
+        run.updatedAt = LocalDateTime.now();
+        updateRun(run, owner);
+        try {
+            AiResearchCycleResult training = trainingRunner.run(null, LocalDateTime.now());
+            if (training == null || !"SUCCESS".equals(training.status())) {
+                warnings.add("历史候选模型未完成训练：" + cycleMessage(training));
+            }
+        } catch (RuntimeException exception) {
+            warnings.add("历史候选模型训练失败：" + rootMessage(exception));
+        }
+        return List.copyOf(warnings);
+    }
+
+    private static String cycleMessage(AiResearchCycleResult result) {
+        if (result == null) {
+            return "运行器没有返回结果";
+        }
+        return result.message() == null || result.message().isBlank()
+                ? result.status() : result.message();
+    }
+
+    private void finalizeHistoricalResearch(
+            AiPipelineRun run,
+            BootstrapRequest request,
+            EvidenceLoad evidenceLoad,
+            String owner
+    ) {
+        if (evidenceLoad.evidence().isEmpty()) {
+            return;
+        }
+        HistoricalUniverseSourceService.HistoricalDayEvidence latest =
+                evidenceLoad.evidence().get(evidenceLoad.evidence().size() - 1);
+        Map<String, String> checkpoints = initialSourceCheckpoints(latest);
+        AiGlobalDailyResearchExecutor.PipelineContext context =
+                new AiGlobalDailyResearchExecutor.PipelineContext(
+                        run.id, latest.tradeDate(), request.strategyReleaseId(), request.modelVersionId(),
+                        request.idempotencyKey() + ":FINALIZE", latest.sourceFingerprint(),
+                        latest.asOfTime(), value(run.retryCount), checkpoints,
+                        () -> renewLease(run.id, owner));
+        for (String stepKey : FINALIZE_STEPS) {
+            renewLease(run.id, owner);
+            run.currentStep = stepKey;
+            run.updatedAt = LocalDateTime.now();
+            updateRun(run, owner);
+            AiGlobalDailyResearchExecutor.StepOutcome outcome = executor.execute(stepKey, context);
+            validateOutcome(stepKey, outcome);
+            checkpoints.put(stepKey, outcome.checkpointJson());
         }
     }
 
@@ -465,9 +610,12 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
     }
 
     private static String requestFingerprint(BootstrapRequest request) {
+        AiHistoricalEvidenceImportService.ColdStartPlan plan = request.coldStartPlan();
         return fingerprint(String.join("|",
-                "GLOBAL_HISTORICAL_BOOTSTRAP/1.0.0",
+                plan == null ? "GLOBAL_HISTORICAL_BOOTSTRAP/1.0.0" : "GLOBAL_HISTORICAL_BOOTSTRAP/2.0.0",
                 request.startDate().toString(), request.endDate().toString(),
+                plan == null ? "" : String.valueOf(plan.trainingTradingDays()),
+                plan == null ? "" : String.valueOf(plan.targetStockCount()),
                 String.valueOf(request.strategyReleaseId()), String.valueOf(request.modelVersionId())));
     }
 

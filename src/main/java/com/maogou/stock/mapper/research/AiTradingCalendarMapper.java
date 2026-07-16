@@ -42,4 +42,20 @@ public interface AiTradingCalendarMapper extends BaseMapper<AiTradingCalendar> {
             @Param("calendarVersion") String calendarVersion,
             @Param("dates") List<LocalDate> dates
     );
+
+    @Select("""
+            SELECT * FROM ai_trading_calendar
+            WHERE market_code = 'CN_A_SHARE'
+              AND calendar_version = #{calendarVersion}
+              AND is_trade_day = 1
+              AND trade_date <= #{endDate}
+              AND source_fingerprint IS NOT NULL
+            ORDER BY trade_date DESC
+            LIMIT #{limit}
+            """)
+    List<AiTradingCalendar> selectRecentTradingDays(
+            @Param("endDate") LocalDate endDate,
+            @Param("calendarVersion") String calendarVersion,
+            @Param("limit") int limit
+    );
 }

@@ -54,6 +54,11 @@ public interface AiPredictionMapper extends BaseMapper<AiPrediction> {
     @Select("""
             SELECT p.*, p.horizon_trading_days AS horizonDays
             FROM ai_prediction p
+            INNER JOIN ai_sample_label l
+              ON l.sample_id = p.sample_id
+             AND l.horizon_trading_days = p.horizon_trading_days
+             AND l.label_version = #{labelVersion}
+             AND l.label_status = 'MATURED'
             LEFT JOIN ai_prediction_evaluation e
               ON e.prediction_id = p.id
              AND e.evaluation_version = #{evaluationVersion}
@@ -65,6 +70,7 @@ public interface AiPredictionMapper extends BaseMapper<AiPrediction> {
             """)
     List<AiPrediction> selectUnevaluatedCandidates(
             @Param("tradeDate") LocalDate tradeDate,
+            @Param("labelVersion") String labelVersion,
             @Param("evaluationVersion") String evaluationVersion,
             @Param("limit") int limit
     );

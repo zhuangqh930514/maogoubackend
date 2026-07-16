@@ -68,6 +68,25 @@ class HistoricalUniverseSourceServiceImplTest {
     }
 
     @Test
+    void acceptsEvidenceFetchedLaterWhenItsMarketAvailabilityAndResearchCutoffAreHistorical() {
+        Fixture fixture = readyFixture();
+        when(fixture.itemMapper.selectList(any())).thenReturn(List.of(item()));
+        List<AiSourceObservation> observations = observations(false);
+        observations.forEach(value -> {
+            value.firstSeenAt = AS_OF.plusYears(1);
+            value.fetchedAt = AS_OF.plusYears(1);
+            value.observedAt = AS_OF.plusYears(1);
+            value.asOfTime = AS_OF;
+            value.availableAt = AS_OF.minusMinutes(5);
+        });
+        when(fixture.observationMapper.selectList(any())).thenReturn(observations);
+
+        HistoricalUniverseSourceService.HistoricalDayEvidence result = service(fixture).load(TRADE_DATE, AS_OF);
+
+        assertThat(result.status()).isEqualTo("READY");
+    }
+
+    @Test
     void rejectsLateOrMockAdjustmentEvidence() {
         Fixture fixture = readyFixture();
         when(fixture.itemMapper.selectList(any())).thenReturn(List.of(item()));
@@ -119,7 +138,7 @@ class HistoricalUniverseSourceServiceImplTest {
     private static AiTradingCalendar calendar(int tradeDay) {
         AiTradingCalendar value = new AiTradingCalendar();
         value.id = 1L;
-        value.marketCode = "CN_A";
+        value.marketCode = "CN_A_SHARE";
         value.tradeDate = TRADE_DATE;
         value.calendarVersion = "CN_A_SHARE/1.0.0";
         value.isTradeDay = tradeDay;
