@@ -17,6 +17,7 @@ import com.maogou.stock.service.research.AiLabelVerificationCoordinator;
 import com.maogou.stock.service.research.AiPredictionEvaluationService;
 import com.maogou.stock.service.research.AiResearchContract;
 import com.maogou.stock.service.research.AiSampleLabelService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
@@ -47,6 +48,7 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
     private final AiPredictionEvaluationService evaluationService;
     private final Clock clock;
 
+    @Autowired
     public AiLabelVerificationCoordinatorImpl(
             AiPredictionMapper predictionMapper,
             AiSampleMapper sampleMapper,
