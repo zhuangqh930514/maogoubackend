@@ -209,6 +209,52 @@ class AiHistoricalBootstrapServiceImplTest {
                 org.mockito.ArgumentMatchers.eq("EVALUATE_HISTORICAL_PREDICTIONS"), any());
     }
 
+    @Test
+    void continuesTrainingWithPartialSuccessWhenTailLabelsHaveSourceWarnings() {
+        Fixture fixture = fixture();
+        LocalDate date = LocalDate.of(2026, 1, 5);
+        AiHistoricalEvidenceImportService importer = mock(AiHistoricalEvidenceImportService.class);
+        AiWeeklyEvolutionRunner weeklyRunner = mock(AiWeeklyEvolutionRunner.class);
+        AiMonthlyTrainingRunner trainingRunner = mock(AiMonthlyTrainingRunner.class);
+        AiHistoricalEvidenceImportService.ColdStartPlan plan = new AiHistoricalEvidenceImportService.ColdStartPlan(
+                date, date, 120, 125, 300, List.of(date));
+        when(importer.importEvidence(any())).thenReturn(new AiHistoricalEvidenceImportService.ImportResult(
+                1, 0, 300, "imported", List.of()));
+        when(fixture.sourceService.load(any(), any())).thenReturn(ready(date, 1));
+        when(weeklyRunner.run(any(), any())).thenReturn(
+                new AiResearchCycleResult("SUCCESS", 10, 10, 0, "研究完成"));
+        when(trainingRunner.run(any(), any())).thenReturn(
+                new AiResearchCycleResult("SUCCESS", 24000, 1, 0, "训练完成"));
+        when(fixture.executor.execute(anyString(), any())).thenAnswer(invocation -> {
+            String step = invocation.getArgument(0);
+            if ("MATURE_HISTORICAL_SAMPLE_LABELS".equals(step)) {
+                return new AiGlobalDailyResearchExecutor.StepOutcome(
+                        "SUCCESS_WITH_WARNINGS", 17, 64, 1,
+                        "{\"processed\":17}", "labels-warning",
+                        List.of("002594：K线暂不可用"), null, null);
+            }
+            AiGlobalDailyResearchExecutor.PipelineContext context = invocation.getArgument(1);
+            return outcome(step, context.tradeDate());
+        });
+        AiHistoricalBootstrapService service = new AiHistoricalBootstrapServiceImpl(
+                fixture.runMapper, fixture.stepMapper, importer, fixture.sourceService,
+                fixture.executor, weeklyRunner, trainingRunner,
+                new ObjectMapper().findAndRegisterModules());
+
+        AiHistoricalBootstrapService.BootstrapResult result = service.run(
+                new AiHistoricalBootstrapService.BootstrapRequest(
+                        date, date, 11L, null, "HISTORICAL:TAIL-WARNING",
+                        LocalDateTime.of(2026, 7, 14, 10, 0), plan));
+
+        assertThat(result.status()).isEqualTo("PARTIAL_SUCCESS");
+        assertThat(result.errors()).containsExactly(
+                "MATURE_HISTORICAL_SAMPLE_LABELS：002594：K线暂不可用");
+        verify(fixture.executor).execute(
+                org.mockito.ArgumentMatchers.eq("EVALUATE_HISTORICAL_PREDICTIONS"), any());
+        verify(weeklyRunner).run(any(), any());
+        verify(trainingRunner).run(any(), any());
+    }
+
     private static AiHistoricalBootstrapService service(Fixture fixture) {
         return new AiHistoricalBootstrapServiceImpl(
                 fixture.runMapper, fixture.stepMapper, fixture.sourceService,

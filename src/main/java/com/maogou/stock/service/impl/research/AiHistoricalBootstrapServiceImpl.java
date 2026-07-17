@@ -182,21 +182,24 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
             }
 
             steps = orderedSteps(run.id);
+            List<String> finalizeWarnings;
             try {
-                finalizeHistoricalResearch(run, request, evidenceLoad, owner);
+                finalizeWarnings = finalizeHistoricalResearch(run, request, evidenceLoad, owner);
             } catch (RuntimeException exception) {
                 List<String> errors = List.of(rootMessage(exception));
                 failRun(run, "FAILED", errors, owner);
                 return result("FAILED", run, steps, completedTradingDays(steps), errors);
             }
-            List<String> completionWarnings = request.coldStartPlan() == null
-                    ? List.of() : runPostBootstrapResearch(run, owner);
+            List<String> completionWarnings = new ArrayList<>(finalizeWarnings);
+            if (request.coldStartPlan() != null) {
+                completionWarnings.addAll(runPostBootstrapResearch(run, owner));
+            }
             String completedStatus = completionWarnings.isEmpty() ? "SUCCESS" : "PARTIAL_SUCCESS";
             run.status = completedStatus;
             run.currentStep = steps.isEmpty() ? "NO_TRADING_DAYS" : "HISTORICAL_RESEARCH_READY";
             run.processedCount = evidenceLoad.evidence().size();
             run.successCount = evidenceLoad.evidence().size();
-            run.failedCount = 0;
+            run.failedCount = completionWarnings.size();
             run.errorMessage = completionWarnings.isEmpty() ? null : String.join("；", completionWarnings);
             run.finishedAt = LocalDateTime.now();
             run.updatedAt = run.finishedAt;
@@ -248,14 +251,14 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
                 ? result.status() : result.message();
     }
 
-    private void finalizeHistoricalResearch(
+    private List<String> finalizeHistoricalResearch(
             AiPipelineRun run,
             BootstrapRequest request,
             EvidenceLoad evidenceLoad,
             String owner
     ) {
         if (evidenceLoad.evidence().isEmpty()) {
-            return;
+            return List.of();
         }
         HistoricalUniverseSourceService.HistoricalDayEvidence latest =
                 evidenceLoad.evidence().get(evidenceLoad.evidence().size() - 1);
@@ -266,12 +269,14 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
                         request.idempotencyKey() + ":FINALIZE", latest.sourceFingerprint(),
                         latest.asOfTime(), value(run.retryCount), checkpoints,
                         () -> renewLease(run.id, owner));
+        List<String> warnings = new ArrayList<>();
         for (String stepKey : FINALIZE_STEPS) {
-            drainHistoricalStep(run, stepKey, context, checkpoints, owner);
+            warnings.addAll(drainHistoricalStep(run, stepKey, context, checkpoints, owner));
         }
+        return List.copyOf(warnings);
     }
 
-    private void drainHistoricalStep(
+    private List<String> drainHistoricalStep(
             AiPipelineRun run,
             String stepKey,
             AiGlobalDailyResearchExecutor.PipelineContext context,
@@ -280,6 +285,8 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
     ) {
         int processed = 0;
         int succeeded = 0;
+        int failed = 0;
+        Set<String> warnings = new LinkedHashSet<>();
         do {
             renewLease(run.id, owner);
             run.currentStep = stepKey;
@@ -289,22 +296,21 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
             updateRun(run, owner);
             AiGlobalDailyResearchExecutor.StepOutcome outcome = executor.execute(stepKey, context);
             validateOutcome(stepKey, outcome);
-            if (outcome.failedCount() > 0 || !outcome.errors().isEmpty()) {
-                String detail = outcome.errors().isEmpty()
-                        ? outcome.failedCount() + " 条处理失败"
-                        : String.join("；", outcome.errors());
-                throw new IllegalStateException(stepKey + " 存在未完成数据：" + detail);
-            }
             processed = Math.addExact(processed, outcome.processedCount());
             succeeded = Math.addExact(succeeded, outcome.successCount());
+            failed = Math.addExact(failed, outcome.failedCount());
+            warnings.addAll(outcome.errors());
             checkpoints.put(stepKey, json(Map.of(
                     "processedCount", processed,
                     "successCount", succeeded,
+                    "failedCount", failed,
+                    "warnings", List.copyOf(warnings),
                     "lastCheckpoint", outcome.checkpointJson())));
             if (outcome.processedCount() < AiGlobalDailyResearchExecutor.HISTORICAL_FINALIZE_BATCH_SIZE) {
                 break;
             }
         } while (true);
+        return warnings.stream().map(message -> stepKey + "：" + message).toList();
     }
 
     private EvidenceLoad loadEvidence(BootstrapRequest request, AiPipelineRun run, String owner) {
