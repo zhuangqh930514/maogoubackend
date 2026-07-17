@@ -53,6 +53,42 @@ DEALLOCATE PREPARE performance_index_stmt;
 
 SET @ddl = (
     SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE ai_prediction ADD INDEX idx_prediction_evaluation_candidates (trade_date, horizon_trading_days, id, sample_id, action, action_bucket, target_direction, expected_return, probability_up, probability_down, input_fingerprint)',
+        'SELECT 1')
+    FROM information_schema.statistics
+    WHERE table_schema = @schema_name AND table_name = 'ai_prediction'
+      AND index_name = 'idx_prediction_evaluation_candidates'
+);
+PREPARE performance_index_stmt FROM @ddl;
+EXECUTE performance_index_stmt;
+DEALLOCATE PREPARE performance_index_stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE ai_sample_label ADD INDEX idx_label_evaluation_candidate (sample_id, horizon_trading_days, label_version, label_status)',
+        'SELECT 1')
+    FROM information_schema.statistics
+    WHERE table_schema = @schema_name AND table_name = 'ai_sample_label'
+      AND index_name = 'idx_label_evaluation_candidate'
+);
+PREPARE performance_index_stmt FROM @ddl;
+EXECUTE performance_index_stmt;
+DEALLOCATE PREPARE performance_index_stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE ai_prediction_evaluation ADD INDEX idx_evaluation_version_prediction (evaluation_version, prediction_id)',
+        'SELECT 1')
+    FROM information_schema.statistics
+    WHERE table_schema = @schema_name AND table_name = 'ai_prediction_evaluation'
+      AND index_name = 'idx_evaluation_version_prediction'
+);
+PREPARE performance_index_stmt FROM @ddl;
+EXECUTE performance_index_stmt;
+DEALLOCATE PREPARE performance_index_stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
         'ALTER TABLE trade_record ADD INDEX idx_trade_record_user_active_stock (user_id, deleted, stock_code, traded_at)',
         'SELECT 1')
     FROM information_schema.statistics

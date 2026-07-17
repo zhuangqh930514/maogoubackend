@@ -28,6 +28,16 @@ class AiPredictionMapperAnnotationTest {
                     .as(methodName)
                     .contains("horizon_trading_days AS horizonDays");
         }
+        Method evaluationMethod = java.util.Arrays.stream(AiPredictionMapper.class.getMethods())
+                .filter(candidate -> "selectUnevaluatedCandidates".equals(candidate.getName()))
+                .findFirst()
+                .orElseThrow();
+        String evaluationSql = String.join("\n", evaluationMethod.getAnnotation(Select.class).value());
+        assertThat(evaluationSql)
+                .contains("FORCE INDEX (idx_prediction_evaluation_candidates)")
+                .contains("FORCE INDEX (idx_label_evaluation_candidate)")
+                .contains("FORCE INDEX (idx_evaluation_version_prediction)")
+                .doesNotContain("SELECT p.*");
         assertThatCode(() -> new MybatisConfiguration().addMapper(AiPredictionMapper.class))
                 .doesNotThrowAnyException();
     }

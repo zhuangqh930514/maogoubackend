@@ -52,20 +52,23 @@ public interface AiPredictionMapper extends BaseMapper<AiPrediction> {
     );
 
     @Select("""
-            SELECT p.*, p.horizon_trading_days AS horizonDays
-            FROM ai_prediction p
-            INNER JOIN ai_sample_label l
+            SELECT p.id, p.sample_id, p.horizon_trading_days AS horizonDays,
+                   p.action, p.action_bucket, p.target_direction, p.expected_return,
+                   p.probability_up, p.probability_down, p.input_fingerprint
+            FROM ai_prediction p FORCE INDEX (idx_prediction_evaluation_candidates)
+            INNER JOIN ai_sample_label l FORCE INDEX (idx_label_evaluation_candidate)
               ON l.sample_id = p.sample_id
              AND l.horizon_trading_days = p.horizon_trading_days
              AND l.label_version = #{labelVersion}
              AND l.label_status = 'MATURED'
             LEFT JOIN ai_prediction_evaluation e
+              FORCE INDEX (idx_evaluation_version_prediction)
               ON e.prediction_id = p.id
              AND e.evaluation_version = #{evaluationVersion}
             WHERE p.trade_date < #{tradeDate}
               AND p.horizon_trading_days IN (1, 2, 3, 5)
               AND e.id IS NULL
-            ORDER BY p.trade_date, p.sample_phase, p.horizon_trading_days, p.id
+            ORDER BY p.trade_date, p.horizon_trading_days, p.id
             LIMIT #{limit}
             """)
     List<AiPrediction> selectUnevaluatedCandidates(
