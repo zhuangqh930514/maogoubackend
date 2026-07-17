@@ -127,8 +127,10 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
             run.updatedAt = now;
             updateRun(run, owner);
 
-            EvidenceLoad evidenceLoad = request.coldStartPlan() == null
+            HistoricalEvidenceReuse reusable = request.coldStartPlan() == null
                     ? null : reusableEvidence(request, run, owner);
+            EvidenceLoad evidenceLoad = reusable == null || !reusable.missingDates().isEmpty()
+                    ? null : reusable.evidenceLoad();
             if (request.coldStartPlan() != null && evidenceLoad == null) {
                 if (evidenceImportService == null) {
                     throw new IllegalStateException("历史冷启动没有配置历史证据导入服务");
@@ -140,14 +142,24 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
                     AiHistoricalEvidenceImportService.ImportResult imported =
                             evidenceImportService.importEvidence(
                                     new AiHistoricalEvidenceImportService.ImportRequest(
-                                            request.coldStartPlan(), request.idempotencyKey(), request.requestedAt()));
-                    run.processedCount = imported.importedTradingDays() + imported.reusedTradingDays();
+                                            importPlan(request.coldStartPlan(), reusable),
+                                            request.idempotencyKey(), request.requestedAt()));
+                    int persistedCount = reusable == null ? 0 : reusable.evidenceLoad().evidence().size();
+                    run.processedCount = persistedCount
+                            + imported.importedTradingDays() + imported.reusedTradingDays();
                     run.successCount = run.processedCount;
                     run.failedCount = 0;
                     run.errorMessage = imported.warnings().isEmpty()
                             ? null : String.join("；", imported.warnings());
                     run.updatedAt = LocalDateTime.now();
                     updateRun(run, owner);
+                    if (reusable != null && !reusable.missingDates().isEmpty()) {
+                        EvidenceLoad importedEvidence = loadEvidence(
+                                reusable.missingDates(), run, owner);
+                        evidenceLoad = mergeEvidence(
+                                request.coldStartPlan().tradingDates(),
+                                reusable.evidenceLoad(), importedEvidence);
+                    }
                 } catch (RuntimeException exception) {
                     List<String> errors = List.of(rootMessage(exception));
                     failRun(run, "FAILED", errors, owner);
@@ -214,29 +226,56 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
         }
     }
 
-    private EvidenceLoad reusableEvidence(
+    private HistoricalEvidenceReuse reusableEvidence(
             BootstrapRequest request,
             AiPipelineRun run,
             String owner
     ) {
         try {
-            EvidenceLoad persisted = loadEvidence(request, run, owner);
             List<LocalDate> expected = request.coldStartPlan().tradingDates();
-            if (persisted.errors().isEmpty()
-                    && persisted.evidence().size() == expected.size()
-                    && persisted.byDate().keySet().containsAll(expected)) {
-                run.processedCount = persisted.evidence().size();
-                run.successCount = persisted.evidence().size();
+            List<HistoricalUniverseSourceService.HistoricalDayEvidence> evidence = new ArrayList<>();
+            Map<LocalDate, HistoricalUniverseSourceService.HistoricalDayEvidence> byDate = new LinkedHashMap<>();
+            List<LocalDate> missingDates = new ArrayList<>();
+            for (LocalDate tradeDate : expected) {
+                renewLease(run.id, owner);
+                LocalDateTime asOfTime = tradeDate.atTime(16, 0);
+                HistoricalUniverseSourceService.HistoricalDayEvidence day =
+                        sourceService.load(tradeDate, asOfTime);
+                if (day == null || !day.ready()) {
+                    missingDates.add(tradeDate);
+                    continue;
+                }
+                validateReadyEvidence(day, tradeDate, asOfTime);
+                evidence.add(day);
+                byDate.put(tradeDate, day);
+            }
+            EvidenceLoad persisted = new EvidenceLoad(
+                    List.copyOf(evidence), Map.copyOf(byDate), List.of(), false);
+            if (missingDates.isEmpty()) {
+                run.processedCount = evidence.size();
+                run.successCount = evidence.size();
                 run.failedCount = 0;
                 run.errorMessage = null;
                 run.updatedAt = LocalDateTime.now();
                 updateRun(run, owner);
-                return persisted;
             }
+            return new HistoricalEvidenceReuse(persisted, List.copyOf(missingDates));
         } catch (RuntimeException ignored) {
             // Missing or unreadable persisted evidence falls through to the real import path.
         }
         return null;
+    }
+
+    private static AiHistoricalEvidenceImportService.ColdStartPlan importPlan(
+            AiHistoricalEvidenceImportService.ColdStartPlan original,
+            HistoricalEvidenceReuse reusable
+    ) {
+        if (reusable == null || reusable.missingDates().isEmpty()) {
+            return original;
+        }
+        return new AiHistoricalEvidenceImportService.ColdStartPlan(
+                original.startDate(), original.endDate(), original.trainingTradingDays(),
+                original.replayTradingDays(), original.targetStockCount(), reusable.missingDates());
     }
 
     private List<String> runPostBootstrapResearch(AiPipelineRun run, String owner) {
@@ -343,12 +382,20 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
     }
 
     private EvidenceLoad loadEvidence(BootstrapRequest request, AiPipelineRun run, String owner) {
-        List<HistoricalUniverseSourceService.HistoricalDayEvidence> evidence = new ArrayList<>();
-        List<String> errors = new ArrayList<>();
-        boolean missingUniverse = false;
         List<LocalDate> requestedDates = request.coldStartPlan() == null
                 ? request.startDate().datesUntil(request.endDate().plusDays(1)).toList()
                 : request.coldStartPlan().tradingDates();
+        return loadEvidence(requestedDates, run, owner);
+    }
+
+    private EvidenceLoad loadEvidence(
+            List<LocalDate> requestedDates,
+            AiPipelineRun run,
+            String owner
+    ) {
+        List<HistoricalUniverseSourceService.HistoricalDayEvidence> evidence = new ArrayList<>();
+        List<String> errors = new ArrayList<>();
+        boolean missingUniverse = false;
         for (LocalDate cursor : requestedDates) {
             renewLease(run.id, owner);
             LocalDateTime asOfTime = cursor.atTime(16, 0);
@@ -373,6 +420,25 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
         Map<LocalDate, HistoricalUniverseSourceService.HistoricalDayEvidence> byDate = new LinkedHashMap<>();
         evidence.forEach(item -> byDate.put(item.tradeDate(), item));
         return new EvidenceLoad(List.copyOf(evidence), Map.copyOf(byDate), List.copyOf(errors), missingUniverse);
+    }
+
+    private static EvidenceLoad mergeEvidence(
+            List<LocalDate> requestedDates,
+            EvidenceLoad persisted,
+            EvidenceLoad imported
+    ) {
+        Map<LocalDate, HistoricalUniverseSourceService.HistoricalDayEvidence> byDate = new LinkedHashMap<>();
+        byDate.putAll(persisted.byDate());
+        byDate.putAll(imported.byDate());
+        List<HistoricalUniverseSourceService.HistoricalDayEvidence> evidence = requestedDates.stream()
+                .map(byDate::get)
+                .filter(java.util.Objects::nonNull)
+                .toList();
+        List<String> errors = new ArrayList<>(persisted.errors());
+        errors.addAll(imported.errors());
+        return new EvidenceLoad(
+                List.copyOf(evidence), Map.copyOf(byDate), List.copyOf(errors),
+                persisted.missingHistoricalUniverse() || imported.missingHistoricalUniverse());
     }
 
     private void replayBlock(
@@ -711,6 +777,12 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
             Map<LocalDate, HistoricalUniverseSourceService.HistoricalDayEvidence> byDate,
             List<String> errors,
             boolean missingHistoricalUniverse
+    ) {
+    }
+
+    private record HistoricalEvidenceReuse(
+            EvidenceLoad evidenceLoad,
+            List<LocalDate> missingDates
     ) {
     }
 

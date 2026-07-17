@@ -607,6 +607,8 @@ CREATE TABLE IF NOT EXISTS ai_sample_label (
         (sample_id, horizon_trading_days, label_version),
     KEY idx_label_maturity_status
         (label_available_at, execution_status, horizon_trading_days),
+    KEY idx_label_training_readiness
+        (label_version, label_status, execution_status, horizon_trading_days, label_available_at, sample_id),
     KEY idx_sample_label_stock_exit (stock_code, exit_trade_date),
     KEY idx_sample_label_calendar (entry_calendar_id, exit_calendar_id),
     CONSTRAINT chk_sample_label_horizon CHECK (horizon_trading_days IN (1, 2, 3, 5)),

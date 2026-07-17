@@ -13,6 +13,7 @@ import com.maogou.stock.service.research.AiResearchCycleResult;
 import com.maogou.stock.service.research.AiWeeklyEvolutionRunner;
 import com.maogou.stock.service.research.HistoricalUniverseSourceService;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -147,7 +148,8 @@ class AiHistoricalBootstrapServiceImplTest {
         assertThat(result.status()).isEqualTo("SUCCESS");
         verify(importer).importEvidence(any());
         verify(fixture.sourceService, times(2)).load(date, date.atTime(16, 0));
-        verify(fixture.sourceService).load(nextTradingDate, nextTradingDate.atTime(16, 0));
+        verify(fixture.sourceService, times(2)).load(
+                nextTradingDate, nextTradingDate.atTime(16, 0));
         verify(fixture.sourceService, never()).load(
                 LocalDate.of(2026, 1, 10), LocalDate.of(2026, 1, 10).atTime(16, 0));
         verify(fixture.executor).execute(
@@ -186,6 +188,57 @@ class AiHistoricalBootstrapServiceImplTest {
         verify(importer, never()).importEvidence(any());
         verify(fixture.sourceService).load(date, date.atTime(16, 0));
         verify(fixture.sourceService).load(nextTradingDate, nextTradingDate.atTime(16, 0));
+    }
+
+    @Test
+    void importsOnlyMissingDatesWhenExpandingExistingHistoricalEvidence() {
+        Fixture fixture = fixture();
+        LocalDate existingDate = LocalDate.of(2026, 1, 9);
+        LocalDate missingDate = LocalDate.of(2026, 1, 12);
+        LocalDate anotherMissingDate = LocalDate.of(2026, 1, 13);
+        List<LocalDate> plannedDates = List.of(existingDate, missingDate, anotherMissingDate);
+        AiHistoricalEvidenceImportService importer = mock(AiHistoricalEvidenceImportService.class);
+        AiHistoricalEvidenceImportService.ColdStartPlan plan = new AiHistoricalEvidenceImportService.ColdStartPlan(
+                existingDate, anotherMissingDate, 180, 185, 300, plannedDates);
+        AtomicBoolean imported = new AtomicBoolean(false);
+        when(importer.importEvidence(any())).thenAnswer(invocation -> {
+            imported.set(true);
+            return new AiHistoricalEvidenceImportService.ImportResult(
+                    2, 0, 300, "imported missing dates", List.of());
+        });
+        when(fixture.sourceService.load(any(), any())).thenAnswer(invocation -> {
+            LocalDate tradeDate = invocation.getArgument(0);
+            if (existingDate.equals(tradeDate) || imported.get()) {
+                return ready(tradeDate, plannedDates.indexOf(tradeDate) + 1L);
+            }
+            return new HistoricalUniverseSourceService.HistoricalDayEvidence(
+                    "MISSING_HISTORICAL_UNIVERSE", tradeDate, tradeDate.atTime(16, 0),
+                    null, null, 0, null, List.of("尚未导入"));
+        });
+        when(fixture.executor.execute(anyString(), any())).thenAnswer(invocation -> {
+            AiGlobalDailyResearchExecutor.PipelineContext context = invocation.getArgument(1);
+            return outcome(invocation.getArgument(0), context.tradeDate());
+        });
+        AiHistoricalBootstrapService service = new AiHistoricalBootstrapServiceImpl(
+                fixture.runMapper, fixture.stepMapper, importer, fixture.sourceService,
+                fixture.executor, new ObjectMapper().findAndRegisterModules());
+
+        AiHistoricalBootstrapService.BootstrapResult result = service.run(
+                new AiHistoricalBootstrapService.BootstrapRequest(
+                        existingDate, anotherMissingDate, 11L, null,
+                        "HISTORICAL:PARTIAL-REUSE", LocalDateTime.of(2026, 7, 17, 10, 0), plan));
+
+        assertThat(result.status()).isEqualTo("SUCCESS");
+        assertThat(result.processedTradingDays()).isEqualTo(3);
+        ArgumentCaptor<AiHistoricalEvidenceImportService.ImportRequest> requestCaptor =
+                ArgumentCaptor.forClass(AiHistoricalEvidenceImportService.ImportRequest.class);
+        verify(importer).importEvidence(requestCaptor.capture());
+        assertThat(requestCaptor.getValue().plan().tradingDates())
+                .containsExactly(missingDate, anotherMissingDate);
+        verify(fixture.sourceService, times(1)).load(existingDate, existingDate.atTime(16, 0));
+        verify(fixture.sourceService, times(2)).load(missingDate, missingDate.atTime(16, 0));
+        verify(fixture.sourceService, times(2)).load(
+                anotherMissingDate, anotherMissingDate.atTime(16, 0));
     }
 
     @Test

@@ -17,20 +17,23 @@ import java.time.LocalDateTime;
 public interface AiTrainingDatasetItemMapper extends BaseMapper<AiTrainingDatasetItem> {
 
     @Select("""
-            SELECT 'TRADING_DAYS' AS dimension_type, 'ALL' AS dimension_key,
+            SELECT CONVERT('TRADING_DAYS' USING utf8mb4) COLLATE utf8mb4_unicode_ci AS dimension_type,
+                   CONVERT('ALL' USING utf8mb4) COLLATE utf8mb4_unicode_ci AS dimension_key,
                    COUNT(DISTINCT trade_date) AS metric_count
             FROM ai_sample
             WHERE quality_status = 'READY' AND tradable_status = 'TRADABLE'
               AND as_of_time <= #{asOfTime}
             UNION ALL
-            SELECT 'STOCKS' AS dimension_type, 'ALL' AS dimension_key,
+            SELECT CONVERT('STOCKS' USING utf8mb4) COLLATE utf8mb4_unicode_ci AS dimension_type,
+                   CONVERT('ALL' USING utf8mb4) COLLATE utf8mb4_unicode_ci AS dimension_key,
                    COUNT(DISTINCT stock_code) AS metric_count
             FROM ai_sample
             WHERE quality_status = 'READY' AND tradable_status = 'TRADABLE'
               AND as_of_time <= #{asOfTime}
             UNION ALL
-            SELECT 'HORIZON' AS dimension_type,
-                   CAST(l.horizon_trading_days AS CHAR) AS dimension_key,
+            SELECT CONVERT('HORIZON' USING utf8mb4) COLLATE utf8mb4_unicode_ci AS dimension_type,
+                   CONVERT(CAST(l.horizon_trading_days AS CHAR) USING utf8mb4)
+                       COLLATE utf8mb4_unicode_ci AS dimension_key,
                    COUNT(*) AS metric_count
             FROM ai_sample_label l
             INNER JOIN ai_sample s ON s.id = l.sample_id
@@ -41,7 +44,8 @@ public interface AiTrainingDatasetItemMapper extends BaseMapper<AiTrainingDatase
               AND s.as_of_time <= #{asOfTime}
             GROUP BY l.horizon_trading_days
             UNION ALL
-            SELECT 'REGIME' AS dimension_type, s.market_regime AS dimension_key,
+            SELECT CONVERT('REGIME' USING utf8mb4) COLLATE utf8mb4_unicode_ci AS dimension_type,
+                   CONVERT(s.market_regime USING utf8mb4) COLLATE utf8mb4_unicode_ci AS dimension_key,
                    COUNT(DISTINCT s.trade_date) AS metric_count
             FROM ai_sample s
             WHERE s.quality_status = 'READY' AND s.tradable_status = 'TRADABLE'
