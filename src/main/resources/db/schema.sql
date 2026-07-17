@@ -347,6 +347,8 @@ CREATE TABLE IF NOT EXISTS ai_sample (
     KEY idx_sample_stock_time (stock_code, as_of_time),
     KEY idx_sample_analysis_lookup (stock_code, sample_phase, trade_date, as_of_time),
     KEY idx_sample_lab_list (trade_date, id),
+    KEY idx_sample_pending_labels
+        (trade_date, stock_code, id, quality_status, tradable_status, source_fingerprint),
     KEY idx_sample_training_readiness
         (quality_status, tradable_status, as_of_time, trade_date, stock_code, market_regime),
     KEY idx_sample_universe_item (universe_item_id),

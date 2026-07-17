@@ -25,4 +25,16 @@ class AiSampleMapperAnnotationTest {
         assertThatCode(() -> new MybatisConfiguration().addMapper(AiSampleMapper.class))
                 .doesNotThrowAnyException();
     }
+
+    @Test
+    void pendingLabelCandidatesUseTheNarrowCoveringIndex() throws Exception {
+        Method method = AiSampleMapper.class.getMethod(
+                "selectPendingLabelCandidates", java.time.LocalDate.class, String.class, int.class);
+        String sql = String.join("\n", method.getAnnotation(Select.class).value());
+
+        assertThat(sql)
+                .contains("s.id, s.stock_code, s.trade_date, s.tradable_status, s.source_fingerprint")
+                .contains("FORCE INDEX (idx_sample_pending_labels)")
+                .doesNotContain("SELECT s.*");
+    }
 }

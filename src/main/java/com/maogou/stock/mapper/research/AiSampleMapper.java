@@ -75,8 +75,8 @@ public interface AiSampleMapper extends BaseMapper<AiSample> {
     );
 
     @Select("""
-            SELECT s.*
-            FROM ai_sample s
+            SELECT s.id, s.stock_code, s.trade_date, s.tradable_status, s.source_fingerprint
+            FROM ai_sample s FORCE INDEX (idx_sample_pending_labels)
             WHERE s.trade_date < #{tradeDate}
               AND s.quality_status IN ('READY', 'PARTIAL')
               AND (

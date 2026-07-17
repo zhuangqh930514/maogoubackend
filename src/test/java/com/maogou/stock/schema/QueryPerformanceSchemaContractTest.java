@@ -17,6 +17,7 @@ class QueryPerformanceSchemaContractTest {
             "idx_trade_record_user_active_stock",
             "idx_sample_analysis_lookup",
             "idx_sample_lab_list",
+            "idx_sample_pending_labels",
             "idx_sample_training_readiness",
             "idx_label_training_readiness",
             "idx_pipeline_owner_type_time");

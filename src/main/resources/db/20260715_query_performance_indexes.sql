@@ -17,6 +17,18 @@ DEALLOCATE PREPARE performance_index_stmt;
 
 SET @ddl = (
     SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE ai_sample ADD INDEX idx_sample_pending_labels (trade_date, stock_code, id, quality_status, tradable_status, source_fingerprint)',
+        'SELECT 1')
+    FROM information_schema.statistics
+    WHERE table_schema = @schema_name AND table_name = 'ai_sample'
+      AND index_name = 'idx_sample_pending_labels'
+);
+PREPARE performance_index_stmt FROM @ddl;
+EXECUTE performance_index_stmt;
+DEALLOCATE PREPARE performance_index_stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
         'ALTER TABLE ai_sample ADD INDEX idx_sample_training_readiness (quality_status, tradable_status, as_of_time, trade_date, stock_code, market_regime)',
         'SELECT 1')
     FROM information_schema.statistics
