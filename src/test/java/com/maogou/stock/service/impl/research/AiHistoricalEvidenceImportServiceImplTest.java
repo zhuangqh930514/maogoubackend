@@ -74,6 +74,35 @@ class AiHistoricalEvidenceImportServiceImplTest {
     }
 
     @Test
+    void switchesToSecondaryRealProviderAfterPrimarySourceFailure() {
+        Fixture fixture = fixture();
+        HistoricalMarketDataProvider primary = mock(HistoricalMarketDataProvider.class);
+        HistoricalMarketDataProvider secondary = mock(HistoricalMarketDataProvider.class);
+        when(primary.providerCode()).thenReturn("EASTMONEY");
+        when(secondary.providerCode()).thenReturn("SINA_TENCENT");
+        when(fixture.calendarMapper.selectRecentTradingDays(any(), any(), eq(125)))
+                .thenReturn(List.of(), calendars(125));
+        when(primary.fetchHistoricalKline(any(), anyInt(), any(), eq("NONE")))
+                .thenThrow(new IllegalStateException("Unexpected end of file from server"));
+        when(secondary.fetchHistoricalKline(any(), anyInt(), any(), eq("NONE")))
+                .thenReturn(calendarSeries(END_DATE, 165));
+        AiHistoricalEvidenceImportService service = new AiHistoricalEvidenceImportServiceImpl(
+                fixture.calendarMapper,
+                List.of(primary, secondary),
+                fixture.universeService,
+                fixture.snapshotService,
+                fixture.dataBatchMapper,
+                fixture.observationMapper,
+                new ObjectMapper().findAndRegisterModules());
+
+        AiHistoricalEvidenceImportService.ColdStartPlan plan = service.plan(END_DATE, 120, 200);
+
+        assertThat(plan.tradingDates()).hasSize(125);
+        verify(primary).fetchHistoricalKline(any(), anyInt(), any(), eq("NONE"));
+        verify(secondary).fetchHistoricalKline(any(), anyInt(), any(), eq("NONE"));
+    }
+
+    @Test
     void importsPointInTimeStockBenchmarkAndAdjustmentEvidence() {
         Fixture fixture = fixture();
         LocalDate tradeDate = LocalDate.of(2026, 1, 5);

@@ -7,6 +7,8 @@ import java.util.Map;
 
 public interface AiGlobalDailyResearchExecutor {
 
+    int HISTORICAL_FINALIZE_BATCH_SIZE = 2_000;
+
     StepOutcome execute(String stepKey, PipelineContext context);
 
     default void onPipelineFailure(

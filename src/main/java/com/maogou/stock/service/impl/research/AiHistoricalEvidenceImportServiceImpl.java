@@ -19,6 +19,7 @@ import com.maogou.stock.service.research.AiHistoricalEvidenceImportService;
 import com.maogou.stock.service.research.AiResearchContract;
 import com.maogou.stock.service.research.AiResearchUniverseService;
 import com.maogou.stock.service.research.AiSampleSnapshotService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
@@ -44,17 +45,36 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
 
     private static final int MINIMUM_TRAILING_BARS = 20;
     private static final int MAX_KLINE_LIMIT = 500;
-    private static final String CATALOG_SOURCE = "EASTMONEY_CURRENT_LISTED_COHORT";
+    private static final String CATALOG_SOURCE = "CURRENT_LISTED_HISTORICAL_COHORT";
 
     private final AiTradingCalendarMapper calendarMapper;
-    private final HistoricalMarketDataProvider marketDataProvider;
+    private final List<HistoricalMarketDataProvider> marketDataProviders;
     private final AiResearchUniverseService universeService;
     private final AiSampleSnapshotService snapshotService;
     private final AiDataBatchMapper dataBatchMapper;
     private final AiSourceObservationMapper observationMapper;
     private final ObjectMapper objectMapper;
 
+    @Autowired
     public AiHistoricalEvidenceImportServiceImpl(
+            AiTradingCalendarMapper calendarMapper,
+            List<HistoricalMarketDataProvider> marketDataProviders,
+            AiResearchUniverseService universeService,
+            AiSampleSnapshotService snapshotService,
+            AiDataBatchMapper dataBatchMapper,
+            AiSourceObservationMapper observationMapper,
+            ObjectMapper objectMapper
+    ) {
+        this.calendarMapper = calendarMapper;
+        this.marketDataProviders = orderedProviders(marketDataProviders);
+        this.universeService = universeService;
+        this.snapshotService = snapshotService;
+        this.dataBatchMapper = dataBatchMapper;
+        this.observationMapper = observationMapper;
+        this.objectMapper = objectMapper;
+    }
+
+    AiHistoricalEvidenceImportServiceImpl(
             AiTradingCalendarMapper calendarMapper,
             HistoricalMarketDataProvider marketDataProvider,
             AiResearchUniverseService universeService,
@@ -63,13 +83,8 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
             AiSourceObservationMapper observationMapper,
             ObjectMapper objectMapper
     ) {
-        this.calendarMapper = calendarMapper;
-        this.marketDataProvider = marketDataProvider;
-        this.universeService = universeService;
-        this.snapshotService = snapshotService;
-        this.dataBatchMapper = dataBatchMapper;
-        this.observationMapper = observationMapper;
-        this.objectMapper = objectMapper;
+        this(calendarMapper, List.of(marketDataProvider), universeService, snapshotService,
+                dataBatchMapper, observationMapper, objectMapper);
     }
 
     @Override
@@ -102,12 +117,12 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
                 AiHistoricalEvidenceImportServiceImpl::validCalendar).count() >= replayDays) {
             return existing;
         }
-        KlineSeriesSnapshot benchmark = marketDataProvider.fetchHistoricalKline(
+        KlineSeriesSnapshot benchmark = fetchHistoricalKline(
                 AiResearchContract.BENCHMARK_SYMBOL,
                 Math.min(MAX_KLINE_LIMIT, replayDays + 40),
                 endDate.atTime(16, 0),
-                "NONE");
-        validateSeries(benchmark, "NONE");
+                "NONE",
+                new java.util.LinkedHashSet<>());
         List<KlinePointResponse> points = benchmark.points().stream()
                 .filter(Objects::nonNull)
                 .filter(point -> point.tradeDate() != null && !point.tradeDate().isAfter(endDate))
@@ -140,17 +155,19 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
     public ImportResult importEvidence(ImportRequest request) {
         validate(request);
         ColdStartPlan plan = request.plan();
-        int requestedCatalogSize = Math.min(1000, Math.max(plan.targetStockCount() + 100,
-                plan.targetStockCount()));
-        HistoricalMarketDataProvider.UniverseCatalog catalog =
-                marketDataProvider.fetchCurrentListedUniverse(requestedCatalogSize, request.requestedAt());
+        java.util.Set<String> unavailableProviders = new java.util.LinkedHashSet<>();
+        int requestedCatalogSize = Math.min(1000, Math.max(
+                plan.targetStockCount() + 200,
+                (int) Math.ceil(plan.targetStockCount() * 1.5d)));
+        HistoricalMarketDataProvider.UniverseCatalog catalog = fetchCatalog(
+                requestedCatalogSize, request.requestedAt(), unavailableProviders);
         validateCatalog(catalog, plan);
 
         int historyLimit = Math.min(MAX_KLINE_LIMIT,
                 plan.replayTradingDays() + MINIMUM_TRAILING_BARS + 40);
-        KlineSeriesSnapshot benchmark = marketDataProvider.fetchHistoricalKline(
-                AiResearchContract.BENCHMARK_SYMBOL, historyLimit, plan.endDate().atTime(16, 0), "NONE");
-        validateSeries(benchmark, "NONE");
+        KlineSeriesSnapshot benchmark = fetchHistoricalKline(
+                AiResearchContract.BENCHMARK_SYMBOL, historyLimit,
+                plan.endDate().atTime(16, 0), "NONE", unavailableProviders);
 
         Map<String, PreparedSecurity> prepared = new LinkedHashMap<>();
         List<String> warnings = new ArrayList<>();
@@ -162,13 +179,9 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
                 continue;
             }
             try {
-                KlineSeriesSnapshot raw = marketDataProvider.fetchHistoricalKline(
-                        security.stockCode(), historyLimit, plan.endDate().atTime(16, 0), "NONE");
-                KlineSeriesSnapshot adjusted = marketDataProvider.fetchHistoricalKline(
-                        security.stockCode(), historyLimit, plan.endDate().atTime(16, 0), "QFQ");
-                validateSeries(raw, "NONE");
-                validateSeries(adjusted, "QFQ");
-                prepared.put(security.stockCode(), new PreparedSecurity(security, raw, adjusted));
+                PreparedSecurity value = fetchPreparedSecurity(
+                        security, historyLimit, plan.endDate().atTime(16, 0), unavailableProviders);
+                prepared.put(security.stockCode(), value);
             } catch (RuntimeException exception) {
                 warnings.add(security.stockCode() + "：" + rootMessage(exception));
             }
@@ -201,6 +214,93 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
                 imported, reused, maximumPrepared,
                 sha256(catalog.sourceFingerprint() + "|" + plan.tradingDates() + "|" + maximumPrepared),
                 warnings);
+    }
+
+    private HistoricalMarketDataProvider.UniverseCatalog fetchCatalog(
+            int limit,
+            LocalDateTime requestedAt,
+            java.util.Set<String> unavailableProviders
+    ) {
+        RuntimeException lastFailure = null;
+        for (HistoricalMarketDataProvider provider : marketDataProviders) {
+            if (unavailableProviders.contains(provider.providerCode())) {
+                continue;
+            }
+            try {
+                return provider.fetchCurrentListedUniverse(limit, requestedAt);
+            } catch (RuntimeException exception) {
+                unavailableProviders.add(provider.providerCode());
+                lastFailure = exception;
+            }
+        }
+        throw new IllegalStateException(
+                "所有真实历史股票目录来源均不可用：" + rootMessage(lastFailure), lastFailure);
+    }
+
+    private KlineSeriesSnapshot fetchHistoricalKline(
+            String symbol,
+            int limit,
+            LocalDateTime asOfTime,
+            String adjustmentMode,
+            java.util.Set<String> unavailableProviders
+    ) {
+        RuntimeException lastFailure = null;
+        for (HistoricalMarketDataProvider provider : marketDataProviders) {
+            if (unavailableProviders.contains(provider.providerCode())) {
+                continue;
+            }
+            try {
+                KlineSeriesSnapshot result = provider.fetchHistoricalKline(
+                        symbol, limit, asOfTime, adjustmentMode);
+                validateSeries(result, adjustmentMode);
+                return result;
+            } catch (RuntimeException exception) {
+                unavailableProviders.add(provider.providerCode());
+                lastFailure = exception;
+            }
+        }
+        throw new IllegalStateException(
+                "所有真实历史 K 线来源均不可用：" + rootMessage(lastFailure), lastFailure);
+    }
+
+    private PreparedSecurity fetchPreparedSecurity(
+            HistoricalMarketDataProvider.Security security,
+            int limit,
+            LocalDateTime asOfTime,
+            java.util.Set<String> unavailableProviders
+    ) {
+        RuntimeException lastFailure = null;
+        for (HistoricalMarketDataProvider provider : marketDataProviders) {
+            if (unavailableProviders.contains(provider.providerCode())) {
+                continue;
+            }
+            try {
+                KlineSeriesSnapshot raw = provider.fetchHistoricalKline(
+                        security.stockCode(), limit, asOfTime, "NONE");
+                KlineSeriesSnapshot adjusted = provider.fetchHistoricalKline(
+                        security.stockCode(), limit, asOfTime, "QFQ");
+                validateSeries(raw, "NONE");
+                validateSeries(adjusted, "QFQ");
+                LocalDate observedSince = raw.points().stream()
+                        .map(KlinePointResponse::tradeDate)
+                        .filter(Objects::nonNull)
+                        .min(Comparator.naturalOrder())
+                        .orElseThrow(() -> new IllegalStateException("历史 K 线缺少最早可验证交易日"));
+                HistoricalMarketDataProvider.Security effectiveSecurity =
+                        new HistoricalMarketDataProvider.Security(
+                                security.stockCode(), security.stockName(), security.market(),
+                                security.listedOn() == null ? observedSince : security.listedOn());
+                return new PreparedSecurity(effectiveSecurity, raw, adjusted);
+            } catch (RuntimeException exception) {
+                if (providerUnavailable(exception)) {
+                    unavailableProviders.add(provider.providerCode());
+                }
+                lastFailure = exception;
+            }
+        }
+        throw new IllegalStateException(
+                security.stockCode() + " 的真实历史 K 线来源均不可用：" + rootMessage(lastFailure),
+                lastFailure);
     }
 
     private DayImportResult importDay(
@@ -244,7 +344,7 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
         store(observation(
                 batch.id, null, "MARKET_BENCHMARK", "KLINE",
                 benchmark.source(), researchAsOf, benchmark.fetchedAt(),
-                pointInTimeSeries(benchmark, tradeDate, 80), catalog.sourceUri()));
+                pointInTimeSeries(benchmark, tradeDate, 80), sourceUri(benchmark.source())));
 
         Map<String, AiResearchUniverseItem> items = new LinkedHashMap<>();
         for (AiResearchUniverseItem item : snapshot.items()) {
@@ -262,12 +362,12 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
             StockDetailResponse detail = detail(security.security(), raw, researchAsOf);
             store(observation(
                     batch.id, item.stockCode, "STOCK_DAILY_SNAPSHOT", "STOCK_DETAIL",
-                    raw.source(), researchAsOf, raw.fetchedAt(), detail, catalog.sourceUri()));
+                    raw.source(), researchAsOf, raw.fetchedAt(), detail, sourceUri(raw.source())));
             store(observation(
                     batch.id, item.stockCode, "ADJUSTMENT_FACTOR", "ADJUSTMENT_FACTOR",
                     adjusted.source(), researchAsOf, latestFetchedAt(raw, adjusted),
                     adjustmentEvidence(raw, adjusted, tradeDate, latestFetchedAt(raw, adjusted)),
-                    catalog.sourceUri()));
+                    sourceUri(adjusted.source())));
         }
 
         AiDataBatch completed = snapshotService.completeBatch(batch.id, new AiSampleSnapshotService.BatchCompletion(
@@ -448,7 +548,47 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
         return security != null && security.stockCode() != null
                 && security.stockCode().matches("[036]\\d{5}")
                 && security.stockName() != null && !security.stockName().isBlank()
-                && security.listedOn() != null && !security.listedOn().isAfter(endDate);
+                && (security.listedOn() == null || !security.listedOn().isAfter(endDate));
+    }
+
+    private static List<HistoricalMarketDataProvider> orderedProviders(
+            List<HistoricalMarketDataProvider> providers
+    ) {
+        if (providers == null || providers.isEmpty()) {
+            throw new IllegalArgumentException("至少需要一个真实历史行情来源");
+        }
+        return providers.stream()
+                .filter(Objects::nonNull)
+                .sorted(Comparator.comparingInt(provider -> switch (provider.providerCode()) {
+                    case "EASTMONEY" -> 0;
+                    case "SINA_TENCENT" -> 1;
+                    default -> 10;
+                }))
+                .toList();
+    }
+
+    private static String sourceUri(String providerCode) {
+        String provider = normalize(providerCode, "");
+        if (provider.contains("TENCENT")) {
+            return "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get";
+        }
+        if (provider.contains("EASTMONEY")) {
+            return "https://push2his.eastmoney.com/api/qt/stock/kline/get";
+        }
+        return null;
+    }
+
+    private static boolean providerUnavailable(Throwable throwable) {
+        String message = rootMessage(throwable).toLowerCase(Locale.ROOT);
+        return message.contains("unexpected end of file")
+                || message.contains("empty reply")
+                || message.contains("timed out")
+                || message.contains("timeout")
+                || message.contains("connection reset")
+                || message.contains("connection refused")
+                || message.contains("remote host terminated")
+                || message.contains("status code 403")
+                || message.contains("status code 429");
     }
 
     private static boolean validCalendar(AiTradingCalendar calendar) {

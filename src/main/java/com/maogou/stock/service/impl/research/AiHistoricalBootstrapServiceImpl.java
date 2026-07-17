@@ -267,14 +267,44 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
                         latest.asOfTime(), value(run.retryCount), checkpoints,
                         () -> renewLease(run.id, owner));
         for (String stepKey : FINALIZE_STEPS) {
+            drainHistoricalStep(run, stepKey, context, checkpoints, owner);
+        }
+    }
+
+    private void drainHistoricalStep(
+            AiPipelineRun run,
+            String stepKey,
+            AiGlobalDailyResearchExecutor.PipelineContext context,
+            Map<String, String> checkpoints,
+            String owner
+    ) {
+        int processed = 0;
+        int succeeded = 0;
+        do {
             renewLease(run.id, owner);
             run.currentStep = stepKey;
+            run.processedCount = processed;
+            run.successCount = succeeded;
             run.updatedAt = LocalDateTime.now();
             updateRun(run, owner);
             AiGlobalDailyResearchExecutor.StepOutcome outcome = executor.execute(stepKey, context);
             validateOutcome(stepKey, outcome);
-            checkpoints.put(stepKey, outcome.checkpointJson());
-        }
+            if (outcome.failedCount() > 0 || !outcome.errors().isEmpty()) {
+                String detail = outcome.errors().isEmpty()
+                        ? outcome.failedCount() + " 条处理失败"
+                        : String.join("；", outcome.errors());
+                throw new IllegalStateException(stepKey + " 存在未完成数据：" + detail);
+            }
+            processed = Math.addExact(processed, outcome.processedCount());
+            succeeded = Math.addExact(succeeded, outcome.successCount());
+            checkpoints.put(stepKey, json(Map.of(
+                    "processedCount", processed,
+                    "successCount", succeeded,
+                    "lastCheckpoint", outcome.checkpointJson())));
+            if (outcome.processedCount() < AiGlobalDailyResearchExecutor.HISTORICAL_FINALIZE_BATCH_SIZE) {
+                break;
+            }
+        } while (true);
     }
 
     private EvidenceLoad loadEvidence(BootstrapRequest request, AiPipelineRun run, String owner) {

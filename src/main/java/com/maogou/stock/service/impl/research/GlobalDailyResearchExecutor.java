@@ -64,8 +64,6 @@ import java.util.stream.Collectors;
 public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecutor {
 
     private static final List<Integer> PREDICTION_HORIZONS = List.of(1, 2, 3, 5);
-    private static final int HISTORICAL_LABEL_LIMIT = 50_000;
-    private static final int HISTORICAL_EVALUATION_LIMIT = 200_000;
 
     private final AiResearchUniverseService universeService;
     private final AiResearchUniverseSnapshotMapper universeSnapshotMapper;
@@ -130,12 +128,12 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
             case "BUILD_SAMPLES" -> buildSamples(context);
             case "MATURE_SAMPLE_LABELS" -> matureSampleLabels(context);
             case "MATURE_HISTORICAL_SAMPLE_LABELS" -> matureSampleLabels(
-                    context, "MATURE_HISTORICAL_SAMPLE_LABELS", HISTORICAL_LABEL_LIMIT);
+                    context, "MATURE_HISTORICAL_SAMPLE_LABELS", HISTORICAL_FINALIZE_BATCH_SIZE);
             case "COMPUTE_FACTORS" -> computeFactors(context);
             case "GENERATE_PREDICTIONS" -> generatePredictions(context);
             case "EVALUATE_PREDICTIONS" -> evaluatePredictions(context);
             case "EVALUATE_HISTORICAL_PREDICTIONS" -> evaluatePredictions(
-                    context, "EVALUATE_HISTORICAL_PREDICTIONS", HISTORICAL_EVALUATION_LIMIT);
+                    context, "EVALUATE_HISTORICAL_PREDICTIONS", HISTORICAL_FINALIZE_BATCH_SIZE);
             default -> throw new IllegalArgumentException("未知全局日研究步骤：" + stepKey);
         };
         context.checkpointLease();

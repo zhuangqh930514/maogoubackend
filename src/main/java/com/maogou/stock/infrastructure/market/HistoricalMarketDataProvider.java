@@ -8,6 +8,8 @@ import java.util.List;
 
 public interface HistoricalMarketDataProvider {
 
+    String providerCode();
+
     UniverseCatalog fetchCurrentListedUniverse(int limit, LocalDateTime requestedAt);
 
     KlineSeriesSnapshot fetchHistoricalKline(

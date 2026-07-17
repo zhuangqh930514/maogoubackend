@@ -29,6 +29,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -172,6 +173,36 @@ class AiHistoricalBootstrapServiceImplTest {
         verify(trainingRunner).run(any(), any());
     }
 
+    @Test
+    void drainsHistoricalLabelsAndEvaluationsInBoundedBatches() {
+        Fixture fixture = fixture();
+        LocalDate date = LocalDate.of(2026, 1, 5);
+        AtomicLong labelCalls = new AtomicLong();
+        AtomicLong evaluationCalls = new AtomicLong();
+        when(fixture.sourceService.load(any(), any())).thenReturn(ready(date, 1));
+        when(fixture.executor.execute(anyString(), any())).thenAnswer(invocation -> {
+            String step = invocation.getArgument(0);
+            if ("MATURE_HISTORICAL_SAMPLE_LABELS".equals(step)) {
+                long call = labelCalls.incrementAndGet();
+                return batchOutcome(step, call == 1 ? 2_000 : 17);
+            }
+            if ("EVALUATE_HISTORICAL_PREDICTIONS".equals(step)) {
+                long call = evaluationCalls.incrementAndGet();
+                return batchOutcome(step, call == 1 ? 2_000 : 29);
+            }
+            AiGlobalDailyResearchExecutor.PipelineContext context = invocation.getArgument(1);
+            return outcome(step, context.tradeDate());
+        });
+
+        AiHistoricalBootstrapService.BootstrapResult result = service(fixture).run(request(date, date));
+
+        assertThat(result.status()).isEqualTo("SUCCESS");
+        verify(fixture.executor, times(2)).execute(
+                org.mockito.ArgumentMatchers.eq("MATURE_HISTORICAL_SAMPLE_LABELS"), any());
+        verify(fixture.executor, times(2)).execute(
+                org.mockito.ArgumentMatchers.eq("EVALUATE_HISTORICAL_PREDICTIONS"), any());
+    }
+
     private static AiHistoricalBootstrapService service(Fixture fixture) {
         return new AiHistoricalBootstrapServiceImpl(
                 fixture.runMapper, fixture.stepMapper, fixture.sourceService,
@@ -201,6 +232,13 @@ class AiHistoricalBootstrapServiceImplTest {
         return new AiGlobalDailyResearchExecutor.StepOutcome(
                 "SUCCESS", 1, 1, 0, "{\"tradeDate\":\"" + date + "\"}",
                 step + "-" + date, List.of(), null, null);
+    }
+
+    private static AiGlobalDailyResearchExecutor.StepOutcome batchOutcome(String step, int processed) {
+        return new AiGlobalDailyResearchExecutor.StepOutcome(
+                "SUCCESS", processed, processed, 0,
+                "{\"processed\":" + processed + "}", step + "-" + processed,
+                List.of(), null, null);
     }
 
     private static List<LocalDate> tradingDates(int count) {

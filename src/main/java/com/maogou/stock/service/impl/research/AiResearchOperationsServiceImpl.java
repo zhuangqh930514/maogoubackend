@@ -114,12 +114,12 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
             ResearchLabPayloads.ActionRequest request
     ) {
         int trainingTradingDays = request.historyTradingDays() == null ? 120 : request.historyTradingDays();
-        int targetStockCount = request.historyStockCount() == null ? 200 : request.historyStockCount();
+        int targetStockCount = request.historyStockCount() == null ? 300 : request.historyStockCount();
         if (trainingTradingDays < 120 || trainingTradingDays > 180) {
             throw new IllegalArgumentException("历史训练交易日必须在 120 到 180 之间");
         }
-        if (targetStockCount < 200 || targetStockCount > 250) {
-            throw new IllegalArgumentException("历史训练股票数必须在 200 到 250 之间");
+        if (targetStockCount < 200 || targetStockCount > 300) {
+            throw new IllegalArgumentException("历史训练股票数必须在 200 到 300 之间");
         }
         LocalDate requestedEndDate = request.endDate() == null
                 ? request.tradeDate() == null ? LocalDate.now() : request.tradeDate()
