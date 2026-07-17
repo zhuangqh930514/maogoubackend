@@ -167,7 +167,7 @@ class AiTrainingDatasetServiceImplTest {
         assertThat(result.items()).hasSize(1_200);
         verify(fixture.itemMapper, times(3)).selectEligibleSourcesPage(
                 any(), nullable(LocalDate.class), nullable(String.class),
-                nullable(Long.class), nullable(Long.class), anyInt());
+                nullable(Long.class), anyInt());
         verify(fixture.itemMapper, times(3)).insertBatchImmutable(anyList());
     }
 
@@ -356,12 +356,11 @@ class AiTrainingDatasetServiceImplTest {
 
         when(itemMapper.selectEligibleSourcesPage(
                 any(), nullable(LocalDate.class), nullable(String.class),
-                nullable(Long.class), nullable(Long.class), anyInt())).thenAnswer(invocation -> {
+                nullable(Long.class), anyInt())).thenAnswer(invocation -> {
             LocalDate afterTradeDate = invocation.getArgument(1);
             String afterStockCode = invocation.getArgument(2);
             Long afterSampleId = invocation.getArgument(3);
-            Long afterLabelId = invocation.getArgument(4);
-            int limit = invocation.getArgument(5);
+            int limit = invocation.getArgument(4);
             Comparator<AiTrainingDatasetSource> order = Comparator
                     .comparing((AiTrainingDatasetSource item) -> item.tradeDate)
                     .thenComparing(item -> item.stockCode)
@@ -369,7 +368,7 @@ class AiTrainingDatasetServiceImplTest {
                     .thenComparing(item -> item.sampleLabelId);
             return sources.stream().sorted(order)
                     .filter(item -> afterTradeDate == null || compareKey(
-                            item, afterTradeDate, afterStockCode, afterSampleId, afterLabelId) > 0)
+                            item, afterTradeDate, afterStockCode, afterSampleId) > 0)
                     .limit(limit).toList();
         });
         when(datasetMapper.insertImmutable(any())).thenAnswer(invocation -> {
@@ -424,8 +423,7 @@ class AiTrainingDatasetServiceImplTest {
             AiTrainingDatasetSource source,
             LocalDate tradeDate,
             String stockCode,
-            Long sampleId,
-            Long labelId
+            Long sampleId
     ) {
         int value = source.tradeDate.compareTo(tradeDate);
         if (value == 0) {
@@ -433,9 +431,6 @@ class AiTrainingDatasetServiceImplTest {
         }
         if (value == 0) {
             value = source.sampleId.compareTo(sampleId);
-        }
-        if (value == 0) {
-            value = source.sampleLabelId.compareTo(labelId);
         }
         return value;
     }

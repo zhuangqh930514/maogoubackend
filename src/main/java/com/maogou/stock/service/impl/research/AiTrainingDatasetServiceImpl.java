@@ -145,11 +145,9 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
                     LocalDate afterTradeDate = null;
                     String afterStockCode = null;
                     Long afterSampleId = null;
-                    Long afterLabelId = null;
                     while (true) {
                         List<AiTrainingDatasetSource> page = itemMapper.selectEligibleSourcesPage(
-                                query, afterTradeDate, afterStockCode, afterSampleId, afterLabelId,
-                                SOURCE_PAGE_SIZE);
+                                query, afterTradeDate, afterStockCode, afterSampleId, SOURCE_PAGE_SIZE);
                         if (page == null || page.isEmpty()) {
                             break;
                         }
@@ -169,7 +167,6 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
                         afterTradeDate = last.tradeDate;
                         afterStockCode = last.stockCode;
                         afterSampleId = last.sampleId;
-                        afterLabelId = last.sampleLabelId;
                         if (page.size() < SOURCE_PAGE_SIZE) {
                             break;
                         }

@@ -125,8 +125,9 @@ public interface AiTrainingDatasetItemMapper extends BaseMapper<AiTrainingDatase
                 l.execution_status,
                 s.source_fingerprint AS feature_fingerprint,
                 l.input_fingerprint AS label_fingerprint
-            FROM ai_sample s
-            INNER JOIN ai_sample_label l ON l.sample_id = s.id
+            FROM ai_sample s FORCE INDEX (idx_sample_training_source_page)
+            STRAIGHT_JOIN ai_sample_label l FORCE INDEX (uk_sample_label_version)
+              ON l.sample_id = s.id
             WHERE s.feature_version = #{query.featureVersion}
               AND l.label_version = #{query.labelVersion}
               AND l.calendar_version = #{query.calendarVersion}
@@ -163,8 +164,9 @@ public interface AiTrainingDatasetItemMapper extends BaseMapper<AiTrainingDatase
                 l.execution_status,
                 s.source_fingerprint AS feature_fingerprint,
                 l.input_fingerprint AS label_fingerprint
-            FROM ai_sample s
-            INNER JOIN ai_sample_label l ON l.sample_id = s.id
+            FROM ai_sample s FORCE INDEX (idx_sample_training_source_page)
+            STRAIGHT_JOIN ai_sample_label l FORCE INDEX (uk_sample_label_version)
+              ON l.sample_id = s.id
             WHERE s.feature_version = #{query.featureVersion}
               AND l.label_version = #{query.labelVersion}
               AND l.calendar_version = #{query.calendarVersion}
@@ -175,8 +177,12 @@ public interface AiTrainingDatasetItemMapper extends BaseMapper<AiTrainingDatase
               AND s.as_of_time &lt;= #{query.asOfTime}
               AND l.label_available_at &lt;= #{query.asOfTime}
             <if test="afterTradeDate != null">
-              AND (s.trade_date, s.stock_code, s.id, l.id) &gt;
-                  (#{afterTradeDate}, #{afterStockCode}, #{afterSampleId}, #{afterLabelId})
+              AND (
+                    s.trade_date &gt; #{afterTradeDate}
+                 OR (s.trade_date = #{afterTradeDate} AND s.stock_code &gt; #{afterStockCode})
+                 OR (s.trade_date = #{afterTradeDate} AND s.stock_code = #{afterStockCode}
+                     AND s.id &gt; #{afterSampleId})
+              )
             </if>
             ORDER BY s.trade_date, s.stock_code, s.id, l.id
             LIMIT #{limit}
@@ -187,7 +193,6 @@ public interface AiTrainingDatasetItemMapper extends BaseMapper<AiTrainingDatase
             @Param("afterTradeDate") LocalDate afterTradeDate,
             @Param("afterStockCode") String afterStockCode,
             @Param("afterSampleId") Long afterSampleId,
-            @Param("afterLabelId") Long afterLabelId,
             @Param("limit") int limit
     );
 

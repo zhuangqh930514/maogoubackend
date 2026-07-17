@@ -20,6 +20,7 @@ class QueryPerformanceSchemaContractTest {
             "idx_sample_pending_labels",
             "idx_sample_training_readiness",
             "idx_sample_training_source_summary",
+            "idx_sample_training_source_page",
             "idx_label_training_readiness",
             "idx_label_evaluation_candidate",
             "idx_label_training_source_summary",

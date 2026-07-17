@@ -352,6 +352,8 @@ CREATE TABLE IF NOT EXISTS ai_sample (
     KEY idx_sample_training_readiness
         (quality_status, tradable_status, as_of_time, trade_date, stock_code, market_regime),
     KEY idx_sample_training_source_summary (id, feature_version, trade_date, as_of_time),
+    KEY idx_sample_training_source_page
+        (feature_version, trade_date, stock_code, id, as_of_time),
     KEY idx_sample_universe_item (universe_item_id),
     CONSTRAINT fk_sample_batch FOREIGN KEY (data_batch_id) REFERENCES ai_data_batch (id),
     CONSTRAINT fk_sample_universe_item
