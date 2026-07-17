@@ -79,6 +79,16 @@ public interface AiSampleMapper extends BaseMapper<AiSample> {
             FROM ai_sample s FORCE INDEX (idx_sample_pending_labels)
             WHERE s.trade_date < #{tradeDate}
               AND s.quality_status IN ('READY', 'PARTIAL')
+              AND s.tradable_status = 'TRADABLE'
+              AND (
+                  #{afterTradeDate,jdbcType=DATE} IS NULL
+                  OR s.trade_date > #{afterTradeDate,jdbcType=DATE}
+                  OR (s.trade_date = #{afterTradeDate,jdbcType=DATE}
+                      AND s.stock_code > #{afterStockCode,jdbcType=VARCHAR})
+                  OR (s.trade_date = #{afterTradeDate,jdbcType=DATE}
+                      AND s.stock_code = #{afterStockCode,jdbcType=VARCHAR}
+                      AND s.id > #{afterId,jdbcType=BIGINT})
+              )
               AND (
                   SELECT COUNT(*)
                   FROM ai_sample_label l
@@ -88,9 +98,12 @@ public interface AiSampleMapper extends BaseMapper<AiSample> {
             ORDER BY s.trade_date, s.stock_code, s.id
             LIMIT #{limit}
             """)
-    List<AiSample> selectPendingLabelCandidates(
+    List<AiSample> selectPendingLabelCandidatesPage(
             @Param("tradeDate") LocalDate tradeDate,
             @Param("labelVersion") String labelVersion,
+            @Param("afterTradeDate") LocalDate afterTradeDate,
+            @Param("afterStockCode") String afterStockCode,
+            @Param("afterId") Long afterId,
             @Param("limit") int limit
     );
 }

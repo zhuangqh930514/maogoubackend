@@ -41,6 +41,8 @@ import java.util.Set;
 public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCoordinator {
 
     private static final int CANDIDATE_LIMIT = 2000;
+    private static final int CANDIDATE_SCAN_PAGE_SIZE = 500;
+    private static final int CANDIDATE_SCAN_MULTIPLIER = 10;
     private static final int LABEL_BATCH_SIZE = 500;
     private static final int EVALUATION_BATCH_SIZE = 2000;
     private static final List<Integer> HORIZONS = List.of(1, 2, 3, 5);
@@ -101,9 +103,9 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
     ) {
         requireTime(tradeDate, verifiedAt, "标签成熟");
         requireLimit(candidateLimit);
-        List<AiSample> samples = sampleMapper.selectPendingLabelCandidates(
-                tradeDate, AiResearchContract.LABEL_VERSION, candidateLimit);
-        if (samples == null || samples.isEmpty()) {
+        List<AiSample> firstPage = pendingLabelCandidatesPage(
+                tradeDate, null, candidateLimit);
+        if (firstPage.isEmpty()) {
             return empty("MATURE_LABELS", tradeDate);
         }
 
@@ -119,37 +121,51 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
             }
         } catch (RuntimeException exception) {
             String message = "基准指数: " + rootMessage(exception);
-            return new VerificationResult(samples.size(), 0, samples.size(), List.of(message),
+            return new VerificationResult(firstPage.size(), 0, firstPage.size(), List.of(message),
                     sha256("MATURE_FAILED|" + tradeDate + "|" + message));
         }
 
         Map<String, KlineSeriesSnapshot> stockSeries = new HashMap<>();
         Set<String> unavailableStocks = new LinkedHashSet<>();
         List<AiSampleLabelService.SampleInput> inputs = new ArrayList<>();
-        for (AiSample sample : samples) {
-            try {
-                KlineSeriesSnapshot stock = stockSeries.get(sample.stockCode);
-                if (stock == null && !unavailableStocks.contains(sample.stockCode)) {
-                    try {
-                        stock = marketDataService.klineAt(sample.stockCode, "day", 320, verifiedAt);
-                        stockSeries.put(sample.stockCode, stock);
-                    } catch (RuntimeException exception) {
-                        unavailableStocks.add(sample.stockCode);
-                        errors.add(sample.stockCode + ": " + rootMessage(exception));
+        int scanned = 0;
+        int maximumScanCount = Math.multiplyExact(candidateLimit, CANDIDATE_SCAN_MULTIPLIER);
+        List<AiSample> page = firstPage;
+        while (!page.isEmpty() && scanned < maximumScanCount && inputs.size() < candidateLimit) {
+            for (AiSample sample : page) {
+                scanned++;
+                try {
+                    KlineSeriesSnapshot stock = stockSeries.get(sample.stockCode);
+                    if (stock == null && !unavailableStocks.contains(sample.stockCode)) {
+                        try {
+                            stock = marketDataService.klineAt(sample.stockCode, "day", 320, verifiedAt);
+                            stockSeries.put(sample.stockCode, stock);
+                        } catch (RuntimeException exception) {
+                            unavailableStocks.add(sample.stockCode);
+                            errors.add(sample.stockCode + ": " + rootMessage(exception));
+                        }
                     }
+                    if (stock == null) {
+                        continue;
+                    }
+                    inputs.add(new AiSampleLabelService.SampleInput(
+                            sample.id, sample.stockCode, sample.tradeDate, sample.tradableStatus,
+                            sample.sourceFingerprint, stock, benchmark, null));
+                } catch (RuntimeException exception) {
+                    errors.add(sample.stockCode + ": " + rootMessage(exception));
                 }
-                if (stock == null) {
-                    continue;
+                if (inputs.size() >= candidateLimit || scanned >= maximumScanCount) {
+                    break;
                 }
-                inputs.add(new AiSampleLabelService.SampleInput(
-                        sample.id, sample.stockCode, sample.tradeDate, sample.tradableStatus,
-                        sample.sourceFingerprint, stock, benchmark, null));
-            } catch (RuntimeException exception) {
-                errors.add(sample.stockCode + ": " + rootMessage(exception));
             }
+            if (inputs.size() >= candidateLimit || scanned >= maximumScanCount
+                    || page.size() < Math.min(CANDIDATE_SCAN_PAGE_SIZE, candidateLimit)) {
+                break;
+            }
+            page = pendingLabelCandidatesPage(tradeDate, page.get(page.size() - 1), candidateLimit);
         }
         if (inputs.isEmpty()) {
-            return new VerificationResult(samples.size(), 0, samples.size(), errors,
+            return new VerificationResult(0, 0, unavailableStocks.size(), errors,
                     sha256("MATURE_EMPTY|" + tradeDate + "|" + errors));
         }
 
@@ -184,9 +200,25 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
         }
         int matured = (int) labels.stream().filter(label -> "MATURED".equals(label.labelStatus)).count();
         int failed = unavailableStocks.size();
-        return new VerificationResult(samples.size(), matured, failed, errors,
+        return new VerificationResult(inputs.size(), matured, failed, errors,
                 sha256("MATURE|" + tradeDate + "|" + labels.stream().map(label -> String.valueOf(label.id)).toList()
                         + "|" + errors));
+    }
+
+    private List<AiSample> pendingLabelCandidatesPage(
+            LocalDate tradeDate,
+            AiSample cursor,
+            int candidateLimit
+    ) {
+        int pageSize = Math.min(CANDIDATE_SCAN_PAGE_SIZE, candidateLimit);
+        List<AiSample> page = sampleMapper.selectPendingLabelCandidatesPage(
+                tradeDate,
+                AiResearchContract.LABEL_VERSION,
+                cursor == null ? null : cursor.tradeDate,
+                cursor == null ? null : cursor.stockCode,
+                cursor == null ? null : cursor.id,
+                pageSize);
+        return page == null ? List.of() : page;
     }
 
     private Map<Long, Set<Integer>> existingLabelHorizons(

@@ -28,6 +28,8 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -46,8 +48,9 @@ class AiLabelVerificationCoordinatorImplTest {
         Fixture fixture = fixture();
         LocalDate tradeDate = LocalDate.of(2026, 7, 10);
         LocalDateTime verifiedAt = tradeDate.atTime(16, 0);
-        when(fixture.sampleMapper.selectPendingLabelCandidates(
-                tradeDate, "LABEL/1.0.0", 2000)).thenReturn(List.of(
+        when(fixture.sampleMapper.selectPendingLabelCandidatesPage(
+                eq(tradeDate), eq("LABEL/1.0.0"), isNull(), isNull(), isNull(), eq(500)))
+                .thenReturn(List.of(
                 sample(21L, "600519"), sample(23L, "600519"), sample(22L, "300058")));
         when(fixture.marketDataService.klineAt("000300.SH", "day", 320, verifiedAt))
                 .thenReturn(series("000300.SH", verifiedAt));
@@ -66,7 +69,7 @@ class AiLabelVerificationCoordinatorImplTest {
         AiLabelVerificationCoordinator.VerificationResult result = fixture.service.matureSampleLabels(
                 tradeDate, verifiedAt);
 
-        assertThat(result.processedCount()).isEqualTo(3);
+        assertThat(result.processedCount()).isEqualTo(2);
         assertThat(result.successCount()).isEqualTo(1);
         assertThat(result.failedCount()).isEqualTo(1);
         assertThat(result.errors()).containsExactly("300058: K线暂不可用");
@@ -115,8 +118,9 @@ class AiLabelVerificationCoordinatorImplTest {
         LocalDate tradeDate = LocalDate.of(2026, 7, 10);
         LocalDateTime verifiedAt = tradeDate.atTime(16, 0);
         AiSample sample = sample(21L, "600519");
-        when(fixture.sampleMapper.selectPendingLabelCandidates(
-                tradeDate, "LABEL/1.0.0", 2000)).thenReturn(List.of(sample));
+        when(fixture.sampleMapper.selectPendingLabelCandidatesPage(
+                eq(tradeDate), eq("LABEL/1.0.0"), isNull(), isNull(), isNull(), eq(500)))
+                .thenReturn(List.of(sample));
         when(fixture.marketDataService.klineAt("000300.SH", "day", 320, verifiedAt))
                 .thenReturn(series("000300.SH", verifiedAt));
         when(fixture.marketDataService.klineAt("600519", "day", 320, verifiedAt))
@@ -136,6 +140,58 @@ class AiLabelVerificationCoordinatorImplTest {
                 ArgumentCaptor.forClass(AiSampleLabelService.LabelBatch.class);
         verify(fixture.labelService).matureAndStore(batchCaptor.capture());
         assertThat(batchCaptor.getValue().horizons()).containsExactly(2, 3, 5);
+    }
+
+    @Test
+    void scansPastUnavailableStocksInsteadOfRepeatingTheFirstPageForever() {
+        Fixture fixture = fixture();
+        LocalDate tradeDate = LocalDate.of(2026, 7, 10);
+        LocalDateTime verifiedAt = tradeDate.atTime(16, 0);
+        AiSample firstUnavailable = sample(21L, "300058");
+        AiSample secondUnavailable = sample(22L, "300058");
+        AiSample firstAvailable = sample(23L, "600519");
+        AiSample secondAvailable = sample(24L, "000001");
+        when(fixture.sampleMapper.selectPendingLabelCandidatesPage(
+                eq(tradeDate), eq("LABEL/1.0.0"), isNull(), isNull(), isNull(), eq(2)))
+                .thenReturn(List.of(firstUnavailable, secondUnavailable));
+        when(fixture.sampleMapper.selectPendingLabelCandidatesPage(
+                tradeDate, "LABEL/1.0.0", secondUnavailable.tradeDate,
+                secondUnavailable.stockCode, secondUnavailable.id, 2))
+                .thenReturn(List.of(firstAvailable, secondAvailable));
+        when(fixture.marketDataService.klineAt("000300.SH", "day", 320, verifiedAt))
+                .thenReturn(series("000300.SH", verifiedAt));
+        when(fixture.marketDataService.klineAt("300058", "day", 320, verifiedAt))
+                .thenThrow(new IllegalStateException("K线暂不可用"));
+        when(fixture.marketDataService.klineAt("600519", "day", 320, verifiedAt))
+                .thenReturn(series("600519", verifiedAt));
+        when(fixture.marketDataService.klineAt("000001", "day", 320, verifiedAt))
+                .thenReturn(series("000001", verifiedAt));
+        when(fixture.calendarMapper.selectByDates(anyString(), anyString(), anyList()))
+                .thenReturn(List.of(calendar(91L, LocalDate.of(2026, 7, 8))));
+        AiSampleLabel firstLabel = new AiSampleLabel();
+        firstLabel.id = 81L;
+        firstLabel.sampleId = firstAvailable.id;
+        firstLabel.labelStatus = "MATURED";
+        AiSampleLabel secondLabel = new AiSampleLabel();
+        secondLabel.id = 82L;
+        secondLabel.sampleId = secondAvailable.id;
+        secondLabel.labelStatus = "MATURED";
+        when(fixture.labelService.matureAndStore(any()))
+                .thenReturn(List.of(firstLabel, secondLabel));
+
+        AiLabelVerificationCoordinator.VerificationResult result =
+                fixture.service.matureSampleLabels(tradeDate, verifiedAt, 2);
+
+        assertThat(result.processedCount()).isEqualTo(2);
+        assertThat(result.successCount()).isEqualTo(2);
+        assertThat(result.failedCount()).isEqualTo(1);
+        assertThat(result.errors()).containsExactly("300058: K线暂不可用");
+        ArgumentCaptor<AiSampleLabelService.LabelBatch> batchCaptor =
+                ArgumentCaptor.forClass(AiSampleLabelService.LabelBatch.class);
+        verify(fixture.labelService).matureAndStore(batchCaptor.capture());
+        assertThat(batchCaptor.getValue().samples())
+                .extracting(AiSampleLabelService.SampleInput::stockCode)
+                .containsExactly("600519", "000001");
     }
 
     private static Fixture fixture() {
