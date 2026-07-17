@@ -29,6 +29,7 @@ import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -152,24 +153,62 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
                     sha256("MATURE_EMPTY|" + tradeDate + "|" + errors));
         }
 
+        Map<Long, Set<Integer>> existingHorizons = existingLabelHorizons(inputs);
+        Map<List<Integer>, List<AiSampleLabelService.SampleInput>> byMissingHorizons = new LinkedHashMap<>();
+        for (AiSampleLabelService.SampleInput input : inputs) {
+            Set<Integer> existing = existingHorizons.getOrDefault(input.sampleId(), Set.of());
+            List<Integer> missing = HORIZONS.stream().filter(horizon -> !existing.contains(horizon)).toList();
+            if (!missing.isEmpty()) {
+                byMissingHorizons.computeIfAbsent(missing, ignored -> new ArrayList<>()).add(input);
+            }
+        }
+
         LocalDateTime evidenceVerifiedAt = LocalDateTime.now(clock);
         List<AiSampleLabel> labels = new ArrayList<>();
-        for (int offset = 0; offset < inputs.size(); offset += LABEL_BATCH_SIZE) {
-            List<AiSampleLabelService.SampleInput> chunk = inputs.subList(
-                    offset, Math.min(offset + LABEL_BATCH_SIZE, inputs.size()));
-            labels.addAll(labelService.matureAndStore(new AiSampleLabelService.LabelBatch(
-                    chunk,
-                    calendars.stream().map(this::tradingDay).toList(),
-                    AiResearchContract.CALENDAR_VERSION,
-                    AiResearchContract.LABEL_VERSION,
-                    HORIZONS,
-                    evidenceVerifiedAt)));
+        List<AiSampleLabelService.TradingDay> tradingDays =
+                calendars.stream().map(this::tradingDay).toList();
+        for (Map.Entry<List<Integer>, List<AiSampleLabelService.SampleInput>> entry
+                : byMissingHorizons.entrySet()) {
+            List<AiSampleLabelService.SampleInput> missingInputs = entry.getValue();
+            for (int offset = 0; offset < missingInputs.size(); offset += LABEL_BATCH_SIZE) {
+                List<AiSampleLabelService.SampleInput> chunk = missingInputs.subList(
+                        offset, Math.min(offset + LABEL_BATCH_SIZE, missingInputs.size()));
+                labels.addAll(labelService.matureAndStore(new AiSampleLabelService.LabelBatch(
+                        chunk,
+                        tradingDays,
+                        AiResearchContract.CALENDAR_VERSION,
+                        AiResearchContract.LABEL_VERSION,
+                        entry.getKey(),
+                        evidenceVerifiedAt)));
+            }
         }
         int matured = (int) labels.stream().filter(label -> "MATURED".equals(label.labelStatus)).count();
         int failed = unavailableStocks.size();
         return new VerificationResult(samples.size(), matured, failed, errors,
                 sha256("MATURE|" + tradeDate + "|" + labels.stream().map(label -> String.valueOf(label.id)).toList()
                         + "|" + errors));
+    }
+
+    private Map<Long, Set<Integer>> existingLabelHorizons(
+            List<AiSampleLabelService.SampleInput> inputs
+    ) {
+        List<Long> sampleIds = inputs.stream().map(AiSampleLabelService.SampleInput::sampleId)
+                .filter(Objects::nonNull).distinct().toList();
+        if (sampleIds.isEmpty()) {
+            return Map.of();
+        }
+        List<AiSampleLabel> existing = labelMapper.selectForSamplesAndVersion(
+                sampleIds, AiResearchContract.LABEL_VERSION);
+        Map<Long, Set<Integer>> result = new HashMap<>();
+        if (existing != null) {
+            for (AiSampleLabel label : existing) {
+                if (label != null && label.sampleId != null && label.horizonTradingDays != null) {
+                    result.computeIfAbsent(label.sampleId, ignored -> new LinkedHashSet<>())
+                            .add(label.horizonTradingDays);
+                }
+            }
+        }
+        return result;
     }
 
     @Override

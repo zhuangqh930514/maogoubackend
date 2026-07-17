@@ -109,6 +109,35 @@ class AiLabelVerificationCoordinatorImplTest {
         verify(fixture.marketDataService, never()).klineAt(anyString(), anyString(), any(Integer.class), any());
     }
 
+    @Test
+    void onlyBuildsMissingHorizonsWhenSampleAlreadyHasAnImmutableLabel() {
+        Fixture fixture = fixture();
+        LocalDate tradeDate = LocalDate.of(2026, 7, 10);
+        LocalDateTime verifiedAt = tradeDate.atTime(16, 0);
+        AiSample sample = sample(21L, "600519");
+        when(fixture.sampleMapper.selectPendingLabelCandidates(
+                tradeDate, "LABEL/1.0.0", 2000)).thenReturn(List.of(sample));
+        when(fixture.marketDataService.klineAt("000300.SH", "day", 320, verifiedAt))
+                .thenReturn(series("000300.SH", verifiedAt));
+        when(fixture.marketDataService.klineAt("600519", "day", 320, verifiedAt))
+                .thenReturn(series("600519", verifiedAt));
+        when(fixture.calendarMapper.selectByDates(anyString(), anyString(), anyList()))
+                .thenReturn(List.of(calendar(91L, LocalDate.of(2026, 7, 8))));
+        AiSampleLabel existing = new AiSampleLabel();
+        existing.sampleId = sample.id;
+        existing.horizonTradingDays = 1;
+        when(fixture.labelMapper.selectForSamplesAndVersion(
+                List.of(sample.id), "LABEL/1.0.0")).thenReturn(List.of(existing));
+        when(fixture.labelService.matureAndStore(any())).thenReturn(List.of());
+
+        fixture.service.matureSampleLabels(tradeDate, verifiedAt);
+
+        ArgumentCaptor<AiSampleLabelService.LabelBatch> batchCaptor =
+                ArgumentCaptor.forClass(AiSampleLabelService.LabelBatch.class);
+        verify(fixture.labelService).matureAndStore(batchCaptor.capture());
+        assertThat(batchCaptor.getValue().horizons()).containsExactly(2, 3, 5);
+    }
+
     private static Fixture fixture() {
         AiPredictionMapper predictionMapper = mock(AiPredictionMapper.class);
         AiSampleMapper sampleMapper = mock(AiSampleMapper.class);
