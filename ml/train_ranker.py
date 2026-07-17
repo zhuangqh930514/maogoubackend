@@ -6,9 +6,18 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
+
+for thread_variable in (
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+):
+    os.environ.setdefault(thread_variable, "1")
 
 import joblib
 import numpy as np
@@ -272,6 +281,7 @@ def _try_lightgbm(
         "min_child_samples": 5,
         "random_state": seed,
         "deterministic": True,
+        "n_jobs": 1,
         "verbosity": -1,
     }
     ranker = LGBMRanker(**parameters)
