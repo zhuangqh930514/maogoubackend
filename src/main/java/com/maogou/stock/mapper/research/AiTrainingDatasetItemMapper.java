@@ -36,12 +36,10 @@ public interface AiTrainingDatasetItemMapper extends BaseMapper<AiTrainingDatase
                        COLLATE utf8mb4_unicode_ci AS dimension_key,
                    COUNT(*) AS metric_count
             FROM ai_sample_label l
-            INNER JOIN ai_sample s ON s.id = l.sample_id
             WHERE l.label_version = #{labelVersion}
               AND l.label_status = 'MATURED'
               AND l.execution_status = 'EXECUTED'
               AND l.label_available_at <= #{asOfTime}
-              AND s.as_of_time <= #{asOfTime}
             GROUP BY l.horizon_trading_days
             UNION ALL
             SELECT CONVERT('REGIME' USING utf8mb4) COLLATE utf8mb4_unicode_ci AS dimension_type,
