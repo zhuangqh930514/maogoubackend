@@ -21,6 +21,13 @@ class AiTrainingDatasetItemMapperAnnotationTest {
                 .contains("COLLATE utf8mb4_unicode_ci")
                 .contains("l.label_available_at <= #{asOfTime}")
                 .doesNotContain("INNER JOIN ai_sample s ON s.id = l.sample_id");
+        Method summaryMethod = AiTrainingDatasetItemMapper.class.getMethod(
+                "selectDominantSourceSummary", String.class, Integer.class,
+                java.time.LocalDateTime.class);
+        String summarySql = String.join("\n", summaryMethod.getAnnotation(Select.class).value());
+        assertThat(summarySql)
+                .contains("FORCE INDEX (idx_sample_training_source_summary)")
+                .contains("FORCE INDEX (idx_label_training_source_summary)");
         assertThatCode(() -> new MybatisConfiguration().addMapper(AiTrainingDatasetItemMapper.class))
                 .doesNotThrowAnyException();
     }

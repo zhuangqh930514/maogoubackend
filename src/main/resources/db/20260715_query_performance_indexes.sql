@@ -53,6 +53,30 @@ DEALLOCATE PREPARE performance_index_stmt;
 
 SET @ddl = (
     SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE ai_sample ADD INDEX idx_sample_training_source_summary (id, feature_version, trade_date, as_of_time)',
+        'SELECT 1')
+    FROM information_schema.statistics
+    WHERE table_schema = @schema_name AND table_name = 'ai_sample'
+      AND index_name = 'idx_sample_training_source_summary'
+);
+PREPARE performance_index_stmt FROM @ddl;
+EXECUTE performance_index_stmt;
+DEALLOCATE PREPARE performance_index_stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
+        'ALTER TABLE ai_sample_label ADD INDEX idx_label_training_source_summary (label_version, horizon_trading_days, label_status, execution_status, label_available_at, sample_id, calendar_version)',
+        'SELECT 1')
+    FROM information_schema.statistics
+    WHERE table_schema = @schema_name AND table_name = 'ai_sample_label'
+      AND index_name = 'idx_label_training_source_summary'
+);
+PREPARE performance_index_stmt FROM @ddl;
+EXECUTE performance_index_stmt;
+DEALLOCATE PREPARE performance_index_stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
         'ALTER TABLE ai_prediction ADD INDEX idx_prediction_evaluation_candidates (trade_date, horizon_trading_days, id, sample_id, action, action_bucket, target_direction, expected_return, probability_up, probability_down, input_fingerprint)',
         'SELECT 1')
     FROM information_schema.statistics

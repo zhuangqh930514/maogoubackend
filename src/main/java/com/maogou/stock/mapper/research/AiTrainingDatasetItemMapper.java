@@ -64,8 +64,9 @@ public interface AiTrainingDatasetItemMapper extends BaseMapper<AiTrainingDatase
                 MAX(s.trade_date) AS last_trade_date,
                 COUNT(*) AS row_count,
                 COUNT(DISTINCT s.trade_date) AS trading_day_count
-            FROM ai_sample s
-            INNER JOIN ai_sample_label l ON l.sample_id = s.id
+            FROM ai_sample s FORCE INDEX (idx_sample_training_source_summary)
+            INNER JOIN ai_sample_label l FORCE INDEX (idx_label_training_source_summary)
+              ON l.sample_id = s.id
             WHERE l.label_version = #{labelVersion}
               AND l.horizon_trading_days = #{horizonDays}
               AND l.label_status = 'MATURED'
@@ -84,8 +85,9 @@ public interface AiTrainingDatasetItemMapper extends BaseMapper<AiTrainingDatase
 
     @Select("""
             SELECT DISTINCT s.trade_date
-            FROM ai_sample s
-            INNER JOIN ai_sample_label l ON l.sample_id = s.id
+            FROM ai_sample s FORCE INDEX (idx_sample_training_source_summary)
+            INNER JOIN ai_sample_label l FORCE INDEX (idx_label_training_source_summary)
+              ON l.sample_id = s.id
             WHERE s.feature_version = #{featureVersion}
               AND l.label_version = #{labelVersion}
               AND l.calendar_version = #{calendarVersion}

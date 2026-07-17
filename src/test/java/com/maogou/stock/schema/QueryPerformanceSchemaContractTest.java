@@ -19,8 +19,10 @@ class QueryPerformanceSchemaContractTest {
             "idx_sample_lab_list",
             "idx_sample_pending_labels",
             "idx_sample_training_readiness",
+            "idx_sample_training_source_summary",
             "idx_label_training_readiness",
             "idx_label_evaluation_candidate",
+            "idx_label_training_source_summary",
             "idx_prediction_evaluation_candidates",
             "idx_evaluation_version_prediction",
             "idx_pipeline_owner_type_time");

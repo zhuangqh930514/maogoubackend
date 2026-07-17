@@ -351,6 +351,7 @@ CREATE TABLE IF NOT EXISTS ai_sample (
         (trade_date, stock_code, id, quality_status, tradable_status, source_fingerprint),
     KEY idx_sample_training_readiness
         (quality_status, tradable_status, as_of_time, trade_date, stock_code, market_regime),
+    KEY idx_sample_training_source_summary (id, feature_version, trade_date, as_of_time),
     KEY idx_sample_universe_item (universe_item_id),
     CONSTRAINT fk_sample_batch FOREIGN KEY (data_batch_id) REFERENCES ai_data_batch (id),
     CONSTRAINT fk_sample_universe_item
@@ -618,6 +619,9 @@ CREATE TABLE IF NOT EXISTS ai_sample_label (
         (label_version, label_status, execution_status, horizon_trading_days, label_available_at, sample_id),
     KEY idx_label_evaluation_candidate
         (sample_id, horizon_trading_days, label_version, label_status),
+    KEY idx_label_training_source_summary
+        (label_version, horizon_trading_days, label_status, execution_status,
+         label_available_at, sample_id, calendar_version),
     KEY idx_sample_label_stock_exit (stock_code, exit_trade_date),
     KEY idx_sample_label_calendar (entry_calendar_id, exit_calendar_id),
     CONSTRAINT chk_sample_label_horizon CHECK (horizon_trading_days IN (1, 2, 3, 5)),
