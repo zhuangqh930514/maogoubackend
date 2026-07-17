@@ -127,7 +127,9 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
             run.updatedAt = now;
             updateRun(run, owner);
 
-            if (request.coldStartPlan() != null) {
+            EvidenceLoad evidenceLoad = request.coldStartPlan() == null
+                    ? null : reusableEvidence(request, run, owner);
+            if (request.coldStartPlan() != null && evidenceLoad == null) {
                 if (evidenceImportService == null) {
                     throw new IllegalStateException("历史冷启动没有配置历史证据导入服务");
                 }
@@ -153,7 +155,9 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
                 }
             }
 
-            EvidenceLoad evidenceLoad = loadEvidence(request, run, owner);
+            if (evidenceLoad == null) {
+                evidenceLoad = loadEvidence(request, run, owner);
+            }
             if (!evidenceLoad.errors().isEmpty()) {
                 String status = evidenceLoad.missingHistoricalUniverse()
                         ? "MISSING_HISTORICAL_UNIVERSE" : "FAILED";
@@ -208,6 +212,31 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
         } finally {
             runMapper.releaseExecution(run.id, owner, LocalDateTime.now());
         }
+    }
+
+    private EvidenceLoad reusableEvidence(
+            BootstrapRequest request,
+            AiPipelineRun run,
+            String owner
+    ) {
+        try {
+            EvidenceLoad persisted = loadEvidence(request, run, owner);
+            List<LocalDate> expected = request.coldStartPlan().tradingDates();
+            if (persisted.errors().isEmpty()
+                    && persisted.evidence().size() == expected.size()
+                    && persisted.byDate().keySet().containsAll(expected)) {
+                run.processedCount = persisted.evidence().size();
+                run.successCount = persisted.evidence().size();
+                run.failedCount = 0;
+                run.errorMessage = null;
+                run.updatedAt = LocalDateTime.now();
+                updateRun(run, owner);
+                return persisted;
+            }
+        } catch (RuntimeException ignored) {
+            // Missing or unreadable persisted evidence falls through to the real import path.
+        }
+        return null;
     }
 
     private List<String> runPostBootstrapResearch(AiPipelineRun run, String owner) {

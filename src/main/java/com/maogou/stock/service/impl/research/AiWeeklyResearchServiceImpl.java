@@ -4,6 +4,8 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.maogou.stock.config.AppProperties;
+import com.maogou.stock.domain.entity.AiFactorDefinition;
+import com.maogou.stock.domain.entity.research.AiFactorPerformanceSource;
 import com.maogou.stock.domain.entity.research.AiFactorValue;
 import com.maogou.stock.domain.entity.research.AiSampleLabel;
 import com.maogou.stock.domain.entity.research.AiModelVersion;
@@ -152,84 +154,106 @@ public class AiWeeklyResearchServiceImpl implements AiWeeklyEvolutionRunner {
     private int evaluateFactorPerformance(LocalDateTime now) {
         LocalDate historyStart = now.toLocalDate().minusDays(
                 Math.max(180, properties.getScheduler().getWeeklyLookbackDays()));
-        List<AiSample> samples = sampleMapper.selectList(new QueryWrapper<AiSample>()
-                .between("trade_date", historyStart, now.toLocalDate())
-                .le("as_of_time", now)
-                .orderByAsc("trade_date").orderByAsc("id"));
-        if (samples == null || samples.isEmpty()) {
-            return 0;
-        }
-        LocalDate windowEnd = samples.stream().map(item -> item.tradeDate)
-                .filter(Objects::nonNull).max(LocalDate::compareTo).orElse(null);
+        LocalDate windowEnd = sampleMapper.selectLatestResearchTradeDate(
+                historyStart, now.toLocalDate(), now);
         if (windowEnd == null) {
             return 0;
         }
         LocalDate windowStart = windowEnd.minusDays(59);
         LocalDate baselineStart = windowStart.minusDays(60);
-        Map<Long, AiSample> samplesById = samples.stream()
-                .filter(item -> item.id != null)
-                .collect(Collectors.toMap(item -> item.id, Function.identity(), (left, right) -> left));
-        if (samplesById.isEmpty()) {
+        List<String> regimes = sampleMapper.selectResearchMarketRegimes(
+                baselineStart, windowEnd, now);
+        List<AiFactorDefinition> definitions = factorMapper.selectEnabledDefinitions(
+                AiResearchContract.FACTOR_VERSION);
+        if (regimes == null || regimes.isEmpty() || definitions == null || definitions.isEmpty()) {
             return 0;
         }
-        List<AiFactorValue> factors = new ArrayList<>();
-        List<AiSampleLabel> labels = new ArrayList<>();
-        List<Long> orderedSampleIds = samplesById.keySet().stream().sorted().toList();
-        for (List<Long> sampleIds : chunks(orderedSampleIds, 500)) {
-            factors.addAll(factorMapper.selectBySamples(
-                    sampleIds, AiResearchContract.FACTOR_VERSION));
-            labels.addAll(labelMapper.selectList(new QueryWrapper<AiSampleLabel>()
-                    .eq("label_version", AiResearchContract.LABEL_VERSION)
-                    .eq("horizon_trading_days", HORIZON_DAYS)
-                    .eq("label_status", "MATURED")
-                    .eq("execution_status", "EXECUTED")
-                    .le("label_available_at", now)
-                    .in("sample_id", sampleIds)
-                    .orderByDesc("matured_at").orderByDesc("id")));
-        }
-        Map<Long, AiSampleLabel> labelBySample = labels.stream()
-                .filter(item -> item.sampleId != null)
-                .collect(Collectors.toMap(item -> item.sampleId, Function.identity(), (left, right) -> left));
-        Map<String, List<AiFactorPerformanceService.Observation>> byRegime = factors.stream()
-                .filter(item -> item.sampleId != null)
-                .map(factor -> {
-                    AiSample sample = samplesById.get(factor.sampleId);
-                    AiSampleLabel label = labelBySample.get(factor.sampleId);
-                    return sample == null || label == null
-                            ? null : new AiFactorPerformanceService.Observation(sample, factor, label);
-                })
-                .filter(Objects::nonNull)
-                .filter(item -> item.sample().tradeDate != null)
-                .filter(item -> item.sample().marketRegime != null && !item.sample().marketRegime.isBlank())
-                .collect(Collectors.groupingBy(
-                        item -> item.sample().marketRegime, LinkedHashMap::new, Collectors.toList()));
         int count = 0;
-        for (Map.Entry<String, List<AiFactorPerformanceService.Observation>> entry : byRegime.entrySet()) {
-            List<AiFactorPerformanceService.Observation> current = entry.getValue().stream()
-                    .filter(item -> !item.sample().tradeDate.isBefore(windowStart))
-                    .filter(item -> !item.sample().tradeDate.isAfter(windowEnd))
-                    .toList();
-            if (current.isEmpty()) {
-                continue;
-            }
-            List<AiFactorPerformanceService.Observation> baseline = entry.getValue().stream()
-                    .filter(item -> !item.sample().tradeDate.isBefore(baselineStart))
-                    .filter(item -> item.sample().tradeDate.isBefore(windowStart))
-                    .toList();
-            AiFactorPerformanceService.EvaluationResult result = factorPerformanceService.evaluateAndStore(
-                    new AiFactorPerformanceService.PerformanceBatch(
-                            AiResearchContract.FACTOR_VERSION, HORIZON_DAYS,
-                            entry.getKey(), "ROLLING_60D", windowStart, windowEnd,
-                            current, baseline, "FACTOR_DRIFT_V2_1",
-                            new AiFactorPerformanceService.DriftThresholds(
-                                    new BigDecimal("0.10"), new BigDecimal("0.25"),
-                                    new BigDecimal("15"), new BigDecimal("25")),
-                            now));
-            if (result != null && result.performances() != null) {
-                count += result.performances().size();
+        for (String regime : regimes) {
+            for (AiFactorDefinition definition : definitions) {
+                if (definition == null || definition.id == null) {
+                    continue;
+                }
+                List<AiFactorPerformanceSource> sources = factorMapper.selectPerformanceSources(
+                        definition.id, AiResearchContract.FACTOR_VERSION,
+                        AiResearchContract.LABEL_VERSION, HORIZON_DAYS, regime,
+                        baselineStart, windowEnd, now);
+                if (sources == null || sources.isEmpty()) {
+                    continue;
+                }
+                List<AiFactorPerformanceService.Observation> current = new ArrayList<>();
+                List<AiFactorPerformanceService.Observation> baseline = new ArrayList<>();
+                for (AiFactorPerformanceSource source : sources) {
+                    AiFactorPerformanceService.Observation observation = observation(source);
+                    if (observation == null) {
+                        continue;
+                    }
+                    if (source.tradeDate.isBefore(windowStart)) {
+                        baseline.add(observation);
+                    } else if (!source.tradeDate.isAfter(windowEnd)) {
+                        current.add(observation);
+                    }
+                }
+                if (current.isEmpty()) {
+                    continue;
+                }
+                AiFactorPerformanceService.EvaluationResult result = factorPerformanceService.evaluateAndStore(
+                        new AiFactorPerformanceService.PerformanceBatch(
+                                AiResearchContract.FACTOR_VERSION, HORIZON_DAYS,
+                                regime, "ROLLING_60D", windowStart, windowEnd,
+                                current, baseline, "FACTOR_DRIFT_V2_1",
+                                new AiFactorPerformanceService.DriftThresholds(
+                                        new BigDecimal("0.10"), new BigDecimal("0.25"),
+                                        new BigDecimal("15"), new BigDecimal("25")),
+                                now));
+                if (result != null && result.performances() != null) {
+                    count += result.performances().size();
+                }
             }
         }
         return count;
+    }
+
+    private static AiFactorPerformanceService.Observation observation(
+            AiFactorPerformanceSource source
+    ) {
+        if (source == null || source.sampleId == null || source.tradeDate == null) {
+            return null;
+        }
+        AiSample sample = new AiSample();
+        sample.id = source.sampleId;
+        sample.stockCode = source.stockCode;
+        sample.tradeDate = source.tradeDate;
+        sample.marketRegime = source.marketRegime;
+        sample.sourceFingerprint = source.sampleSourceFingerprint;
+
+        AiFactorValue factor = new AiFactorValue();
+        factor.id = source.factorValueId;
+        factor.sampleId = source.sampleId;
+        factor.factorDefinitionId = source.factorDefinitionId;
+        factor.stockCode = source.stockCode;
+        factor.factorCode = source.factorCode;
+        factor.factorVersion = source.factorVersion;
+        factor.direction = source.factorDirection;
+        factor.rawValue = source.rawValue;
+        factor.normalizedValue = source.normalizedValue;
+        factor.missing = source.factorMissing;
+        factor.inputFingerprint = source.factorInputFingerprint;
+
+        AiSampleLabel label = new AiSampleLabel();
+        label.id = source.labelId;
+        label.sampleId = source.sampleId;
+        label.stockCode = source.stockCode;
+        label.horizonTradingDays = source.horizonTradingDays;
+        label.inputFingerprint = source.labelInputFingerprint;
+        label.excessReturn = source.excessReturn;
+        label.maxAdverseReturn = source.maxAdverseReturn;
+        label.executionStatus = source.executionStatus;
+        label.labelStatus = source.labelStatus;
+        label.labelAvailableAt = source.labelAvailableAt;
+        label.maturedAt = source.maturedAt;
+        label.verifiedAt = source.verifiedAt;
+        return new AiFactorPerformanceService.Observation(sample, factor, label);
     }
 
     private void evaluateChallenger(
@@ -687,14 +711,6 @@ public class AiWeeklyResearchServiceImpl implements AiWeeklyEvolutionRunner {
         messages.addAll(errors);
         String message = messages.isEmpty() ? "没有可执行的周度评估" : String.join("；", messages);
         return new AiResearchCycleResult(status, processed, success, failed, message);
-    }
-
-    private static <T> List<List<T>> chunks(List<T> values, int chunkSize) {
-        List<List<T>> result = new ArrayList<>();
-        for (int start = 0; start < values.size(); start += chunkSize) {
-            result.add(values.subList(start, Math.min(values.size(), start + chunkSize)));
-        }
-        return result;
     }
 
     private static void validate(LocalDateTime triggeredAt) {

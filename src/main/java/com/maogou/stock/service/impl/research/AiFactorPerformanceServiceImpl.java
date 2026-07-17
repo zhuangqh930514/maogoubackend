@@ -558,12 +558,18 @@ public class AiFactorPerformanceServiceImpl implements AiFactorPerformanceServic
     }
 
     private static String observationFingerprint(List<Observation> observations) {
-        return observations.stream()
+        StringBuilder lineage = new StringBuilder();
+        observations.stream()
                 .sorted(Comparator.comparing(observation -> observation.sample().id))
-                .map(observation -> observation.sample().sourceFingerprint + ":"
-                        + observation.factor().inputFingerprint + ":" + observation.label().inputFingerprint)
-                .reduce((left, right) -> left + "|" + right)
-                .orElse("");
+                .forEach(observation -> {
+                    if (!lineage.isEmpty()) {
+                        lineage.append('|');
+                    }
+                    lineage.append(observation.sample().sourceFingerprint).append(':')
+                            .append(observation.factor().inputFingerprint).append(':')
+                            .append(observation.label().inputFingerprint);
+                });
+        return lineage.toString();
     }
 
     private static String sha256(String value) {

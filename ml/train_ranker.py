@@ -66,25 +66,13 @@ def _target(row: dict[str, Any]) -> int:
 
 def load_dataset(dataset_path: str | Path) -> TrainingDataset:
     path = Path(dataset_path)
-    rows: list[dict[str, Any]] = []
-    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        if not line.strip():
-            continue
-        try:
-            rows.append(json.loads(line))
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"invalid JSON on line {line_number}") from exc
-    if not rows:
-        raise ValueError("dataset is empty")
-
     sample_splits: dict[int, str] = {}
-    flattened_rows: list[dict[str, float]] = []
     feature_names: set[str] = set()
     labels: list[int] = []
     splits: list[str] = []
     sample_ids: list[int] = []
     trade_dates: list[str] = []
-    for row in rows:
+    for _, row in _dataset_rows(path):
         split = str(row.get("split", "")).upper()
         if split not in VALID_SPLITS:
             raise ValueError(f"unknown split: {split}")
@@ -98,20 +86,24 @@ def load_dataset(dataset_path: str | Path) -> TrainingDataset:
         flattened = _flatten_numeric(row.get("features") or {})
         if not flattened:
             raise ValueError(f"sample {sample_id} has no numeric features")
-        flattened_rows.append(flattened)
         if split == "TRAIN":
             feature_names.update(flattened)
         labels.append(_target(row))
         splits.append(split)
         sample_ids.append(sample_id)
         trade_dates.append(str(row.get("tradeDate", "")))
+    if not sample_ids:
+        raise ValueError("dataset is empty")
 
     ordered_features = sorted(feature_names)
-    matrix = np.full((len(rows), len(ordered_features)), np.nan, dtype=np.float64)
-    for row_index, flattened in enumerate(flattened_rows):
-        for column_index, name in enumerate(ordered_features):
-            if name in flattened:
-                matrix[row_index, column_index] = flattened[name]
+    feature_indexes = {name: index for index, name in enumerate(ordered_features)}
+    matrix = np.full((len(sample_ids), len(ordered_features)), np.nan, dtype=np.float64)
+    for row_index, (_, row) in enumerate(_dataset_rows(path)):
+        flattened = _flatten_numeric(row.get("features") or {})
+        for name, value in flattened.items():
+            column_index = feature_indexes.get(name)
+            if column_index is not None:
+                matrix[row_index, column_index] = value
     split_values = np.asarray(splits, dtype=str)
     train_matrix = matrix[split_values == "TRAIN"]
     selected_columns = np.asarray(
@@ -135,6 +127,17 @@ def load_dataset(dataset_path: str | Path) -> TrainingDataset:
         trade_dates=np.asarray(trade_dates, dtype=str),
         feature_names=selected_features,
     )
+
+
+def _dataset_rows(path: Path) -> Iterable[tuple[int, dict[str, Any]]]:
+    with path.open("r", encoding="utf-8") as source:
+        for line_number, line in enumerate(source, 1):
+            if not line.strip():
+                continue
+            try:
+                yield line_number, json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"invalid JSON on line {line_number}") from exc
 
 
 def _require_usable_splits(dataset: TrainingDataset) -> None:

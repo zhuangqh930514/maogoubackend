@@ -20,6 +20,7 @@ import java.security.MessageDigest;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
@@ -27,8 +28,12 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class AiTrainingDatasetServiceImplTest {
@@ -145,6 +150,25 @@ class AiTrainingDatasetServiceImplTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("不可变");
         assertThat(Files.readString(artifact)).isEqualTo(original);
+    }
+
+    @Test
+    void buildsLargeDatasetUsingBoundedSourceAndInsertPages() {
+        Fixture fixture = fixture();
+        for (long id = 1; id <= 1_200; id++) {
+            fixture.sources.add(source(
+                    id, 10_000L + id, "2026-01-02", "2026-01-06T15:00:00",
+                    String.valueOf(10 + id / 10_000d)));
+        }
+
+        var result = service(fixture).buildDataset(request(tempDir.resolve("paged.jsonl")));
+
+        assertThat(result.dataset().rowCount).isEqualTo(1_200);
+        assertThat(result.items()).hasSize(1_200);
+        verify(fixture.itemMapper, times(3)).selectEligibleSourcesPage(
+                any(), nullable(LocalDate.class), nullable(String.class),
+                nullable(Long.class), nullable(Long.class), anyInt());
+        verify(fixture.itemMapper, times(3)).insertBatchImmutable(anyList());
     }
 
     @Test
@@ -330,7 +354,24 @@ class AiTrainingDatasetServiceImplTest {
         List<AiModelVersion> models = new ArrayList<>();
         AtomicLong ids = new AtomicLong(100);
 
-        when(itemMapper.selectEligibleSources(any())).thenAnswer(invocation -> List.copyOf(sources));
+        when(itemMapper.selectEligibleSourcesPage(
+                any(), nullable(LocalDate.class), nullable(String.class),
+                nullable(Long.class), nullable(Long.class), anyInt())).thenAnswer(invocation -> {
+            LocalDate afterTradeDate = invocation.getArgument(1);
+            String afterStockCode = invocation.getArgument(2);
+            Long afterSampleId = invocation.getArgument(3);
+            Long afterLabelId = invocation.getArgument(4);
+            int limit = invocation.getArgument(5);
+            Comparator<AiTrainingDatasetSource> order = Comparator
+                    .comparing((AiTrainingDatasetSource item) -> item.tradeDate)
+                    .thenComparing(item -> item.stockCode)
+                    .thenComparing(item -> item.sampleId)
+                    .thenComparing(item -> item.sampleLabelId);
+            return sources.stream().sorted(order)
+                    .filter(item -> afterTradeDate == null || compareKey(
+                            item, afterTradeDate, afterStockCode, afterSampleId, afterLabelId) > 0)
+                    .limit(limit).toList();
+        });
         when(datasetMapper.insertImmutable(any())).thenAnswer(invocation -> {
             AiTrainingDataset candidate = invocation.getArgument(0);
             boolean exists = datasets.stream().anyMatch(item -> item.datasetKey.equals(candidate.datasetKey)
@@ -377,6 +418,26 @@ class AiTrainingDatasetServiceImplTest {
                         && item.modelKey.equals(invocation.getArgument(1))
                         && item.versionNo.equals(invocation.getArgument(2))).findFirst().orElse(null));
         return new Fixture(datasetMapper, itemMapper, modelMapper, sources, datasets);
+    }
+
+    private static int compareKey(
+            AiTrainingDatasetSource source,
+            LocalDate tradeDate,
+            String stockCode,
+            Long sampleId,
+            Long labelId
+    ) {
+        int value = source.tradeDate.compareTo(tradeDate);
+        if (value == 0) {
+            value = source.stockCode.compareTo(stockCode);
+        }
+        if (value == 0) {
+            value = source.sampleId.compareTo(sampleId);
+        }
+        if (value == 0) {
+            value = source.sampleLabelId.compareTo(labelId);
+        }
+        return value;
     }
 
     private record Fixture(

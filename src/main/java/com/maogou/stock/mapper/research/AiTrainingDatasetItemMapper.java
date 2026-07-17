@@ -139,6 +139,54 @@ public interface AiTrainingDatasetItemMapper extends BaseMapper<AiTrainingDatase
             @Param("query") AiTrainingDatasetSourceQuery query
     );
 
+    @Select("""
+            <script>
+            SELECT
+                s.id AS sample_id,
+                l.id AS sample_label_id,
+                s.stock_code,
+                s.trade_date,
+                s.as_of_time AS sample_as_of_time,
+                l.label_available_at,
+                s.feature_version,
+                l.label_version,
+                l.calendar_version,
+                l.horizon_trading_days,
+                s.feature_snapshot,
+                l.net_return,
+                l.excess_return,
+                l.actual_direction,
+                l.execution_status,
+                s.source_fingerprint AS feature_fingerprint,
+                l.input_fingerprint AS label_fingerprint
+            FROM ai_sample s
+            INNER JOIN ai_sample_label l ON l.sample_id = s.id
+            WHERE s.feature_version = #{query.featureVersion}
+              AND l.label_version = #{query.labelVersion}
+              AND l.calendar_version = #{query.calendarVersion}
+              AND l.label_status = 'MATURED'
+              AND l.execution_status = 'EXECUTED'
+              AND l.horizon_trading_days = #{query.horizonTradingDays}
+              AND s.trade_date BETWEEN #{query.startDate} AND #{query.endDate}
+              AND s.as_of_time &lt;= #{query.asOfTime}
+              AND l.label_available_at &lt;= #{query.asOfTime}
+            <if test="afterTradeDate != null">
+              AND (s.trade_date, s.stock_code, s.id, l.id) &gt;
+                  (#{afterTradeDate}, #{afterStockCode}, #{afterSampleId}, #{afterLabelId})
+            </if>
+            ORDER BY s.trade_date, s.stock_code, s.id, l.id
+            LIMIT #{limit}
+            </script>
+            """)
+    List<AiTrainingDatasetSource> selectEligibleSourcesPage(
+            @Param("query") AiTrainingDatasetSourceQuery query,
+            @Param("afterTradeDate") LocalDate afterTradeDate,
+            @Param("afterStockCode") String afterStockCode,
+            @Param("afterSampleId") Long afterSampleId,
+            @Param("afterLabelId") Long afterLabelId,
+            @Param("limit") int limit
+    );
+
     @Insert("""
             <script>
             INSERT INTO ai_training_dataset_item (

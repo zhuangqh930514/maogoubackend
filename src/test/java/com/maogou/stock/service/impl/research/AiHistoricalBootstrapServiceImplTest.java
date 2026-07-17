@@ -116,10 +116,21 @@ class AiHistoricalBootstrapServiceImplTest {
         AiHistoricalEvidenceImportService importer = mock(AiHistoricalEvidenceImportService.class);
         AiHistoricalEvidenceImportService.ColdStartPlan plan = new AiHistoricalEvidenceImportService.ColdStartPlan(
                 date, nextTradingDate, 120, 125, 200, List.of(date, nextTradingDate));
-        when(importer.importEvidence(any())).thenReturn(new AiHistoricalEvidenceImportService.ImportResult(
-                2, 0, 200, "imported", List.of()));
-        when(fixture.sourceService.load(any(), any())).thenAnswer(invocation ->
-                ready(invocation.getArgument(0), 1));
+        AtomicBoolean imported = new AtomicBoolean(false);
+        when(importer.importEvidence(any())).thenAnswer(invocation -> {
+            imported.set(true);
+            return new AiHistoricalEvidenceImportService.ImportResult(
+                    2, 0, 200, "imported", List.of());
+        });
+        when(fixture.sourceService.load(any(), any())).thenAnswer(invocation -> {
+            LocalDate tradeDate = invocation.getArgument(0);
+            if (!imported.get()) {
+                return new HistoricalUniverseSourceService.HistoricalDayEvidence(
+                        "MISSING_HISTORICAL_UNIVERSE", tradeDate, tradeDate.atTime(16, 0),
+                        null, null, 0, null, List.of("尚未导入"));
+            }
+            return ready(tradeDate, 1);
+        });
         when(fixture.executor.execute(anyString(), any())).thenAnswer(invocation -> {
             AiGlobalDailyResearchExecutor.PipelineContext context = invocation.getArgument(1);
             return outcome(invocation.getArgument(0), context.tradeDate());
@@ -135,7 +146,7 @@ class AiHistoricalBootstrapServiceImplTest {
 
         assertThat(result.status()).isEqualTo("SUCCESS");
         verify(importer).importEvidence(any());
-        verify(fixture.sourceService).load(date, date.atTime(16, 0));
+        verify(fixture.sourceService, times(2)).load(date, date.atTime(16, 0));
         verify(fixture.sourceService).load(nextTradingDate, nextTradingDate.atTime(16, 0));
         verify(fixture.sourceService, never()).load(
                 LocalDate.of(2026, 1, 10), LocalDate.of(2026, 1, 10).atTime(16, 0));
@@ -143,6 +154,38 @@ class AiHistoricalBootstrapServiceImplTest {
                 org.mockito.ArgumentMatchers.eq("MATURE_HISTORICAL_SAMPLE_LABELS"), any());
         verify(fixture.executor).execute(
                 org.mockito.ArgumentMatchers.eq("EVALUATE_HISTORICAL_PREDICTIONS"), any());
+    }
+
+    @Test
+    void reusesCompleteHistoricalEvidenceWithoutCallingExternalImporterAgain() {
+        Fixture fixture = fixture();
+        LocalDate date = LocalDate.of(2026, 1, 9);
+        LocalDate nextTradingDate = LocalDate.of(2026, 1, 12);
+        AiHistoricalEvidenceImportService importer = mock(AiHistoricalEvidenceImportService.class);
+        AiHistoricalEvidenceImportService.ColdStartPlan plan = new AiHistoricalEvidenceImportService.ColdStartPlan(
+                date, nextTradingDate, 120, 125, 300, List.of(date, nextTradingDate));
+        when(fixture.sourceService.load(any(), any())).thenAnswer(invocation -> {
+            LocalDate tradeDate = invocation.getArgument(0);
+            return ready(tradeDate, tradeDate.equals(date) ? 1 : 2);
+        });
+        when(fixture.executor.execute(anyString(), any())).thenAnswer(invocation -> {
+            AiGlobalDailyResearchExecutor.PipelineContext context = invocation.getArgument(1);
+            return outcome(invocation.getArgument(0), context.tradeDate());
+        });
+        AiHistoricalBootstrapService service = new AiHistoricalBootstrapServiceImpl(
+                fixture.runMapper, fixture.stepMapper, importer, fixture.sourceService,
+                fixture.executor, new ObjectMapper().findAndRegisterModules());
+
+        AiHistoricalBootstrapService.BootstrapResult result = service.run(
+                new AiHistoricalBootstrapService.BootstrapRequest(
+                        date, nextTradingDate, 11L, null, "HISTORICAL:REUSED",
+                        LocalDateTime.of(2026, 7, 14, 10, 0), plan));
+
+        assertThat(result.status()).isEqualTo("SUCCESS");
+        assertThat(result.processedTradingDays()).isEqualTo(2);
+        verify(importer, never()).importEvidence(any());
+        verify(fixture.sourceService).load(date, date.atTime(16, 0));
+        verify(fixture.sourceService).load(nextTradingDate, nextTradingDate.atTime(16, 0));
     }
 
     @Test

@@ -49,6 +49,25 @@ def test_load_dataset_preserves_declared_date_splits_and_feature_order(tmp_path:
     assert np.isfinite(dataset.features).all()
 
 
+def test_load_dataset_streams_from_file_without_path_read_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_path = tmp_path / "streamed.jsonl"
+    _write_dataset(dataset_path)
+
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("load_dataset must stream the JSONL file")
+        ),
+    )
+
+    dataset = load_dataset(dataset_path)
+
+    assert dataset.features.shape[0] == 48
+
+
 def test_train_ranker_exports_calibrated_baseline_manifest_metrics_and_optional_outputs(
     tmp_path: Path,
 ) -> None:

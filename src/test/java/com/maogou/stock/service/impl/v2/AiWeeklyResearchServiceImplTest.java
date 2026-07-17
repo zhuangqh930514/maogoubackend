@@ -2,6 +2,8 @@ package com.maogou.stock.service.impl.research;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.maogou.stock.config.AppProperties;
+import com.maogou.stock.domain.entity.AiFactorDefinition;
+import com.maogou.stock.domain.entity.research.AiFactorPerformanceSource;
 import com.maogou.stock.domain.entity.research.AiFactorValue;
 import com.maogou.stock.domain.entity.research.AiFactorPerformance;
 import com.maogou.stock.domain.entity.research.AiSampleLabel;
@@ -30,6 +32,7 @@ import com.maogou.stock.service.research.AiShadowEvaluationService;
 import com.maogou.stock.service.research.AiWalkForwardService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.apache.ibatis.annotations.Select;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -47,6 +50,65 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class AiWeeklyResearchServiceImplTest {
+
+    @Test
+    void performanceProjectionDoesNotSelectHeavyJsonColumns() throws Exception {
+        Select select = AiFactorValueMapper.class.getMethod(
+                "selectPerformanceSources",
+                Long.class, String.class, String.class, Integer.class, String.class,
+                LocalDate.class, LocalDate.class, LocalDateTime.class).getAnnotation(Select.class);
+
+        assertThat(String.join(" ", select.value()).toLowerCase())
+                .doesNotContain("feature_snapshot", "evidence_json",
+                        "policy_snapshot_json", "market_evidence_json");
+    }
+
+    @Test
+    void evaluatesLargeHistoryThroughLightweightFactorProjection() {
+        Fixture fixture = fixture();
+        LocalDate windowEnd = LocalDate.of(2026, 7, 16);
+        when(fixture.sampleMapper.selectLatestResearchTradeDate(any(), any(), any()))
+                .thenReturn(windowEnd);
+        when(fixture.sampleMapper.selectResearchMarketRegimes(any(), any(), any()))
+                .thenReturn(List.of("SIDEWAYS"));
+        AiFactorDefinition definition = definition(91L, "MOMENTUM_RETURN_5D");
+        when(fixture.factorMapper.selectEnabledDefinitions(AiResearchContract.FACTOR_VERSION))
+                .thenReturn(List.of(definition));
+        List<AiFactorPerformanceSource> sources = new ArrayList<>(40_000);
+        for (int index = 0; index < 40_000; index++) {
+            sources.add(performanceSource(
+                    10_000L + index,
+                    windowEnd.minusDays(index % 120L),
+                    definition,
+                    "SIDEWAYS"));
+        }
+        when(fixture.factorMapper.selectPerformanceSources(
+                any(), anyString(), anyString(), any(), anyString(), any(), any(), any()))
+                .thenReturn(sources);
+        AiFactorPerformance performance = new AiFactorPerformance();
+        performance.id = 501L;
+        when(fixture.factorPerformanceService.evaluateAndStore(any())).thenReturn(
+                new AiFactorPerformanceService.EvaluationResult(
+                        List.of(performance), List.of(), List.of(definition.factorCode)));
+        when(fixture.releaseMapper.selectGlobalActiveChampionForUpdate(anyString(), anyString()))
+                .thenReturn(null);
+
+        AiResearchCycleResult result = runner(fixture).run(5L, now());
+
+        assertThat(result.status()).isEqualTo("SUCCESS");
+        ArgumentCaptor<AiFactorPerformanceService.PerformanceBatch> batch =
+                ArgumentCaptor.forClass(AiFactorPerformanceService.PerformanceBatch.class);
+        verify(fixture.factorPerformanceService).evaluateAndStore(batch.capture());
+        assertThat(batch.getValue().observations()).hasSize(20_020);
+        assertThat(batch.getValue().baselineObservations()).hasSize(19_980);
+        assertThat(batch.getValue().observations()).allMatch(
+                item -> item.sample().featureSnapshot == null
+                        && item.factor().evidenceJson == null
+                        && item.label().policySnapshotJson == null
+                        && item.label().marketEvidenceJson == null);
+        verify(fixture.sampleMapper, never()).selectList(any());
+        verify(fixture.labelMapper, never()).selectList(any());
+    }
 
     @Test
     void skipsCleanlyWhenNoChampionOrChallengerExists() {
@@ -188,6 +250,21 @@ class AiWeeklyResearchServiceImplTest {
         when(fixture.modelMapper.selectById(81L)).thenReturn(model);
         when(fixture.factorMapper.selectBySamples(any(), anyString())).thenReturn(factors);
         when(fixture.sampleMapper.selectList(any())).thenReturn(samples);
+        when(fixture.sampleMapper.selectLatestResearchTradeDate(any(), any(), any()))
+                .thenReturn(dates.get(dates.size() - 1));
+        when(fixture.sampleMapper.selectResearchMarketRegimes(any(), any(), any()))
+                .thenReturn(List.of("UNKNOWN"));
+        AiFactorDefinition definition = definition(91L, "MOMENTUM_RETURN_5D");
+        when(fixture.factorMapper.selectEnabledDefinitions(AiResearchContract.FACTOR_VERSION))
+                .thenReturn(List.of(definition));
+        List<AiFactorPerformanceSource> performanceSources = new ArrayList<>();
+        for (int index = 0; index < dates.size(); index++) {
+            performanceSources.add(performanceSource(
+                    1000L + index, dates.get(index), definition, "UNKNOWN"));
+        }
+        when(fixture.factorMapper.selectPerformanceSources(
+                any(), anyString(), anyString(), any(), anyString(), any(), any(), any()))
+                .thenReturn(performanceSources);
         AiFactorPerformance performance = new AiFactorPerformance();
         performance.id = 5501L;
         when(fixture.factorPerformanceService.evaluateAndStore(any())).thenReturn(
@@ -295,6 +372,50 @@ class AiWeeklyResearchServiceImplTest {
         value.modelVersionId = 81L;
         value.releaseRole = "CHALLENGER";
         value.status = "SHADOW";
+        return value;
+    }
+
+    private static AiFactorDefinition definition(Long id, String factorCode) {
+        AiFactorDefinition value = new AiFactorDefinition();
+        value.id = id;
+        value.factorCode = factorCode;
+        value.factorName = factorCode;
+        value.factorGroup = "TECHNICAL";
+        value.direction = "POSITIVE";
+        value.versionNo = AiResearchContract.FACTOR_VERSION;
+        value.enabled = 1;
+        return value;
+    }
+
+    private static AiFactorPerformanceSource performanceSource(
+            Long sampleId,
+            LocalDate tradeDate,
+            AiFactorDefinition definition,
+            String marketRegime
+    ) {
+        AiFactorPerformanceSource value = new AiFactorPerformanceSource();
+        value.sampleId = sampleId;
+        value.stockCode = "%06d".formatted(sampleId % 1_000_000L);
+        value.tradeDate = tradeDate;
+        value.marketRegime = marketRegime;
+        value.sampleSourceFingerprint = "sample-" + sampleId;
+        value.factorValueId = sampleId + 100_000L;
+        value.factorDefinitionId = definition.id;
+        value.factorCode = definition.factorCode;
+        value.factorVersion = definition.versionNo;
+        value.factorDirection = definition.direction;
+        value.rawValue = new BigDecimal("0.1");
+        value.normalizedValue = new BigDecimal("0.2");
+        value.factorMissing = 0;
+        value.factorInputFingerprint = "factor-" + sampleId;
+        value.labelId = sampleId + 200_000L;
+        value.horizonTradingDays = 3;
+        value.labelInputFingerprint = "label-" + sampleId;
+        value.excessReturn = new BigDecimal("0.03");
+        value.maxAdverseReturn = new BigDecimal("-0.02");
+        value.executionStatus = "EXECUTED";
+        value.labelStatus = "MATURED";
+        value.labelAvailableAt = tradeDate.plusDays(3).atTime(16, 0);
         return value;
     }
 

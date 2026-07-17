@@ -6,9 +6,37 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 
 public interface AiSampleMapper extends BaseMapper<AiSample> {
+
+    @Select("""
+            SELECT MAX(trade_date)
+            FROM ai_sample
+            WHERE trade_date BETWEEN #{startDate} AND #{endDate}
+              AND as_of_time <= #{asOfTime}
+            """)
+    LocalDate selectLatestResearchTradeDate(
+            @Param("startDate") LocalDate startDate,
+            @Param("endDate") LocalDate endDate,
+            @Param("asOfTime") LocalDateTime asOfTime
+    );
+
+    @Select("""
+            SELECT DISTINCT market_regime
+            FROM ai_sample
+            WHERE trade_date BETWEEN #{startDate} AND #{endDate}
+              AND as_of_time <= #{asOfTime}
+              AND market_regime IS NOT NULL
+              AND market_regime <> ''
+            ORDER BY market_regime
+            """)
+    List<String> selectResearchMarketRegimes(
+            @Param("startDate") LocalDate startDate,
+            @Param("endDate") LocalDate endDate,
+            @Param("asOfTime") LocalDateTime asOfTime
+    );
 
     @Select("""
             <script>

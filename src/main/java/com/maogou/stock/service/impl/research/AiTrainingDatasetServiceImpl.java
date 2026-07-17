@@ -17,6 +17,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.BufferedWriter;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
@@ -35,7 +36,6 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -48,9 +48,8 @@ import java.util.Set;
 @Service
 public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
 
-    private static final Map<String, Integer> SPLIT_ORDER = Map.of(
-            "TRAIN", 1, "VALIDATION", 2, "TEST", 3);
-
+    private static final int SOURCE_PAGE_SIZE = 500;
+    private static final int INSERT_BATCH_SIZE = 500;
     private final AiTrainingDatasetMapper datasetMapper;
     private final AiTrainingDatasetItemMapper itemMapper;
     private final AiModelVersionMapper modelMapper;
@@ -72,25 +71,23 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
     public DatasetBuildResult buildDataset(DatasetBuildRequest request) {
         validateBuildRequest(request);
         AiTrainingDatasetSourceQuery query = sourceQuery(request);
-        List<AiTrainingDatasetSource> sources = itemMapper.selectEligibleSources(query);
-        List<SelectedSource> selected = selectSources(request, sources == null ? List.of() : sources);
         String sourceQueryJson = json(sourceQueryEvidence(query));
         String selectionPolicyJson = json(selectionPolicyEvidence());
+        ArtifactBuildResult artifact = buildArtifact(request, query);
+        List<SelectedSource> selected = artifact.selected();
         String lineageFingerprint = lineageFingerprint(request, selected, sourceQueryJson, selectionPolicyJson);
-        String artifact = artifact(selected);
-        String artifactChecksum = sha256(artifact);
-        writeArtifact(request.artifactPath(), artifact);
 
         AiTrainingDataset expected = dataset(request, sourceQueryJson, selectionPolicyJson,
-                lineageFingerprint, artifactChecksum, selected.size());
+                lineageFingerprint, artifact.checksum(), selected.size());
         datasetMapper.insertImmutable(expected);
         AiTrainingDataset persisted = datasetMapper.selectByVersionForShare(
                 request.datasetKey(), request.versionNo());
         validatePersistedDataset(expected, persisted);
 
         List<AiTrainingDatasetItem> expectedItems = datasetItems(persisted.id, selected, request.asOfTime());
-        if (!expectedItems.isEmpty()) {
-            itemMapper.insertBatchImmutable(expectedItems);
+        for (int start = 0; start < expectedItems.size(); start += INSERT_BATCH_SIZE) {
+            itemMapper.insertBatchImmutable(expectedItems.subList(
+                    start, Math.min(expectedItems.size(), start + INSERT_BATCH_SIZE)));
         }
         List<AiTrainingDatasetItem> persistedItems = itemMapper.selectByDatasetForShare(persisted.id);
         validatePersistedItems(expectedItems, persistedItems);
@@ -125,29 +122,88 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
         return persisted;
     }
 
-    private List<SelectedSource> selectSources(
+    private ArtifactBuildResult buildArtifact(
             DatasetBuildRequest request,
-            List<AiTrainingDatasetSource> sources
+            AiTrainingDatasetSourceQuery query
     ) {
-        List<SelectedSource> selected = new ArrayList<>();
-        Set<String> lineageKeys = new HashSet<>();
-        for (AiTrainingDatasetSource source : sources) {
-            validateSource(request, source, lineageKeys);
-            String split = split(request, source.tradeDate);
-            if (split == null || !labelAvailableBeforeBoundary(request, source, split)) {
-                continue;
+        Path temporary = null;
+        try {
+            Path absolute = request.artifactPath().toAbsolutePath().normalize();
+            Path parent = absolute.getParent() == null
+                    ? Path.of(".").toAbsolutePath().normalize() : absolute.getParent();
+            Files.createDirectories(parent);
+            Path lockPath = parent.resolve("." + absolute.getFileName() + ".lock");
+            try (FileChannel lockChannel = FileChannel.open(
+                    lockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+                 FileLock ignored = lockChannel.lock()) {
+                temporary = Files.createTempFile(parent, "." + absolute.getFileName() + ".", ".tmp");
+                List<SelectedSource> selected = new ArrayList<>();
+                Set<String> lineageKeys = new HashSet<>();
+                try (BufferedWriter output = Files.newBufferedWriter(
+                        temporary, StandardCharsets.UTF_8,
+                        StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+                    LocalDate afterTradeDate = null;
+                    String afterStockCode = null;
+                    Long afterSampleId = null;
+                    Long afterLabelId = null;
+                    while (true) {
+                        List<AiTrainingDatasetSource> page = itemMapper.selectEligibleSourcesPage(
+                                query, afterTradeDate, afterStockCode, afterSampleId, afterLabelId,
+                                SOURCE_PAGE_SIZE);
+                        if (page == null || page.isEmpty()) {
+                            break;
+                        }
+                        for (AiTrainingDatasetSource source : page) {
+                            validateSource(request, source, lineageKeys);
+                            String split = split(request, source.tradeDate);
+                            if (split == null || !labelAvailableBeforeBoundary(request, source, split)) {
+                                continue;
+                            }
+                            JsonNode features = parseFeatures(source);
+                            rejectFutureFeatureEvidence(features, source.sampleAsOfTime, "features");
+                            output.write(artifactRow(source, split, features));
+                            output.newLine();
+                            selected.add(new SelectedSource(compact(source), split));
+                        }
+                        AiTrainingDatasetSource last = page.get(page.size() - 1);
+                        afterTradeDate = last.tradeDate;
+                        afterStockCode = last.stockCode;
+                        afterSampleId = last.sampleId;
+                        afterLabelId = last.sampleLabelId;
+                        if (page.size() < SOURCE_PAGE_SIZE) {
+                            break;
+                        }
+                    }
+                }
+                String generatedChecksum = sha256(temporary);
+                if (Files.exists(absolute)) {
+                    if (!Objects.equals(sha256(absolute), generatedChecksum)) {
+                        throw new IllegalStateException("不可变训练数据产物已存在且内容不同：" + absolute);
+                    }
+                    Files.deleteIfExists(temporary);
+                    temporary = null;
+                    return new ArtifactBuildResult(List.copyOf(selected), generatedChecksum);
+                }
+                try {
+                    Files.move(temporary, absolute,
+                            StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                } catch (AtomicMoveNotSupportedException exception) {
+                    Files.move(temporary, absolute, StandardCopyOption.REPLACE_EXISTING);
+                }
+                temporary = null;
+                return new ArtifactBuildResult(List.copyOf(selected), generatedChecksum);
             }
-            JsonNode features = parseFeatures(source);
-            rejectFutureFeatureEvidence(features, source.sampleAsOfTime, "features");
-            selected.add(new SelectedSource(source, split, features));
+        } catch (IOException ex) {
+            throw new IllegalStateException("无法写入训练数据产物", ex);
+        } finally {
+            if (temporary != null) {
+                try {
+                    Files.deleteIfExists(temporary);
+                } catch (IOException ignored) {
+                    // The immutable target remains protected by the lock.
+                }
+            }
         }
-        selected.sort(Comparator
-                .comparingInt((SelectedSource value) -> SPLIT_ORDER.get(value.split()))
-                .thenComparing(value -> value.source().tradeDate)
-                .thenComparing(value -> value.source().stockCode)
-                .thenComparing(value -> value.source().sampleId)
-                .thenComparing(value -> value.source().sampleLabelId));
-        return selected;
     }
 
     private void validateSource(
@@ -229,78 +285,51 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
         }
     }
 
-    private String artifact(List<SelectedSource> sources) {
-        StringBuilder output = new StringBuilder();
-        for (SelectedSource selected : sources) {
-            AiTrainingDatasetSource source = selected.source();
-            Map<String, Object> target = new LinkedHashMap<>();
-            target.put("horizonDays", source.horizonTradingDays);
-            target.put("netReturn", source.netReturn);
-            target.put("excessReturn", source.excessReturn);
-            target.put("actualDirection", source.actualDirection);
-            target.put("executionStatus", source.executionStatus);
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("sampleId", source.sampleId);
-            row.put("labelId", source.sampleLabelId);
-            row.put("stockCode", source.stockCode);
-            row.put("tradeDate", source.tradeDate.toString());
-            row.put("sampleAsOfTime", source.sampleAsOfTime.toString());
-            row.put("labelAvailableAt", source.labelAvailableAt.toString());
-            row.put("split", selected.split());
-            row.put("featureFingerprint", source.featureFingerprint);
-            row.put("labelFingerprint", source.labelFingerprint);
-            row.put("features", selected.features());
-            row.put("target", target);
-            output.append(json(row)).append('\n');
-        }
-        return output.toString();
+    private String artifactRow(
+            AiTrainingDatasetSource source,
+            String split,
+            JsonNode features
+    ) {
+        Map<String, Object> target = new LinkedHashMap<>();
+        target.put("horizonDays", source.horizonTradingDays);
+        target.put("netReturn", source.netReturn);
+        target.put("excessReturn", source.excessReturn);
+        target.put("actualDirection", source.actualDirection);
+        target.put("executionStatus", source.executionStatus);
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("sampleId", source.sampleId);
+        row.put("labelId", source.sampleLabelId);
+        row.put("stockCode", source.stockCode);
+        row.put("tradeDate", source.tradeDate.toString());
+        row.put("sampleAsOfTime", source.sampleAsOfTime.toString());
+        row.put("labelAvailableAt", source.labelAvailableAt.toString());
+        row.put("split", split);
+        row.put("featureFingerprint", source.featureFingerprint);
+        row.put("labelFingerprint", source.labelFingerprint);
+        row.put("features", features);
+        row.put("target", target);
+        return json(row);
     }
 
-    private static void writeArtifact(Path path, String content) {
-        Path temporary = null;
-        try {
-            Path absolute = path.toAbsolutePath().normalize();
-            Path parent = absolute.getParent() == null ? Path.of(".").toAbsolutePath().normalize() : absolute.getParent();
-            Files.createDirectories(parent);
-            Path lockPath = parent.resolve("." + absolute.getFileName() + ".lock");
-            try (FileChannel lockChannel = FileChannel.open(
-                    lockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE);
-                 FileLock ignored = lockChannel.lock()) {
-                if (Files.exists(absolute)) {
-                    String existing = Files.readString(absolute, StandardCharsets.UTF_8);
-                    if (!Objects.equals(sha256(existing), sha256(content))) {
-                        throw new IllegalStateException("不可变训练数据产物已存在且内容不同：" + absolute);
-                    }
-                    return;
-                }
-                temporary = Files.createTempFile(parent, "." + absolute.getFileName() + ".", ".tmp");
-                try (FileChannel output = FileChannel.open(
-                        temporary, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
-                    java.nio.ByteBuffer encoded = StandardCharsets.UTF_8.encode(content);
-                    while (encoded.hasRemaining()) {
-                        output.write(encoded);
-                    }
-                    output.force(true);
-                }
-                try {
-                    Files.move(temporary, absolute,
-                            StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-                } catch (AtomicMoveNotSupportedException exception) {
-                    Files.move(temporary, absolute, StandardCopyOption.REPLACE_EXISTING);
-                }
-                temporary = null;
-            }
-        } catch (IOException ex) {
-            throw new IllegalStateException("无法写入训练数据产物", ex);
-        } finally {
-            if (temporary != null) {
-                try {
-                    Files.deleteIfExists(temporary);
-                } catch (IOException ignored) {
-                    // A complete target is already protected by the lock; stale temp cleanup can be retried later.
-                }
-            }
-        }
+    private static AiTrainingDatasetSource compact(AiTrainingDatasetSource source) {
+        AiTrainingDatasetSource value = new AiTrainingDatasetSource();
+        value.sampleId = source.sampleId;
+        value.sampleLabelId = source.sampleLabelId;
+        value.stockCode = source.stockCode;
+        value.tradeDate = source.tradeDate;
+        value.sampleAsOfTime = source.sampleAsOfTime;
+        value.labelAvailableAt = source.labelAvailableAt;
+        value.featureVersion = source.featureVersion;
+        value.labelVersion = source.labelVersion;
+        value.calendarVersion = source.calendarVersion;
+        value.horizonTradingDays = source.horizonTradingDays;
+        value.netReturn = source.netReturn;
+        value.excessReturn = source.excessReturn;
+        value.actualDirection = source.actualDirection;
+        value.executionStatus = source.executionStatus;
+        value.featureFingerprint = source.featureFingerprint;
+        value.labelFingerprint = source.labelFingerprint;
+        return value;
     }
 
     private AiTrainingDataset dataset(
@@ -455,13 +484,19 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
             String sourceQueryJson,
             String selectionPolicyJson
     ) {
-        String rows = selected.stream().map(value -> String.join(":",
-                        value.split(), String.valueOf(value.source().sampleId),
-                        String.valueOf(value.source().sampleLabelId), value.source().featureFingerprint,
-                        value.source().labelFingerprint))
-                .reduce((left, right) -> left + "|" + right).orElse("");
+        StringBuilder rows = new StringBuilder();
+        for (SelectedSource value : selected) {
+            if (!rows.isEmpty()) {
+                rows.append('|');
+            }
+            rows.append(value.split()).append(':')
+                    .append(value.source().sampleId).append(':')
+                    .append(value.source().sampleLabelId).append(':')
+                    .append(value.source().featureFingerprint).append(':')
+                    .append(value.source().labelFingerprint);
+        }
         return sha256(String.join("|", request.datasetKey(), request.versionNo(),
-                sourceQueryJson, selectionPolicyJson, rows));
+                sourceQueryJson, selectionPolicyJson, rows.toString()));
     }
 
     private static String split(DatasetBuildRequest request, LocalDate tradeDate) {
@@ -735,8 +770,13 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
 
     private record SelectedSource(
             AiTrainingDatasetSource source,
-            String split,
-            JsonNode features
+            String split
+    ) {
+    }
+
+    private record ArtifactBuildResult(
+            List<SelectedSource> selected,
+            String checksum
     ) {
     }
 }
