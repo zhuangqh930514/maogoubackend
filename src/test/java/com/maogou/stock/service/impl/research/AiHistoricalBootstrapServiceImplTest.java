@@ -111,13 +111,15 @@ class AiHistoricalBootstrapServiceImplTest {
     @Test
     void importsHistoricalEvidenceBeforeReplayingTheColdStartPlan() {
         Fixture fixture = fixture();
-        LocalDate date = LocalDate.of(2026, 1, 5);
+        LocalDate date = LocalDate.of(2026, 1, 9);
+        LocalDate nextTradingDate = LocalDate.of(2026, 1, 12);
         AiHistoricalEvidenceImportService importer = mock(AiHistoricalEvidenceImportService.class);
         AiHistoricalEvidenceImportService.ColdStartPlan plan = new AiHistoricalEvidenceImportService.ColdStartPlan(
-                date, date, 120, 125, 200, List.of(date));
+                date, nextTradingDate, 120, 125, 200, List.of(date, nextTradingDate));
         when(importer.importEvidence(any())).thenReturn(new AiHistoricalEvidenceImportService.ImportResult(
-                1, 0, 200, "imported", List.of()));
-        when(fixture.sourceService.load(any(), any())).thenReturn(ready(date, 1));
+                2, 0, 200, "imported", List.of()));
+        when(fixture.sourceService.load(any(), any())).thenAnswer(invocation ->
+                ready(invocation.getArgument(0), 1));
         when(fixture.executor.execute(anyString(), any())).thenAnswer(invocation -> {
             AiGlobalDailyResearchExecutor.PipelineContext context = invocation.getArgument(1);
             return outcome(invocation.getArgument(0), context.tradeDate());
@@ -128,11 +130,15 @@ class AiHistoricalBootstrapServiceImplTest {
 
         AiHistoricalBootstrapService.BootstrapResult result = service.run(
                 new AiHistoricalBootstrapService.BootstrapRequest(
-                        date, date, 11L, null, "HISTORICAL:IMPORTED", LocalDateTime.of(2026, 7, 14, 10, 0), plan));
+                        date, nextTradingDate, 11L, null, "HISTORICAL:IMPORTED",
+                        LocalDateTime.of(2026, 7, 14, 10, 0), plan));
 
         assertThat(result.status()).isEqualTo("SUCCESS");
         verify(importer).importEvidence(any());
         verify(fixture.sourceService).load(date, date.atTime(16, 0));
+        verify(fixture.sourceService).load(nextTradingDate, nextTradingDate.atTime(16, 0));
+        verify(fixture.sourceService, never()).load(
+                LocalDate.of(2026, 1, 10), LocalDate.of(2026, 1, 10).atTime(16, 0));
         verify(fixture.executor).execute(
                 org.mockito.ArgumentMatchers.eq("MATURE_HISTORICAL_SAMPLE_LABELS"), any());
         verify(fixture.executor).execute(

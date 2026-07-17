@@ -311,8 +311,10 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
         List<HistoricalUniverseSourceService.HistoricalDayEvidence> evidence = new ArrayList<>();
         List<String> errors = new ArrayList<>();
         boolean missingUniverse = false;
-        LocalDate cursor = request.startDate();
-        while (!cursor.isAfter(request.endDate())) {
+        List<LocalDate> requestedDates = request.coldStartPlan() == null
+                ? request.startDate().datesUntil(request.endDate().plusDays(1)).toList()
+                : request.coldStartPlan().tradingDates();
+        for (LocalDate cursor : requestedDates) {
             renewLease(run.id, owner);
             LocalDateTime asOfTime = cursor.atTime(16, 0);
             HistoricalUniverseSourceService.HistoricalDayEvidence day = sourceService.load(cursor, asOfTime);
@@ -322,7 +324,6 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
                 break;
             }
             if ("NOT_TRADING_DAY".equals(day.status())) {
-                cursor = cursor.plusDays(1);
                 continue;
             }
             if (!day.ready()) {
@@ -333,7 +334,6 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
             }
             validateReadyEvidence(day, cursor, asOfTime);
             evidence.add(day);
-            cursor = cursor.plusDays(1);
         }
         Map<LocalDate, HistoricalUniverseSourceService.HistoricalDayEvidence> byDate = new LinkedHashMap<>();
         evidence.forEach(item -> byDate.put(item.tradeDate(), item));
