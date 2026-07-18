@@ -1,15 +1,21 @@
 package com.maogou.stock.service.impl.research;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.maogou.stock.domain.entity.research.AiPrediction;
 import com.maogou.stock.domain.entity.research.AiPredictionEvaluation;
 import com.maogou.stock.domain.entity.research.AiSample;
 import com.maogou.stock.domain.entity.research.AiSampleLabel;
+import com.maogou.stock.domain.entity.research.AiSourceObservation;
 import com.maogou.stock.domain.entity.research.AiTradingCalendar;
 import com.maogou.stock.dto.market.KlinePointResponse;
 import com.maogou.stock.dto.market.KlineSeriesSnapshot;
+import com.maogou.stock.dto.market.StockDetailResponse;
+import com.maogou.stock.infrastructure.market.HistoricalMarketDataProvider;
 import com.maogou.stock.mapper.research.AiPredictionMapper;
 import com.maogou.stock.mapper.research.AiSampleLabelMapper;
 import com.maogou.stock.mapper.research.AiSampleMapper;
+import com.maogou.stock.mapper.research.AiSourceObservationMapper;
 import com.maogou.stock.mapper.research.AiTradingCalendarMapper;
 import com.maogou.stock.service.MarketDataService;
 import com.maogou.stock.service.research.AiLabelVerificationCoordinator;
@@ -43,6 +49,7 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
     private static final int CANDIDATE_LIMIT = 2000;
     private static final int CANDIDATE_SCAN_PAGE_SIZE = 500;
     private static final int CANDIDATE_SCAN_MULTIPLIER = 10;
+    private static final int PENDING_FILTER_SCAN_MULTIPLIER = 4;
     private static final int LABEL_BATCH_SIZE = 500;
     private static final int EVALUATION_BATCH_SIZE = 2000;
     private static final List<Integer> HORIZONS = List.of(1, 2, 3, 5);
@@ -50,10 +57,13 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
     private final AiPredictionMapper predictionMapper;
     private final AiSampleMapper sampleMapper;
     private final AiSampleLabelMapper labelMapper;
+    private final AiSourceObservationMapper observationMapper;
     private final AiTradingCalendarMapper calendarMapper;
     private final MarketDataService marketDataService;
+    private final List<HistoricalMarketDataProvider> historicalProviders;
     private final AiSampleLabelService labelService;
     private final AiPredictionEvaluationService evaluationService;
+    private final ObjectMapper objectMapper;
     private final Clock clock;
 
     @Autowired
@@ -61,32 +71,41 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
             AiPredictionMapper predictionMapper,
             AiSampleMapper sampleMapper,
             AiSampleLabelMapper labelMapper,
+            AiSourceObservationMapper observationMapper,
             AiTradingCalendarMapper calendarMapper,
             MarketDataService marketDataService,
+            List<HistoricalMarketDataProvider> historicalProviders,
             AiSampleLabelService labelService,
-            AiPredictionEvaluationService evaluationService
+            AiPredictionEvaluationService evaluationService,
+            ObjectMapper objectMapper
     ) {
-        this(predictionMapper, sampleMapper, labelMapper, calendarMapper, marketDataService,
-                labelService, evaluationService, Clock.systemDefaultZone());
+        this(predictionMapper, sampleMapper, labelMapper, observationMapper, calendarMapper, marketDataService,
+                historicalProviders, labelService, evaluationService, objectMapper, Clock.systemDefaultZone());
     }
 
     AiLabelVerificationCoordinatorImpl(
             AiPredictionMapper predictionMapper,
             AiSampleMapper sampleMapper,
             AiSampleLabelMapper labelMapper,
+            AiSourceObservationMapper observationMapper,
             AiTradingCalendarMapper calendarMapper,
             MarketDataService marketDataService,
+            List<HistoricalMarketDataProvider> historicalProviders,
             AiSampleLabelService labelService,
             AiPredictionEvaluationService evaluationService,
+            ObjectMapper objectMapper,
             Clock clock
     ) {
         this.predictionMapper = predictionMapper;
         this.sampleMapper = sampleMapper;
         this.labelMapper = labelMapper;
+        this.observationMapper = observationMapper;
         this.calendarMapper = calendarMapper;
         this.marketDataService = marketDataService;
+        this.historicalProviders = orderedProviders(historicalProviders);
         this.labelService = labelService;
         this.evaluationService = evaluationService;
+        this.objectMapper = objectMapper;
         this.clock = Objects.requireNonNull(clock, "clock");
     }
 
@@ -113,8 +132,7 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
         KlineSeriesSnapshot benchmark;
         List<AiTradingCalendar> calendars;
         try {
-            benchmark = marketDataService.klineAt(
-                    AiResearchContract.BENCHMARK_SYMBOL, "day", 320, verifiedAt);
+            benchmark = loadBenchmarkSeries(320, verifiedAt);
             calendars = ensureCalendars(benchmark, verifiedAt);
             if (calendars.isEmpty()) {
                 throw new IllegalStateException("基准指数未返回交易日历");
@@ -138,7 +156,7 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
                     KlineSeriesSnapshot stock = stockSeries.get(sample.stockCode);
                     if (stock == null && !unavailableStocks.contains(sample.stockCode)) {
                         try {
-                            stock = marketDataService.klineAt(sample.stockCode, "day", 320, verifiedAt);
+                            stock = loadSeries(sample, 320, verifiedAt);
                             stockSeries.put(sample.stockCode, stock);
                         } catch (RuntimeException exception) {
                             unavailableStocks.add(sample.stockCode);
@@ -211,14 +229,62 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
             int candidateLimit
     ) {
         int pageSize = Math.min(CANDIDATE_SCAN_PAGE_SIZE, candidateLimit);
-        List<AiSample> page = sampleMapper.selectPendingLabelCandidatesPage(
-                tradeDate,
-                AiResearchContract.LABEL_VERSION,
-                cursor == null ? null : cursor.tradeDate,
-                cursor == null ? null : cursor.stockCode,
-                cursor == null ? null : cursor.id,
-                pageSize);
-        return page == null ? List.of() : page;
+        int scanLimit = Math.multiplyExact(pageSize, PENDING_FILTER_SCAN_MULTIPLIER);
+        int maximumScanCount = Math.multiplyExact(scanLimit, CANDIDATE_SCAN_MULTIPLIER);
+        List<AiSample> pending = new ArrayList<>(pageSize);
+        AiSample scanCursor = cursor;
+        int scanned = 0;
+        while (pending.size() < pageSize && scanned < maximumScanCount) {
+            List<AiSample> candidates = sampleMapper.selectLabelCandidateScanPage(
+                    tradeDate,
+                    scanCursor == null ? null : scanCursor.tradeDate,
+                    scanCursor == null ? null : scanCursor.stockCode,
+                    scanCursor == null ? null : scanCursor.id,
+                    scanLimit);
+            if (candidates == null || candidates.isEmpty()) {
+                break;
+            }
+            scanned += candidates.size();
+            Map<Long, Long> labelCounts = labelCounts(candidates);
+            for (AiSample candidate : candidates) {
+                if (candidate != null && candidate.id != null
+                        && labelCounts.getOrDefault(candidate.id, 0L) < HORIZONS.size()) {
+                    pending.add(candidate);
+                    if (pending.size() >= pageSize) {
+                        break;
+                    }
+                }
+            }
+            scanCursor = candidates.get(candidates.size() - 1);
+            if (candidates.size() < scanLimit) {
+                break;
+            }
+        }
+        return List.copyOf(pending);
+    }
+
+    private Map<Long, Long> labelCounts(List<AiSample> samples) {
+        List<Long> sampleIds = samples.stream()
+                .filter(Objects::nonNull)
+                .map(sample -> sample.id)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (sampleIds.isEmpty()) {
+            return Map.of();
+        }
+        List<AiSampleLabel> labels = labelMapper.selectForSamplesAndVersion(
+                sampleIds, AiResearchContract.LABEL_VERSION);
+        if (labels == null || labels.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, Long> counts = new HashMap<>();
+        for (AiSampleLabel label : labels) {
+            if (label != null && label.sampleId != null) {
+                counts.merge(label.sampleId, 1L, Long::sum);
+            }
+        }
+        return counts;
     }
 
     private Map<Long, Set<Integer>> existingLabelHorizons(
@@ -293,6 +359,160 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
                         + "|" + errors));
     }
 
+    private KlineSeriesSnapshot loadSeries(AiSample sample, int limit, LocalDateTime asOfTime) {
+        String symbol = sample == null ? null : sample.stockCode;
+        RuntimeException realtimeFailure = null;
+        try {
+            KlineSeriesSnapshot series = marketDataService.klineAt(symbol, "day", limit, asOfTime);
+            return requireSeries(series, symbol, "正式研究");
+        } catch (RuntimeException exception) {
+            realtimeFailure = exception;
+        }
+        RuntimeException historicalFailure = null;
+        for (HistoricalMarketDataProvider provider : historicalProviders) {
+            try {
+                KlineSeriesSnapshot series = provider.fetchHistoricalKline(symbol, limit, asOfTime, "NONE");
+                return requireSeries(series, symbol, provider.providerCode() + " 历史回退");
+            } catch (RuntimeException exception) {
+                historicalFailure = exception;
+            }
+        }
+        KlineSeriesSnapshot persisted = loadPersistedSeries(sample, asOfTime);
+        if (persisted != null) {
+            return persisted;
+        }
+        if (realtimeFailure == null) {
+            throw historicalFailure == null
+                    ? new IllegalStateException("未配置可用的正式研究 K 线来源")
+                    : historicalFailure;
+        }
+        if (historicalFailure == null) {
+            throw realtimeFailure;
+        }
+        IllegalStateException combined = new IllegalStateException(
+                rootMessage(realtimeFailure) + "；历史回退失败：" + rootMessage(historicalFailure));
+        combined.addSuppressed(historicalFailure);
+        throw combined;
+    }
+
+    private KlineSeriesSnapshot loadBenchmarkSeries(int limit, LocalDateTime asOfTime) {
+        RuntimeException realtimeFailure = null;
+        try {
+            KlineSeriesSnapshot series = marketDataService.klineAt(
+                    AiResearchContract.BENCHMARK_SYMBOL, "day", limit, asOfTime);
+            return requireSeries(series, AiResearchContract.BENCHMARK_SYMBOL, "正式研究");
+        } catch (RuntimeException exception) {
+            realtimeFailure = exception;
+        }
+        RuntimeException historicalFailure = null;
+        for (HistoricalMarketDataProvider provider : historicalProviders) {
+            try {
+                KlineSeriesSnapshot series = provider.fetchHistoricalKline(
+                        AiResearchContract.BENCHMARK_SYMBOL, limit, asOfTime, "NONE");
+                return requireSeries(series, AiResearchContract.BENCHMARK_SYMBOL,
+                        provider.providerCode() + " 历史回退");
+            } catch (RuntimeException exception) {
+                historicalFailure = exception;
+            }
+        }
+        if (realtimeFailure == null) {
+            throw historicalFailure == null
+                    ? new IllegalStateException("未配置可用的基准指数 K 线来源")
+                    : historicalFailure;
+        }
+        if (historicalFailure == null) {
+            throw realtimeFailure;
+        }
+        IllegalStateException combined = new IllegalStateException(
+                rootMessage(realtimeFailure) + "；历史回退失败：" + rootMessage(historicalFailure));
+        combined.addSuppressed(historicalFailure);
+        throw combined;
+    }
+
+    private static KlineSeriesSnapshot requireSeries(
+            KlineSeriesSnapshot series,
+            String symbol,
+            String sourceLabel
+    ) {
+        if (series == null || series.points() == null || series.points().isEmpty()) {
+            throw new IllegalStateException(sourceLabel + " 未返回有效 K 线：" + symbol);
+        }
+        return series;
+    }
+
+    private KlineSeriesSnapshot loadPersistedSeries(AiSample sample, LocalDateTime asOfTime) {
+        if (sample == null || sample.stockCode == null || asOfTime == null) {
+            return null;
+        }
+        List<AiSourceObservation> observations = new ArrayList<>();
+        AiSourceObservation anchor = null;
+        if (sample.dataBatchId != null) {
+            anchor = observationMapper.selectReadyDailySnapshotByBatch(
+                    sample.dataBatchId, sample.stockCode);
+            if (anchor != null) {
+                observations.add(anchor);
+            }
+        }
+        LocalDateTime afterEventTime = anchor != null && anchor.eventTime != null
+                ? anchor.eventTime
+                : sample.tradeDate.atStartOfDay();
+        List<AiSourceObservation> historical = observationMapper.selectReadyDailySnapshotsBetween(
+                sample.stockCode, afterEventTime, asOfTime);
+        if (historical != null) {
+            observations.addAll(historical);
+        }
+        if (observations.isEmpty()) {
+            return null;
+        }
+        Map<LocalDate, KlinePointResponse> merged = new LinkedHashMap<>();
+        String provider = "HISTORICAL_STITCHED";
+        LocalDateTime latestFetchedAt = null;
+        for (AiSourceObservation observation : observations.stream()
+                .filter(Objects::nonNull)
+                .sorted(Comparator.comparing((AiSourceObservation value) -> value.asOfTime,
+                        Comparator.nullsLast(Comparator.naturalOrder()))
+                        .thenComparing(value -> value.id, Comparator.nullsLast(Comparator.naturalOrder())))
+                .toList()) {
+            StockDetailResponse detail = readStockDetail(observation);
+            if (detail == null || detail.kline() == null || detail.kline().isEmpty()) {
+                continue;
+            }
+            provider = observation.providerCode == null || observation.providerCode.isBlank()
+                    ? provider : observation.providerCode;
+            if (observation.fetchedAt != null && (latestFetchedAt == null
+                    || observation.fetchedAt.isAfter(latestFetchedAt))) {
+                latestFetchedAt = observation.fetchedAt;
+            }
+            for (KlinePointResponse point : detail.kline()) {
+                if (point != null && point.tradeDate() != null && !point.tradeDate().isAfter(asOfTime.toLocalDate())) {
+                    merged.put(point.tradeDate(), point);
+                }
+            }
+        }
+        if (merged.isEmpty()) {
+            return null;
+        }
+        return KlineSeriesSnapshot.create(
+                sample.stockCode,
+                "day",
+                "NONE",
+                provider,
+                asOfTime,
+                latestFetchedAt == null ? asOfTime : latestFetchedAt,
+                merged.values().stream().sorted(Comparator.comparing(KlinePointResponse::tradeDate)).toList());
+    }
+
+    private StockDetailResponse readStockDetail(AiSourceObservation observation) {
+        if (observation == null || observation.payloadJson == null || observation.payloadJson.isBlank()) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(observation.payloadJson, StockDetailResponse.class);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("无法恢复已固化股票日线：" + observation.stockCode, exception);
+        }
+    }
+
     private List<AiTradingCalendar> ensureCalendars(KlineSeriesSnapshot benchmark, LocalDateTime verifiedAt) {
         List<KlinePointResponse> points = benchmark == null || benchmark.points() == null
                 ? List.of()
@@ -344,6 +564,22 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
         if (tradeDate == null || at == null) {
             throw new IllegalArgumentException(type + "缺少交易日或执行时点");
         }
+    }
+
+    private static List<HistoricalMarketDataProvider> orderedProviders(
+            List<HistoricalMarketDataProvider> providers
+    ) {
+        if (providers == null || providers.isEmpty()) {
+            return List.of();
+        }
+        return providers.stream()
+                .filter(Objects::nonNull)
+                .sorted(Comparator.comparingInt(provider -> switch (provider.providerCode()) {
+                    case "EASTMONEY" -> 0;
+                    case "SINA_TENCENT" -> 1;
+                    default -> 10;
+                }))
+                .toList();
     }
 
     private static void requireLimit(int candidateLimit) {

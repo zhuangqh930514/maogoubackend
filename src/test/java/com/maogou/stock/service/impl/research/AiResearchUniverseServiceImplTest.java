@@ -13,6 +13,7 @@ import com.maogou.stock.mapper.research.AiResearchUniverseItemMapper;
 import com.maogou.stock.mapper.research.AiResearchUniverseMapper;
 import com.maogou.stock.mapper.research.AiResearchUniverseSnapshotMapper;
 import com.maogou.stock.service.research.AiResearchUniverseService;
+import com.maogou.stock.service.research.AiSystemCoreUniverseProvider;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -31,6 +32,70 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class AiResearchUniverseServiceImplTest {
+
+    @Test
+    void usesSystemBaselineWhenConfiguredComponentsAreEmpty() {
+        AiResearchUniverseMapper universeMapper = mock(AiResearchUniverseMapper.class);
+        AiResearchUniverseSnapshotMapper snapshotMapper = mock(AiResearchUniverseSnapshotMapper.class);
+        AiResearchUniverseItemMapper itemMapper = mock(AiResearchUniverseItemMapper.class);
+        WatchStockMapper watchMapper = mock(WatchStockMapper.class);
+        TradeRecordMapper tradeMapper = mock(TradeRecordMapper.class);
+        AiSystemCoreUniverseProvider baselineProvider = mock(AiSystemCoreUniverseProvider.class);
+        AiResearchUniverse universe = universe();
+        when(universeMapper.selectOne(any())).thenReturn(universe);
+        when(snapshotMapper.selectOne(any())).thenReturn(null);
+        when(snapshotMapper.selectCount(any())).thenReturn(0L);
+        AtomicLong sequence = new AtomicLong(20);
+        when(snapshotMapper.insert(any(AiResearchUniverseSnapshot.class))).thenAnswer(invocation -> {
+            AiResearchUniverseSnapshot snapshot = invocation.getArgument(0);
+            snapshot.id = sequence.getAndIncrement();
+            return 1;
+        });
+        when(itemMapper.insert(any(AiResearchUniverseItem.class))).thenAnswer(invocation -> {
+            AiResearchUniverseItem item = invocation.getArgument(0);
+            item.id = sequence.getAndIncrement();
+            return 1;
+        });
+        when(watchMapper.selectList(any())).thenReturn(List.of(
+                watch(5L, "002594", "比亚迪", "SZ", "2026-07-02T09:00:00")
+        ));
+        when(tradeMapper.selectList(any())).thenReturn(List.of());
+        when(baselineProvider.baselineCandidates(any(), any(), any())).thenReturn(List.of(
+                candidate("600519", "贵州茅台", "SH", "SYSTEM_BASELINE", true, null),
+                candidate("300750", "宁德时代", "SZ", "SYSTEM_BASELINE", true, null)
+        ));
+
+        AiResearchUniverseService service = new AiResearchUniverseServiceImpl(
+                universeMapper, snapshotMapper, itemMapper, watchMapper, tradeMapper, baselineProvider,
+                new ObjectMapper()
+        );
+
+        AiResearchUniverseService.SnapshotResult result = service.createSystemCoreSnapshot(
+                new AiResearchUniverseService.SnapshotRequest(
+                        LocalDate.parse("2026-07-14"),
+                        LocalDateTime.parse("2026-07-14T16:00:00"),
+                        "CN_A_CALENDAR/2026.1",
+                        List.of()
+                )
+        );
+
+        assertThat(result.snapshot().qualityStatus).isEqualTo("PARTIAL");
+        assertThat(result.items()).extracting(item -> item.stockCode)
+                .containsExactly("002594", "300750", "600519");
+        assertThat(result.items()).anySatisfy(item -> {
+            assertThat(item.stockCode).isEqualTo("600519");
+            assertThat(item.sourceType).isEqualTo("SYSTEM_BASELINE");
+        });
+        assertThat(result.items()).anySatisfy(item -> {
+            assertThat(item.stockCode).isEqualTo("002594");
+            assertThat(item.sourceType).isEqualTo("USER_WATCHLIST");
+        });
+        verify(baselineProvider).baselineCandidates(
+                LocalDate.parse("2026-07-14"),
+                LocalDateTime.parse("2026-07-14T16:00:00"),
+                200
+        );
+    }
 
     @Test
     void mergesConfiguredComponentsAllWatchlistsAndPerUserOpenPositionsByStockCode() {

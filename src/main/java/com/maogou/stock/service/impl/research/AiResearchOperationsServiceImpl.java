@@ -113,8 +113,8 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
             Long actorUserId,
             ResearchLabPayloads.ActionRequest request
     ) {
-        int trainingTradingDays = request.historyTradingDays() == null ? 400 : request.historyTradingDays();
-        int targetStockCount = request.historyStockCount() == null ? 300 : request.historyStockCount();
+        int trainingTradingDays = request.historyTradingDays() == null ? 120 : request.historyTradingDays();
+        int targetStockCount = request.historyStockCount() == null ? 240 : request.historyStockCount();
         if (trainingTradingDays < 120 || trainingTradingDays > 400) {
             throw new IllegalArgumentException("历史训练交易日必须在 120 到 400 之间");
         }

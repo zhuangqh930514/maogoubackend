@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 public interface AiSourceObservationMapper extends BaseMapper<AiSourceObservation> {
 
@@ -21,6 +22,37 @@ public interface AiSourceObservationMapper extends BaseMapper<AiSourceObservatio
             """)
     AiSourceObservation selectIndustryMembershipAt(
             @Param("stockCode") String stockCode,
+            @Param("asOfTime") LocalDateTime asOfTime
+    );
+
+    @Select("""
+            SELECT * FROM ai_source_observation
+            WHERE stock_code = #{stockCode}
+              AND data_batch_id = #{dataBatchId}
+              AND source_type = 'STOCK_DAILY_SNAPSHOT'
+              AND quality_status = 'READY'
+            ORDER BY id DESC
+            LIMIT 1
+            """)
+    AiSourceObservation selectReadyDailySnapshotByBatch(
+            @Param("dataBatchId") Long dataBatchId,
+            @Param("stockCode") String stockCode
+    );
+
+    @Select("""
+            SELECT * FROM ai_source_observation
+            WHERE stock_code = #{stockCode}
+              AND source_type = 'STOCK_DAILY_SNAPSHOT'
+              AND quality_status = 'READY'
+              AND event_time > #{afterEventTime}
+              AND event_time <= #{asOfTime}
+              AND payload_json IS NOT NULL
+              AND payload_json <> ''
+            ORDER BY event_time ASC, id ASC
+            """)
+    List<AiSourceObservation> selectReadyDailySnapshotsBetween(
+            @Param("stockCode") String stockCode,
+            @Param("afterEventTime") LocalDateTime afterEventTime,
             @Param("asOfTime") LocalDateTime asOfTime
     );
 }

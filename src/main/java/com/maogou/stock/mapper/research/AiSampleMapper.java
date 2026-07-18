@@ -75,32 +75,29 @@ public interface AiSampleMapper extends BaseMapper<AiSample> {
     );
 
     @Select("""
-            SELECT s.id, s.stock_code, s.trade_date, s.tradable_status, s.source_fingerprint
+            <script>
+            SELECT s.id, s.data_batch_id, s.stock_code, s.trade_date,
+                   s.tradable_status, s.source_fingerprint
             FROM ai_sample s FORCE INDEX (idx_sample_pending_labels)
-            WHERE s.trade_date < #{tradeDate}
+            WHERE s.trade_date &lt; #{tradeDate}
               AND s.quality_status IN ('READY', 'PARTIAL')
               AND s.tradable_status = 'TRADABLE'
-              AND (
-                  #{afterTradeDate,jdbcType=DATE} IS NULL
-                  OR s.trade_date > #{afterTradeDate,jdbcType=DATE}
-                  OR (s.trade_date = #{afterTradeDate,jdbcType=DATE}
-                      AND s.stock_code > #{afterStockCode,jdbcType=VARCHAR})
-                  OR (s.trade_date = #{afterTradeDate,jdbcType=DATE}
-                      AND s.stock_code = #{afterStockCode,jdbcType=VARCHAR}
-                      AND s.id > #{afterId,jdbcType=BIGINT})
-              )
-              AND (
-                  SELECT COUNT(*)
-                  FROM ai_sample_label l
-                  WHERE l.sample_id = s.id
-                    AND l.label_version = #{labelVersion}
-              ) < 4
-            ORDER BY s.trade_date, s.stock_code, s.id
+              <if test="afterTradeDate != null">
+                AND (
+                    s.trade_date &lt; #{afterTradeDate,jdbcType=DATE}
+                    OR (s.trade_date = #{afterTradeDate,jdbcType=DATE}
+                        AND s.stock_code &lt; #{afterStockCode,jdbcType=VARCHAR})
+                    OR (s.trade_date = #{afterTradeDate,jdbcType=DATE}
+                        AND s.stock_code = #{afterStockCode,jdbcType=VARCHAR}
+                        AND s.id &lt; #{afterId,jdbcType=BIGINT})
+                )
+              </if>
+            ORDER BY s.trade_date DESC, s.stock_code DESC, s.id DESC
             LIMIT #{limit}
+            </script>
             """)
-    List<AiSample> selectPendingLabelCandidatesPage(
+    List<AiSample> selectLabelCandidateScanPage(
             @Param("tradeDate") LocalDate tradeDate,
-            @Param("labelVersion") String labelVersion,
             @Param("afterTradeDate") LocalDate afterTradeDate,
             @Param("afterStockCode") String afterStockCode,
             @Param("afterId") Long afterId,

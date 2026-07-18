@@ -1,15 +1,22 @@
 package com.maogou.stock.service.impl.research;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.maogou.stock.domain.entity.research.AiPrediction;
 import com.maogou.stock.domain.entity.research.AiPredictionEvaluation;
 import com.maogou.stock.domain.entity.research.AiSample;
 import com.maogou.stock.domain.entity.research.AiSampleLabel;
+import com.maogou.stock.domain.entity.research.AiSourceObservation;
 import com.maogou.stock.domain.entity.research.AiTradingCalendar;
 import com.maogou.stock.dto.market.KlinePointResponse;
 import com.maogou.stock.dto.market.KlineSeriesSnapshot;
+import com.maogou.stock.dto.market.StockDetailResponse;
+import com.maogou.stock.infrastructure.market.HistoricalMarketDataProvider;
 import com.maogou.stock.mapper.research.AiPredictionMapper;
 import com.maogou.stock.mapper.research.AiSampleLabelMapper;
 import com.maogou.stock.mapper.research.AiSampleMapper;
+import com.maogou.stock.mapper.research.AiSourceObservationMapper;
 import com.maogou.stock.mapper.research.AiTradingCalendarMapper;
 import com.maogou.stock.service.MarketDataService;
 import com.maogou.stock.service.research.AiLabelVerificationCoordinator;
@@ -48,8 +55,8 @@ class AiLabelVerificationCoordinatorImplTest {
         Fixture fixture = fixture();
         LocalDate tradeDate = LocalDate.of(2026, 7, 10);
         LocalDateTime verifiedAt = tradeDate.atTime(16, 0);
-        when(fixture.sampleMapper.selectPendingLabelCandidatesPage(
-                eq(tradeDate), eq("LABEL/1.0.0"), isNull(), isNull(), isNull(), eq(500)))
+        when(fixture.sampleMapper.selectLabelCandidateScanPage(
+                eq(tradeDate), isNull(), isNull(), isNull(), eq(2000)))
                 .thenReturn(List.of(
                 sample(21L, "600519"), sample(23L, "600519"), sample(22L, "300058")));
         when(fixture.marketDataService.klineAt("000300.SH", "day", 320, verifiedAt))
@@ -72,7 +79,9 @@ class AiLabelVerificationCoordinatorImplTest {
         assertThat(result.processedCount()).isEqualTo(2);
         assertThat(result.successCount()).isEqualTo(1);
         assertThat(result.failedCount()).isEqualTo(1);
-        assertThat(result.errors()).containsExactly("300058: K线暂不可用");
+        assertThat(result.errors()).singleElement().asString()
+                .contains("300058:")
+                .contains("K线暂不可用");
         ArgumentCaptor<AiSampleLabelService.LabelBatch> batchCaptor =
                 ArgumentCaptor.forClass(AiSampleLabelService.LabelBatch.class);
         verify(fixture.labelService).matureAndStore(batchCaptor.capture());
@@ -83,6 +92,80 @@ class AiLabelVerificationCoordinatorImplTest {
                         .isBeforeOrEqualTo(batchCaptor.getValue().verifiedAt()));
         verify(fixture.evaluationService, never()).evaluateAndStore(any());
         verify(fixture.marketDataService, times(1)).klineAt("600519", "day", 320, verifiedAt);
+    }
+
+    @Test
+    void fallsBackToHistoricalKlineWhenRealtimeResearchSeriesUnavailable() {
+        Fixture fixture = fixture();
+        LocalDate tradeDate = LocalDate.of(2026, 7, 10);
+        LocalDateTime verifiedAt = tradeDate.atTime(16, 0);
+        when(fixture.sampleMapper.selectLabelCandidateScanPage(
+                eq(tradeDate), isNull(), isNull(), isNull(), eq(2000)))
+                .thenReturn(List.of(sample(21L, "600519")));
+        when(fixture.marketDataService.klineAt("000300.SH", "day", 320, verifiedAt))
+                .thenReturn(series("000300.SH", verifiedAt));
+        when(fixture.marketDataService.klineAt("600519", "day", 320, verifiedAt))
+                .thenThrow(new IllegalStateException("正式研究 K线不可用"));
+        when(fixture.historicalProvider.fetchHistoricalKline("600519", 320, verifiedAt, "NONE"))
+                .thenReturn(series("600519", verifiedAt));
+        when(fixture.calendarMapper.selectByDates(anyString(), anyString(), anyList()))
+                .thenReturn(List.of(calendar(91L, LocalDate.of(2026, 7, 8))));
+        AiSampleLabel label = new AiSampleLabel();
+        label.id = 81L;
+        label.sampleId = 21L;
+        label.labelStatus = "MATURED";
+        when(fixture.labelService.matureAndStore(any())).thenReturn(List.of(label));
+
+        AiLabelVerificationCoordinator.VerificationResult result = fixture.service.matureSampleLabels(
+                tradeDate, verifiedAt);
+        assertThat(result.processedCount()).withFailMessage(result.toString()).isEqualTo(1);
+        assertThat(result.successCount()).isEqualTo(1);
+        assertThat(result.failedCount()).isZero();
+        assertThat(result.errors()).isEmpty();
+        verify(fixture.historicalProvider).fetchHistoricalKline("600519", 320, verifiedAt, "NONE");
+    }
+
+    @Test
+    void fallsBackToPersistedDailySnapshotsWhenAllExternalSourcesFail() throws Exception {
+        Fixture fixture = fixture();
+        LocalDate tradeDate = LocalDate.of(2026, 7, 10);
+        LocalDateTime verifiedAt = tradeDate.atTime(16, 0);
+        AiSample sample = sample(21L, "600519");
+        sample.dataBatchId = 88L;
+        when(fixture.sampleMapper.selectLabelCandidateScanPage(
+                eq(tradeDate), isNull(), isNull(), isNull(), eq(2000)))
+                .thenReturn(List.of(sample));
+        when(fixture.marketDataService.klineAt("000300.SH", "day", 320, verifiedAt))
+                .thenReturn(series("000300.SH", verifiedAt));
+        when(fixture.marketDataService.klineAt("600519", "day", 320, verifiedAt))
+                .thenThrow(new IllegalStateException("正式研究 K线不可用"));
+        when(fixture.historicalProvider.fetchHistoricalKline("600519", 320, verifiedAt, "NONE"))
+                .thenThrow(new IllegalStateException("历史回退也不可用"));
+        when(fixture.observationMapper.selectReadyDailySnapshotByBatch(88L, "600519"))
+                .thenReturn(snapshotObservation(88L, "600519", LocalDate.of(2026, 7, 3)));
+        when(fixture.observationMapper.selectReadyDailySnapshotsBetween(
+                "600519", LocalDate.of(2026, 7, 3).atTime(15, 0), verifiedAt))
+                .thenReturn(List.of(
+                        snapshotObservation(89L, "600519", LocalDate.of(2026, 7, 8)),
+                        snapshotObservation(90L, "600519", LocalDate.of(2026, 7, 9))));
+        when(fixture.calendarMapper.selectByDates(anyString(), anyString(), anyList()))
+                .thenReturn(List.of(calendar(91L, LocalDate.of(2026, 7, 8))));
+        AiSampleLabel label = new AiSampleLabel();
+        label.id = 81L;
+        label.sampleId = 21L;
+        label.labelStatus = "MATURED";
+        when(fixture.labelService.matureAndStore(any())).thenReturn(List.of(label));
+
+        AiLabelVerificationCoordinator.VerificationResult result = fixture.service.matureSampleLabels(
+                tradeDate, verifiedAt);
+
+        verify(fixture.labelService).matureAndStore(any());
+        assertThat(result.processedCount()).withFailMessage(result.toString()).isEqualTo(1);
+        assertThat(result.successCount()).isEqualTo(1);
+        assertThat(result.failedCount()).isZero();
+        verify(fixture.observationMapper).selectReadyDailySnapshotByBatch(88L, "600519");
+        verify(fixture.observationMapper).selectReadyDailySnapshotsBetween(
+                "600519", LocalDate.of(2026, 7, 3).atTime(15, 0), verifiedAt);
     }
 
     @Test
@@ -118,8 +201,8 @@ class AiLabelVerificationCoordinatorImplTest {
         LocalDate tradeDate = LocalDate.of(2026, 7, 10);
         LocalDateTime verifiedAt = tradeDate.atTime(16, 0);
         AiSample sample = sample(21L, "600519");
-        when(fixture.sampleMapper.selectPendingLabelCandidatesPage(
-                eq(tradeDate), eq("LABEL/1.0.0"), isNull(), isNull(), isNull(), eq(500)))
+        when(fixture.sampleMapper.selectLabelCandidateScanPage(
+                eq(tradeDate), isNull(), isNull(), isNull(), eq(2000)))
                 .thenReturn(List.of(sample));
         when(fixture.marketDataService.klineAt("000300.SH", "day", 320, verifiedAt))
                 .thenReturn(series("000300.SH", verifiedAt));
@@ -151,12 +234,12 @@ class AiLabelVerificationCoordinatorImplTest {
         AiSample secondUnavailable = sample(22L, "300058");
         AiSample firstAvailable = sample(23L, "600519");
         AiSample secondAvailable = sample(24L, "000001");
-        when(fixture.sampleMapper.selectPendingLabelCandidatesPage(
-                eq(tradeDate), eq("LABEL/1.0.0"), isNull(), isNull(), isNull(), eq(2)))
+        when(fixture.sampleMapper.selectLabelCandidateScanPage(
+                eq(tradeDate), isNull(), isNull(), isNull(), eq(8)))
                 .thenReturn(List.of(firstUnavailable, secondUnavailable));
-        when(fixture.sampleMapper.selectPendingLabelCandidatesPage(
-                tradeDate, "LABEL/1.0.0", secondUnavailable.tradeDate,
-                secondUnavailable.stockCode, secondUnavailable.id, 2))
+        when(fixture.sampleMapper.selectLabelCandidateScanPage(
+                tradeDate, secondUnavailable.tradeDate,
+                secondUnavailable.stockCode, secondUnavailable.id, 8))
                 .thenReturn(List.of(firstAvailable, secondAvailable));
         when(fixture.marketDataService.klineAt("000300.SH", "day", 320, verifiedAt))
                 .thenReturn(series("000300.SH", verifiedAt));
@@ -185,7 +268,9 @@ class AiLabelVerificationCoordinatorImplTest {
         assertThat(result.processedCount()).isEqualTo(2);
         assertThat(result.successCount()).isEqualTo(2);
         assertThat(result.failedCount()).isEqualTo(1);
-        assertThat(result.errors()).containsExactly("300058: K线暂不可用");
+        assertThat(result.errors()).singleElement().asString()
+                .contains("300058:")
+                .contains("K线暂不可用");
         ArgumentCaptor<AiSampleLabelService.LabelBatch> batchCaptor =
                 ArgumentCaptor.forClass(AiSampleLabelService.LabelBatch.class);
         verify(fixture.labelService).matureAndStore(batchCaptor.capture());
@@ -198,17 +283,23 @@ class AiLabelVerificationCoordinatorImplTest {
         AiPredictionMapper predictionMapper = mock(AiPredictionMapper.class);
         AiSampleMapper sampleMapper = mock(AiSampleMapper.class);
         AiSampleLabelMapper labelMapper = mock(AiSampleLabelMapper.class);
+        AiSourceObservationMapper observationMapper = mock(AiSourceObservationMapper.class);
         AiTradingCalendarMapper calendarMapper = mock(AiTradingCalendarMapper.class);
         MarketDataService marketDataService = mock(MarketDataService.class);
+        HistoricalMarketDataProvider historicalProvider = mock(HistoricalMarketDataProvider.class);
+        when(historicalProvider.providerCode()).thenReturn("SINA_TENCENT");
         AiSampleLabelService labelService = mock(AiSampleLabelService.class);
         AiPredictionEvaluationService evaluationService = mock(AiPredictionEvaluationService.class);
+        ObjectMapper objectMapper = new ObjectMapper()
+                .registerModule(new JavaTimeModule())
+                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
         ZoneId zone = ZoneId.systemDefault();
         Clock clock = Clock.fixed(EVIDENCE_VERIFIED_AT.atZone(zone).toInstant(), zone);
         AiLabelVerificationCoordinator service = new AiLabelVerificationCoordinatorImpl(
-                predictionMapper, sampleMapper, labelMapper, calendarMapper, marketDataService,
-                labelService, evaluationService, clock);
-        return new Fixture(predictionMapper, sampleMapper, labelMapper, calendarMapper,
-                marketDataService, labelService, evaluationService, service);
+                predictionMapper, sampleMapper, labelMapper, observationMapper, calendarMapper, marketDataService,
+                List.of(historicalProvider), labelService, evaluationService, objectMapper, clock);
+        return new Fixture(predictionMapper, sampleMapper, labelMapper, observationMapper, calendarMapper,
+                marketDataService, historicalProvider, labelService, evaluationService, service);
     }
 
     private static AiSample sample(Long id, String code) {
@@ -261,12 +352,51 @@ class AiLabelVerificationCoordinatorImplTest {
                 BigDecimal.TEN, 1000L, new BigDecimal("10000"));
     }
 
+    private static AiSourceObservation snapshotObservation(Long batchId, String stockCode, LocalDate tradeDate) {
+        AiSourceObservation observation = new AiSourceObservation();
+        observation.id = batchId;
+        observation.dataBatchId = batchId;
+        observation.stockCode = stockCode;
+        observation.sourceType = "STOCK_DAILY_SNAPSHOT";
+        observation.providerCode = "EASTMONEY";
+        observation.qualityStatus = "READY";
+        observation.eventTime = tradeDate.atTime(15, 0);
+        observation.asOfTime = tradeDate.atTime(16, 0);
+        observation.fetchedAt = tradeDate.atTime(15, 30);
+        observation.payloadJson = "{"
+                + "\"quote\":null,"
+                + "\"finance\":null,"
+                + "\"intraday\":[],"
+                + "\"kline\":["
+                + klineJson(tradeDate.minusDays(1)) + ","
+                + klineJson(tradeDate)
+                + "],"
+                + "\"aiAdvice\":null,"
+                + "\"aiScore\":null"
+                + "}";
+        return observation;
+    }
+
+    private static String klineJson(LocalDate date) {
+        return "{"
+                + "\"tradeDate\":\"" + date + "\","
+                + "\"open\":10,"
+                + "\"close\":10,"
+                + "\"high\":10,"
+                + "\"low\":10,"
+                + "\"volume\":1000,"
+                + "\"amount\":10000"
+                + "}";
+    }
+
     private record Fixture(
             AiPredictionMapper predictionMapper,
             AiSampleMapper sampleMapper,
             AiSampleLabelMapper labelMapper,
+            AiSourceObservationMapper observationMapper,
             AiTradingCalendarMapper calendarMapper,
             MarketDataService marketDataService,
+            HistoricalMarketDataProvider historicalProvider,
             AiSampleLabelService labelService,
             AiPredictionEvaluationService evaluationService,
             AiLabelVerificationCoordinator service

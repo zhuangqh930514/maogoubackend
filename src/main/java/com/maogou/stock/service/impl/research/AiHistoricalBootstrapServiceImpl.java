@@ -37,8 +37,10 @@ import java.util.UUID;
 public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapService {
 
     static final int CHECKPOINT_TRADING_DAYS = 20;
+    static final int MAX_PIPELINE_MESSAGE_LENGTH = 4096;
     private static final Duration MAX_HISTORY = Duration.ofDays(366L * 3L);
     private static final Duration LEASE_DURATION = Duration.ofHours(6);
+    private static final int MAX_PIPELINE_MESSAGE_ITEMS = 12;
     private static final List<String> REPLAY_STEPS = List.of(
             "BUILD_SAMPLES",
             "COMPUTE_FACTORS",
@@ -149,8 +151,7 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
                             + imported.importedTradingDays() + imported.reusedTradingDays();
                     run.successCount = run.processedCount;
                     run.failedCount = 0;
-                    run.errorMessage = imported.warnings().isEmpty()
-                            ? null : String.join("；", imported.warnings());
+                    run.errorMessage = summarizeMessages(imported.warnings());
                     run.updatedAt = LocalDateTime.now();
                     updateRun(run, owner);
                     if (reusable != null && !reusable.missingDates().isEmpty()) {
@@ -216,7 +217,7 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
             run.processedCount = evidenceLoad.evidence().size();
             run.successCount = evidenceLoad.evidence().size();
             run.failedCount = completionWarnings.size();
-            run.errorMessage = completionWarnings.isEmpty() ? null : String.join("；", completionWarnings);
+            run.errorMessage = summarizeMessages(completionWarnings);
             run.finishedAt = LocalDateTime.now();
             run.updatedAt = run.finishedAt;
             updateRun(run, owner);
@@ -374,6 +375,9 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
                     "failedCount", failed,
                     "warnings", List.copyOf(warnings),
                     "lastCheckpoint", outcome.checkpointJson())));
+            if (outcome.processedCount() > 0 && outcome.successCount() == 0) {
+                break;
+            }
             if (outcome.processedCount() < AiGlobalDailyResearchExecutor.HISTORICAL_FINALIZE_BATCH_SIZE) {
                 break;
             }
@@ -607,7 +611,7 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
         step.outputCount = checkpoint.completedDates().size();
         step.checkpointJson = json(checkpoint);
         step.outputFingerprint = fingerprint(checkpoint);
-        step.errorMessage = rootMessage(exception);
+        step.errorMessage = summarizeMessage(rootMessage(exception));
         step.finishedAt = now;
         step.updatedAt = now;
         updateStep(step, owner);
@@ -615,7 +619,7 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
         run.failedCount = 1;
         run.processedCount = completedTradingDays(orderedSteps(run.id)) + 1;
         run.successCount = completedTradingDays(orderedSteps(run.id));
-        run.errorMessage = step.stepKey + "：" + step.errorMessage;
+        run.errorMessage = summarizeMessage(step.stepKey + "：" + step.errorMessage);
         run.finishedAt = now;
         run.updatedAt = now;
         updateRun(run, owner);
@@ -625,7 +629,7 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
         LocalDateTime now = LocalDateTime.now();
         run.status = status;
         run.failedCount = 1;
-        run.errorMessage = String.join("；", errors);
+        run.errorMessage = summarizeMessages(errors);
         run.finishedAt = now;
         run.updatedAt = now;
         updateRun(run, owner);
@@ -658,6 +662,59 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
         if (stepMapper.updateStateFenced(step, owner, now) != 1) {
             throw new IllegalStateException("历史冷启动执行租约已丢失，拒绝更新 checkpoint");
         }
+    }
+
+    static String summarizeMessages(List<String> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return null;
+        }
+        List<String> normalized = messages.stream()
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(message -> !message.isBlank())
+                .toList();
+        if (normalized.isEmpty()) {
+            return null;
+        }
+        StringBuilder builder = new StringBuilder();
+        int included = 0;
+        for (String message : normalized) {
+            if (included >= MAX_PIPELINE_MESSAGE_ITEMS) {
+                break;
+            }
+            String separator = builder.isEmpty() ? "" : "；";
+            if (builder.length() + separator.length() + message.length() > MAX_PIPELINE_MESSAGE_LENGTH) {
+                break;
+            }
+            builder.append(separator).append(message);
+            included++;
+        }
+        if (builder.isEmpty()) {
+            return summarizeMessage(normalized.get(0));
+        }
+        int omitted = normalized.size() - included;
+        if (omitted > 0) {
+            String suffix = "；其余 " + omitted + " 条省略";
+            if (builder.length() + suffix.length() > MAX_PIPELINE_MESSAGE_LENGTH) {
+                return summarizeMessage(builder.toString());
+            }
+            builder.append(suffix);
+        }
+        return builder.toString();
+    }
+
+    static String summarizeMessage(String message) {
+        if (message == null) {
+            return null;
+        }
+        String normalized = message.trim();
+        if (normalized.isBlank()) {
+            return null;
+        }
+        if (normalized.length() <= MAX_PIPELINE_MESSAGE_LENGTH) {
+            return normalized;
+        }
+        return normalized.substring(0, MAX_PIPELINE_MESSAGE_LENGTH - 8) + "...已截断";
     }
 
     private static void validateReadyEvidence(

@@ -276,6 +276,55 @@ class AiHistoricalBootstrapServiceImplTest {
     }
 
     @Test
+    void truncatesLargeImportWarningsBeforeAdvancingToHistoricalTraining() {
+        Fixture fixture = fixture();
+        LocalDate date = LocalDate.of(2026, 1, 5);
+        AiHistoricalEvidenceImportService importer = mock(AiHistoricalEvidenceImportService.class);
+        AiWeeklyEvolutionRunner weeklyRunner = mock(AiWeeklyEvolutionRunner.class);
+        AiMonthlyTrainingRunner trainingRunner = mock(AiMonthlyTrainingRunner.class);
+        AiHistoricalEvidenceImportService.ColdStartPlan plan = new AiHistoricalEvidenceImportService.ColdStartPlan(
+                date, date, 120, 125, 240, List.of(date));
+        List<String> warnings = new ArrayList<>();
+        for (int index = 0; index < 400; index++) {
+            warnings.add("688" + String.format("%03d", index % 300)
+                    + "：腾讯历史 K 线返回为空：QFQ-" + index + "-" + "X".repeat(180));
+        }
+        when(importer.importEvidence(any())).thenReturn(new AiHistoricalEvidenceImportService.ImportResult(
+                1, 0, 240, "imported", warnings));
+        when(weeklyRunner.run(any(), any())).thenReturn(
+                new AiResearchCycleResult("SUCCESS", 10, 10, 0, "因子研究已更新"));
+        when(trainingRunner.run(any(), any())).thenReturn(
+                new AiResearchCycleResult("SUCCESS", 24000, 1, 0, "候选模型已生成"));
+        when(fixture.sourceService.load(any(), any())).thenReturn(ready(date, 1));
+        when(fixture.runMapper.updateStateFenced(any(AiPipelineRun.class), anyString(), any())).thenAnswer(invocation -> {
+            AiPipelineRun run = invocation.getArgument(0);
+            if (run.errorMessage != null
+                    && run.errorMessage.length() > AiHistoricalBootstrapServiceImpl.MAX_PIPELINE_MESSAGE_LENGTH) {
+                throw new IllegalStateException("Data truncation");
+            }
+            return 1;
+        });
+        when(fixture.executor.execute(anyString(), any())).thenAnswer(invocation -> {
+            AiGlobalDailyResearchExecutor.PipelineContext context = invocation.getArgument(1);
+            return outcome(invocation.getArgument(0), context.tradeDate());
+        });
+        AiHistoricalBootstrapService service = new AiHistoricalBootstrapServiceImpl(
+                fixture.runMapper, fixture.stepMapper, importer, fixture.sourceService,
+                fixture.executor, weeklyRunner, trainingRunner,
+                new ObjectMapper().findAndRegisterModules());
+
+        AiHistoricalBootstrapService.BootstrapResult result = service.run(
+                new AiHistoricalBootstrapService.BootstrapRequest(
+                        date, date, 11L, null, "HISTORICAL:TRUNCATE-WARNINGS",
+                        LocalDateTime.of(2026, 7, 18, 10, 0), plan));
+
+        assertThat(result.status()).isEqualTo("SUCCESS");
+        assertThat(result.run().status).isEqualTo("SUCCESS");
+        verify(weeklyRunner).run(any(), any());
+        verify(trainingRunner).run(any(), any());
+    }
+
+    @Test
     void drainsHistoricalLabelsAndEvaluationsInBoundedBatches() {
         Fixture fixture = fixture();
         LocalDate date = LocalDate.of(2026, 1, 5);
@@ -303,6 +352,30 @@ class AiHistoricalBootstrapServiceImplTest {
                 org.mockito.ArgumentMatchers.eq("MATURE_HISTORICAL_SAMPLE_LABELS"), any());
         verify(fixture.executor, times(2)).execute(
                 org.mockito.ArgumentMatchers.eq("EVALUATE_HISTORICAL_PREDICTIONS"), any());
+    }
+
+    @Test
+    void stopsDrainingWhenAFullBatchProducesNoNewMatureResults() {
+        Fixture fixture = fixture();
+        LocalDate date = LocalDate.of(2026, 1, 5);
+        when(fixture.sourceService.load(any(), any())).thenReturn(ready(date, 1));
+        when(fixture.executor.execute(anyString(), any())).thenAnswer(invocation -> {
+            String step = invocation.getArgument(0);
+            if ("MATURE_HISTORICAL_SAMPLE_LABELS".equals(step)) {
+                return new AiGlobalDailyResearchExecutor.StepOutcome(
+                        "SUCCESS", 2_000, 0, 0,
+                        "{\"processed\":2000}", "labels-no-progress",
+                        List.of(), null, null);
+            }
+            AiGlobalDailyResearchExecutor.PipelineContext context = invocation.getArgument(1);
+            return outcome(step, context.tradeDate());
+        });
+
+        AiHistoricalBootstrapService.BootstrapResult result = service(fixture).run(request(date, date));
+
+        assertThat(result.status()).isEqualTo("SUCCESS");
+        verify(fixture.executor, times(1)).execute(
+                org.mockito.ArgumentMatchers.eq("MATURE_HISTORICAL_SAMPLE_LABELS"), any());
     }
 
     @Test

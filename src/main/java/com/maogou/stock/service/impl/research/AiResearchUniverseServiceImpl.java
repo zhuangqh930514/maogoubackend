@@ -15,6 +15,8 @@ import com.maogou.stock.mapper.research.AiResearchUniverseItemMapper;
 import com.maogou.stock.mapper.research.AiResearchUniverseMapper;
 import com.maogou.stock.mapper.research.AiResearchUniverseSnapshotMapper;
 import com.maogou.stock.service.research.AiResearchUniverseService;
+import com.maogou.stock.service.research.AiSystemCoreUniverseProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -43,14 +45,17 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
     private final AiResearchUniverseItemMapper itemMapper;
     private final WatchStockMapper watchStockMapper;
     private final TradeRecordMapper tradeRecordMapper;
+    private final AiSystemCoreUniverseProvider systemCoreUniverseProvider;
     private final ObjectMapper objectMapper;
 
+    @Autowired
     public AiResearchUniverseServiceImpl(
             AiResearchUniverseMapper universeMapper,
             AiResearchUniverseSnapshotMapper snapshotMapper,
             AiResearchUniverseItemMapper itemMapper,
             WatchStockMapper watchStockMapper,
             TradeRecordMapper tradeRecordMapper,
+            AiSystemCoreUniverseProvider systemCoreUniverseProvider,
             ObjectMapper objectMapper
     ) {
         this.universeMapper = universeMapper;
@@ -58,7 +63,20 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
         this.itemMapper = itemMapper;
         this.watchStockMapper = watchStockMapper;
         this.tradeRecordMapper = tradeRecordMapper;
+        this.systemCoreUniverseProvider = systemCoreUniverseProvider;
         this.objectMapper = objectMapper;
+    }
+
+    AiResearchUniverseServiceImpl(
+            AiResearchUniverseMapper universeMapper,
+            AiResearchUniverseSnapshotMapper snapshotMapper,
+            AiResearchUniverseItemMapper itemMapper,
+            WatchStockMapper watchStockMapper,
+            TradeRecordMapper tradeRecordMapper,
+            ObjectMapper objectMapper
+    ) {
+        this(universeMapper, snapshotMapper, itemMapper, watchStockMapper, tradeRecordMapper,
+                (tradeDate, asOfTime, minimumStockCount) -> List.of(), objectMapper);
     }
 
     @Override
@@ -66,7 +84,7 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
     public SnapshotResult createSystemCoreSnapshot(SnapshotRequest request) {
         validate(request);
         AiResearchUniverse universe = loadOrCreateUniverse(request.asOfTime());
-        List<MergedCandidate> candidates = mergeCandidates(request);
+        List<MergedCandidate> candidates = mergeCandidates(request, universe);
         String snapshotFingerprint = snapshotFingerprint(request, candidates);
 
         AiResearchUniverseSnapshot existing = snapshotMapper.selectOne(
@@ -125,8 +143,8 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
         universe.universeCode = SYSTEM_CORE;
         universe.universeName = "A股系统研究池";
         universe.marketCode = "CN_A";
-        universe.selectionPolicyJson = "{\"selection\":\"CONFIGURED_PLUS_ALL_USER_INTERESTS\",\"pointInTime\":true}";
-        universe.minimumStockCount = 200;
+        universe.selectionPolicyJson = "{\"selection\":\"SYSTEM_BASELINE_PLUS_ALL_USER_INTERESTS\",\"pointInTime\":true}";
+        universe.minimumStockCount = 240;
         universe.enabled = 1;
         universe.seedVersion = "20260714-unified-1.1";
         universe.createdAt = now;
@@ -135,10 +153,11 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
         return universe;
     }
 
-    private List<MergedCandidate> mergeCandidates(SnapshotRequest request) {
+    private List<MergedCandidate> mergeCandidates(SnapshotRequest request, AiResearchUniverse universe) {
         Map<String, CandidateAccumulator> merged = new LinkedHashMap<>();
-        for (UniverseCandidate configured : request.configuredComponents()) {
-            add(merged, configured);
+        List<UniverseCandidate> configuredCandidates = configuredComponents(request, universe);
+        for (UniverseCandidate configuredCandidate : configuredCandidates) {
+            add(merged, configuredCandidate);
         }
 
         if (request.includeUserInterests()) {
@@ -187,6 +206,17 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
                 .map(CandidateAccumulator::build)
                 .sorted(Comparator.comparing(MergedCandidate::stockCode))
                 .toList();
+    }
+
+    private List<UniverseCandidate> configuredComponents(SnapshotRequest request, AiResearchUniverse universe) {
+        if (request.configuredComponents() != null && !request.configuredComponents().isEmpty()) {
+            return request.configuredComponents();
+        }
+        if (!request.includeUserInterests()) {
+            return List.of();
+        }
+        return systemCoreUniverseProvider.baselineCandidates(
+                request.tradeDate(), request.asOfTime(), universe.minimumStockCount);
     }
 
     private AiResearchUniverseItem toItem(
