@@ -184,6 +184,52 @@ def test_rejects_duplicate_sample_ids_inside_the_same_split(tmp_path: Path) -> N
         load_dataset(dataset_path)
 
 
+def test_load_dataset_caps_train_features_by_frequency_and_uses_float32(
+    tmp_path: Path,
+) -> None:
+    dataset_path = tmp_path / "feature-cap.jsonl"
+    rows = [
+        {
+            "sampleId": 1,
+            "tradeDate": "2026-07-01",
+            "split": "TRAIN",
+            "features": {"alpha": 1, "beta": 10, "gamma": 1, "delta": 4},
+            "target": {"excessReturn": 1},
+        },
+        {
+            "sampleId": 2,
+            "tradeDate": "2026-07-02",
+            "split": "TRAIN",
+            "features": {"alpha": 2, "beta": 11, "gamma": 1, "epsilon": 5},
+            "target": {"excessReturn": -1},
+        },
+        {
+            "sampleId": 3,
+            "tradeDate": "2026-07-03",
+            "split": "TRAIN",
+            "features": {"alpha": 3, "beta": 12, "zeta": 6},
+            "target": {"excessReturn": 1},
+        },
+        {
+            "sampleId": 4,
+            "tradeDate": "2026-07-04",
+            "split": "VALIDATION",
+            "features": {"alpha": 4, "beta": 13, "gamma": 999},
+            "target": {"excessReturn": 1},
+        },
+    ]
+    dataset_path.write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    dataset = load_dataset(dataset_path, max_features=2)
+
+    assert dataset.feature_names == ["alpha", "beta"]
+    assert dataset.features.dtype == np.float32
+    assert dataset.features.shape == (4, 2)
+
+
 def test_exports_lightgbm_ranker_to_onnx_when_optional_dependencies_exist(
     tmp_path: Path,
 ) -> None:

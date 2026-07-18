@@ -30,6 +30,8 @@ from sklearn.preprocessing import StandardScaler
 
 TRAINER_VERSION = "TRAIN_RANKER_V2_1"
 VALID_SPLITS = ("TRAIN", "VALIDATION", "TEST")
+DEFAULT_MAX_FEATURES = 256
+DEFAULT_MAX_LIGHTGBM_ROWS = 30_000
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,14 @@ class TrainingResult:
     feature_manifest_path: Path
     metrics_path: Path
     onnx_path: Path | None
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    parsed = int(value)
+    return parsed if parsed > 0 else default
 
 
 def _flatten_numeric(value: Any, prefix: str = "") -> dict[str, float]:
@@ -73,14 +83,22 @@ def _target(row: dict[str, Any]) -> int:
     raise ValueError("each row requires target.excessReturn or target.labelScore")
 
 
-def load_dataset(dataset_path: str | Path) -> TrainingDataset:
+def load_dataset(
+    dataset_path: str | Path,
+    max_features: int | None = None,
+) -> TrainingDataset:
     path = Path(dataset_path)
     sample_splits: dict[int, str] = {}
-    feature_names: set[str] = set()
+    train_feature_stats: dict[str, tuple[int, float, float]] = {}
     labels: list[int] = []
     splits: list[str] = []
     sample_ids: list[int] = []
     trade_dates: list[str] = []
+    selected_limit = (
+        max_features if max_features is not None else _positive_int_env(
+            "MAOGOU_TRAINER_MAX_FEATURES", DEFAULT_MAX_FEATURES
+        )
+    )
     for _, row in _dataset_rows(path):
         split = str(row.get("split", "")).upper()
         if split not in VALID_SPLITS:
@@ -96,7 +114,16 @@ def load_dataset(dataset_path: str | Path) -> TrainingDataset:
         if not flattened:
             raise ValueError(f"sample {sample_id} has no numeric features")
         if split == "TRAIN":
-            feature_names.update(flattened)
+            for name, numeric_value in flattened.items():
+                count, value_sum, value_square_sum = train_feature_stats.get(
+                    name, (0, 0.0, 0.0)
+                )
+                numeric_value = float(numeric_value)
+                train_feature_stats[name] = (
+                    count + 1,
+                    value_sum + numeric_value,
+                    value_square_sum + numeric_value * numeric_value,
+                )
         labels.append(_target(row))
         splits.append(split)
         sample_ids.append(sample_id)
@@ -104,37 +131,37 @@ def load_dataset(dataset_path: str | Path) -> TrainingDataset:
     if not sample_ids:
         raise ValueError("dataset is empty")
 
-    ordered_features = sorted(feature_names)
+    ordered_features = [
+        name
+        for name, _, _ in sorted(
+            (
+                (name, count, variance)
+                for name, (count, value_sum, value_square_sum) in train_feature_stats.items()
+                for variance in [
+                    (value_square_sum / count) - (value_sum / count) ** 2
+                ]
+                if count > 0 and variance > 0.0
+            ),
+            key=lambda item: (-item[1], item[0]),
+        )[:selected_limit]
+    ]
+    if not ordered_features:
+        raise ValueError("TRAIN split requires at least one non-constant numeric feature")
     feature_indexes = {name: index for index, name in enumerate(ordered_features)}
-    matrix = np.full((len(sample_ids), len(ordered_features)), np.nan, dtype=np.float64)
+    matrix = np.full((len(sample_ids), len(ordered_features)), np.nan, dtype=np.float32)
     for row_index, (_, row) in enumerate(_dataset_rows(path)):
         flattened = _flatten_numeric(row.get("features") or {})
         for name, value in flattened.items():
             column_index = feature_indexes.get(name)
             if column_index is not None:
                 matrix[row_index, column_index] = value
-    split_values = np.asarray(splits, dtype=str)
-    train_matrix = matrix[split_values == "TRAIN"]
-    selected_columns = np.asarray(
-        [
-            np.isfinite(train_matrix[:, index]).any()
-            and float(np.nanvar(train_matrix[:, index])) > 0.0
-            for index in range(train_matrix.shape[1])
-        ],
-        dtype=bool,
-    )
-    if not np.any(selected_columns):
-        raise ValueError("TRAIN split requires at least one non-constant numeric feature")
-    selected_features = [
-        name for name, selected in zip(ordered_features, selected_columns) if selected
-    ]
     return TrainingDataset(
-        features=matrix[:, selected_columns],
+        features=matrix,
         labels=np.asarray(labels, dtype=np.int64),
-        splits=split_values,
+        splits=np.asarray(splits, dtype=str),
         sample_ids=np.asarray(sample_ids, dtype=np.int64),
         trade_dates=np.asarray(trade_dates, dtype=str),
-        feature_names=selected_features,
+        feature_names=ordered_features,
     )
 
 
@@ -385,14 +412,21 @@ def train_ranker(
     random_seed: int = 930514,
     enable_lightgbm: bool = True,
     export_onnx: bool = True,
+    max_features: int | None = None,
+    max_lightgbm_rows: int | None = None,
 ) -> TrainingResult:
-    dataset = load_dataset(dataset_path)
+    dataset = load_dataset(dataset_path, max_features=max_features)
     _require_usable_splits(dataset)
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
 
     train_mask = dataset.splits == "TRAIN"
     validation_mask = dataset.splits == "VALIDATION"
+    effective_max_lightgbm_rows = (
+        max_lightgbm_rows if max_lightgbm_rows is not None else _positive_int_env(
+            "MAOGOU_TRAINER_MAX_LIGHTGBM_ROWS", DEFAULT_MAX_LIGHTGBM_ROWS
+        )
+    )
     baseline = _baseline(random_seed)
     baseline.fit(dataset.features[train_mask], dataset.labels[train_mask])
     baseline_scores = baseline.decision_function(dataset.features)
@@ -420,7 +454,13 @@ def train_ranker(
         "logisticRegression": {"validationRocAuc": baseline_auc}
     }
 
-    lightgbm = _try_lightgbm(dataset, random_seed) if enable_lightgbm else None
+    allow_lightgbm = enable_lightgbm and int(np.count_nonzero(train_mask)) <= effective_max_lightgbm_rows
+    if enable_lightgbm and not allow_lightgbm:
+        candidates["lightgbmRanker"] = {
+            "validationRocAuc": None,
+            "skippedReason": f"TRAIN split exceeds {effective_max_lightgbm_rows} rows",
+        }
+    lightgbm = _try_lightgbm(dataset, random_seed) if allow_lightgbm else None
     if lightgbm is not None:
         ranker, ranker_scores, ranker_parameters = lightgbm
         ranker_calibrator = _fit_calibrator(
@@ -518,6 +558,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--random-seed", type=int, default=930514)
     parser.add_argument("--disable-lightgbm", action="store_true")
     parser.add_argument("--disable-onnx", action="store_true")
+    parser.add_argument("--max-features", type=int, default=None)
+    parser.add_argument("--max-lightgbm-rows", type=int, default=None)
     return parser
 
 
@@ -529,6 +571,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         random_seed=args.random_seed,
         enable_lightgbm=not args.disable_lightgbm,
         export_onnx=not args.disable_onnx,
+        max_features=args.max_features,
+        max_lightgbm_rows=args.max_lightgbm_rows,
     )
     print(
         json.dumps(

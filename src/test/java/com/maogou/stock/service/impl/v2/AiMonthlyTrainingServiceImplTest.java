@@ -100,6 +100,7 @@ class AiMonthlyTrainingServiceImplTest {
         verify(fixture.datasetService).buildDataset(datasetRequest.capture());
         assertThat(datasetRequest.getValue().maxHorizonDays()).isEqualTo(3);
         assertThat(datasetRequest.getValue().researchUniverseId()).isEqualTo(41L);
+        assertThat(datasetRequest.getValue().versionNo()).isEqualTo("20260713190000");
         assertThat(datasetRequest.getValue().purgeTradingDays()).isEqualTo(5);
         assertThat(datasetRequest.getValue().embargoTradingDays()).isEqualTo(5);
         ArgumentCaptor<AiTrainingDatasetService.ModelRegistration> registration =
@@ -108,7 +109,7 @@ class AiMonthlyTrainingServiceImplTest {
         assertThat(registration.getValue().qualityGatePassed()).isTrue();
         assertThat(registration.getValue().artifactUri()).contains("/model/model.onnx");
         assertThat(Path.of(java.net.URI.create(registration.getValue().artifactUri()))).isRegularFile();
-        try (var paths = Files.list(temporary.resolve("A_SHARE_MULTI_HORIZON/20260713"))) {
+        try (var paths = Files.list(temporary.resolve("A_SHARE_MULTI_HORIZON/20260713190000"))) {
             assertThat(paths.map(path -> path.getFileName().toString()))
                     .noneMatch(name -> name.startsWith(".model.tmp-"));
         }

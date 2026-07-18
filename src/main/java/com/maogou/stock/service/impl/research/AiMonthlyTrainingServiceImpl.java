@@ -42,6 +42,8 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
     private static final String DATASET_KEY = "MAOGOU_RANKER_T3";
     private static final String MODEL_KEY = "MAOGOU_RANKER";
     private static final String TRAINER_VERSION = "TRAIN_RANKER_V2_1";
+    private static final DateTimeFormatter VERSION_FORMATTER =
+            DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
 
     private final AppProperties properties;
     private final AiTrainingDatasetItemMapper datasetItemMapper;
@@ -101,7 +103,7 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
                     + AiTrainingReadinessGate.MINIMUM_TRADING_DAYS);
         }
         TrainingWindows windows = windows(dates);
-        String version = triggeredAt.format(DateTimeFormatter.BASIC_ISO_DATE);
+        String version = triggeredAt.format(VERSION_FORMATTER);
         Path root = Path.of(scheduler.getTrainingArtifactRoot()).toAbsolutePath().normalize()
                 .resolve(AiResearchContract.MODEL_FAMILY).resolve(version);
         Path datasetPath = root.resolve("dataset.jsonl");
