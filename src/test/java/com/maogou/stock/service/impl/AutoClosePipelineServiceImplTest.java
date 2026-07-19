@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -72,6 +73,7 @@ class AutoClosePipelineServiceImplTest {
         completed.status = "SUCCESS";
         when(fixture.pipelineRunMapper.selectDueGlobalDailyRuns(any(), anyInt()))
                 .thenReturn(List.of(waiting));
+        when(fixture.calendarService.isTradingDay(LocalDate.of(2026, 7, 15))).thenReturn(true);
         when(fixture.dailyResearchService.run(any())).thenReturn(
                 new AiGlobalDailyResearchService.PipelineResult(completed, List.of()));
 
@@ -85,6 +87,28 @@ class AutoClosePipelineServiceImplTest {
                 waiting.inputFingerprint,
                 waiting.startedAt));
         verify(fixture.preparationService, never()).prepare(any(), any(), any());
+    }
+
+    @Test
+    void retryWaitingPipelinesAbandonsNonTradingDayRuns() {
+        Fixture fixture = fixture();
+        AiPipelineRun waiting = new AiPipelineRun();
+        waiting.id = 64L;
+        waiting.tradeDate = LocalDate.of(2026, 7, 19);
+        waiting.status = "WAITING_SOURCE";
+
+        when(fixture.pipelineRunMapper.selectDueGlobalDailyRuns(any(), anyInt()))
+                .thenReturn(List.of(waiting));
+        when(fixture.calendarService.isTradingDay(LocalDate.of(2026, 7, 19))).thenReturn(false);
+        when(fixture.calendarService.latestExpectedKlineDate(any())).thenReturn(LocalDate.of(2026, 7, 17));
+
+        fixture.service.retryWaitingPipelines();
+
+        verify(fixture.dailyResearchService, never()).run(any());
+        verify(fixture.pipelineRunMapper).updateById(waiting);
+        assertThat(waiting.status).isEqualTo("FAILED");
+        assertThat(waiting.currentStep).isEqualTo("INVALID_TRADE_DATE");
+        assertThat(waiting.errorMessage).contains("2026-07-17");
     }
 
     private static Fixture fixture() {
@@ -105,11 +129,12 @@ class AutoClosePipelineServiceImplTest {
         AutoClosePipelineServiceImpl service = new AutoClosePipelineServiceImpl(
                 configMapper, calendarService, dailyResearchService, preparationService,
                 operationsService, pipelineRunMapper);
-        return new Fixture(config, dailyResearchService, preparationService, pipelineRunMapper, service);
+        return new Fixture(config, calendarService, dailyResearchService, preparationService, pipelineRunMapper, service);
     }
 
     private record Fixture(
             AiModelConfig config,
+            TradingCalendarService calendarService,
             AiGlobalDailyResearchService dailyResearchService,
             AiGlobalResearchPreparationService preparationService,
             AiPipelineRunMapper pipelineRunMapper,

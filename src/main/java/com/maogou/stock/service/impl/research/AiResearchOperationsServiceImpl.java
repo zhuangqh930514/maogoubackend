@@ -12,6 +12,7 @@ import com.maogou.stock.mapper.research.AiPipelineRunMapper;
 import com.maogou.stock.mapper.research.AiPipelineStepMapper;
 import com.maogou.stock.mapper.research.AiStrategyGovernanceEventMapper;
 import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
+import com.maogou.stock.service.TradingCalendarService;
 import com.maogou.stock.service.research.AiResearchCycleResult;
 import com.maogou.stock.service.research.AiGlobalDailyResearchService;
 import com.maogou.stock.service.research.AiHistoricalBootstrapService;
@@ -48,6 +49,7 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
     private final AiPipelineStepMapper stepMapper;
     private final AiStrategyReleaseMapper releaseMapper;
     private final AiStrategyGovernanceEventMapper eventMapper;
+    private final TradingCalendarService tradingCalendarService;
     private final AiGlobalDailyResearchService dailyResearchService;
     private final AiHistoricalBootstrapService bootstrapService;
     private final AiHistoricalEvidenceImportService historicalEvidenceImportService;
@@ -65,6 +67,7 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
             AiPipelineStepMapper stepMapper,
             AiStrategyReleaseMapper releaseMapper,
             AiStrategyGovernanceEventMapper eventMapper,
+            TradingCalendarService tradingCalendarService,
             AiGlobalDailyResearchService dailyResearchService,
             AiHistoricalBootstrapService bootstrapService,
             AiHistoricalEvidenceImportService historicalEvidenceImportService,
@@ -81,6 +84,7 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
         this.stepMapper = stepMapper;
         this.releaseMapper = releaseMapper;
         this.eventMapper = eventMapper;
+        this.tradingCalendarService = tradingCalendarService;
         this.dailyResearchService = dailyResearchService;
         this.bootstrapService = bootstrapService;
         this.historicalEvidenceImportService = historicalEvidenceImportService;
@@ -96,7 +100,8 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
 
     @Override
     public ResearchLabPayloads.ActionAccepted runDaily(Long actorUserId, ResearchLabPayloads.ActionRequest request) {
-        LocalDate tradeDate = request.tradeDate() == null ? LocalDate.now() : request.tradeDate();
+        LocalDateTime now = LocalDateTime.now();
+        LocalDate tradeDate = resolveClosedResearchTradeDate(request.tradeDate(), now);
         AiStrategyRelease strategy = strategy(request.strategyReleaseId());
         Long modelId = request.modelVersionId() == null ? strategy.modelVersionId : request.modelVersionId();
         String input = fingerprint("GLOBAL_DAILY_RESEARCH", tradeDate, strategy.id, modelId);
@@ -104,7 +109,7 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
         AiPipelineRun run = prepareRun("GLOBAL", null, null, tradeDate, "GLOBAL_DAILY_RESEARCH",
                 strategy.id, modelId, key, input, actorUserId, null);
         submitExistingRun(run, () -> dailyResearchService.run(new AiGlobalDailyResearchService.PipelineRequest(
-                tradeDate, strategy.id, modelId, key, input, LocalDateTime.now())));
+                tradeDate, strategy.id, modelId, key, input, now)));
         return accepted(run);
     }
 
@@ -191,8 +196,10 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
             ResearchLabPayloads.ActionRequest request
     ) {
         requireUser(authenticatedUserId);
-        LocalDate tradeDate = request.tradeDate() == null ? LocalDate.now() : request.tradeDate();
-        AiPipelineRun globalRun = globalRun(request.parentPipelineRunId(), tradeDate);
+        LocalDateTime now = LocalDateTime.now();
+        LocalDate requestedTradeDate = resolveClosedResearchTradeDate(request.tradeDate(), now);
+        AiPipelineRun globalRun = globalRun(request.parentPipelineRunId(), requestedTradeDate);
+        LocalDate tradeDate = globalRun.tradeDate == null ? requestedTradeDate : globalRun.tradeDate;
         String key = key(request.idempotencyKey(),
                 "MANUAL:USER_DAILY_PROJECTION:" + authenticatedUserId + ":" + tradeDate);
         String input = fingerprint("USER_DAILY_PROJECTION", authenticatedUserId, tradeDate,
@@ -207,6 +214,21 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
             return new Counts(result.items().size(), result.items().size(), 0);
         });
         return accepted(run);
+    }
+
+    private LocalDate resolveClosedResearchTradeDate(LocalDate requestedTradeDate, LocalDateTime now) {
+        LocalDateTime current = now == null ? LocalDateTime.now() : now;
+        LocalDate latestClosedTradeDate = tradingCalendarService.latestExpectedKlineDate(current);
+        if (requestedTradeDate == null) {
+            return latestClosedTradeDate;
+        }
+        LocalDate normalized = tradingCalendarService.isTradingDay(requestedTradeDate)
+                ? requestedTradeDate
+                : tradingCalendarService.previousTradingDay(requestedTradeDate);
+        if (normalized.isAfter(latestClosedTradeDate)) {
+            return latestClosedTradeDate;
+        }
+        return normalized;
     }
 
     @Override

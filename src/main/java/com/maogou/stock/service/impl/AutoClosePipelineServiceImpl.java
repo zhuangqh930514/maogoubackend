@@ -89,6 +89,13 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
                 return;
             }
             for (AiPipelineRun run : due) {
+                if (run == null) {
+                    continue;
+                }
+                if (run.tradeDate == null || !tradingCalendarService.isTradingDay(run.tradeDate)) {
+                    abandonInvalidWaitingRun(run);
+                    continue;
+                }
                 try {
                     AiGlobalDailyResearchService.PipelineResult result = dailyResearchService.run(
                             new AiGlobalDailyResearchService.PipelineRequest(
@@ -233,6 +240,20 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
                 return result;
             }
         }
+    }
+
+    private void abandonInvalidWaitingRun(AiPipelineRun run) {
+        LocalDate expected = tradingCalendarService.latestExpectedKlineDate(LocalDateTime.now());
+        run.status = "FAILED";
+        run.currentStep = "INVALID_TRADE_DATE";
+        run.nextRetryAt = null;
+        run.finishedAt = LocalDateTime.now();
+        run.updatedAt = run.finishedAt;
+        run.errorMessage = trimMessage("非交易日全局研究流水线已停止重试，请改用最近收盘交易日 " + expected + " 重新生成");
+        run.errorDetail = run.errorMessage;
+        pipelineRunMapper.updateById(run);
+        log.warn("abandoned invalid waiting global research run, runId={}, tradeDate={}, expectedTradeDate={}",
+                run.id, run.tradeDate, expected);
     }
 
     private void updateConfigStatus(
