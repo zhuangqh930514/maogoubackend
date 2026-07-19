@@ -61,6 +61,8 @@ import com.maogou.stock.mapper.research.AiWalkForwardRunMapper;
 import com.maogou.stock.service.research.AiResearchContract;
 import com.maogou.stock.service.research.AiResearchLabQueryService;
 import org.apache.ibatis.session.SqlSession;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.lang.reflect.Field;
@@ -76,10 +78,15 @@ import java.util.Set;
 @Service
 public class AiResearchLabQueryServiceImpl implements AiResearchLabQueryService {
 
+    private static final Logger log = LoggerFactory.getLogger(AiResearchLabQueryServiceImpl.class);
+    private static final long OVERVIEW_CACHE_TTL_MILLIS = 30_000L;
+    private static final long OVERVIEW_STALE_TTL_MILLIS = 300_000L;
+
     private static final Set<String> PRIVATE_FIELDS = Set.of(
             "userId", "ownerUserId", "actorUserId", "executionOwner", "leaseUntil", "nextRetryAt");
 
     private final SqlSession sqlSession;
+    private volatile CachedOverview overviewCache;
 
     public AiResearchLabQueryServiceImpl(SqlSession sqlSession) {
         this.sqlSession = sqlSession;
@@ -87,6 +94,35 @@ public class AiResearchLabQueryServiceImpl implements AiResearchLabQueryService 
 
     @Override
     public ResearchLabPayloads.Overview overview() {
+        CachedOverview cached = overviewCache;
+        long now = System.currentTimeMillis();
+        if (cached != null && cached.expiresAtMillis > now) {
+            return cached.value;
+        }
+        synchronized (this) {
+            cached = overviewCache;
+            now = System.currentTimeMillis();
+            if (cached != null && cached.expiresAtMillis > now) {
+                return cached.value;
+            }
+            try {
+                ResearchLabPayloads.Overview overview = loadOverview();
+                overviewCache = new CachedOverview(
+                        overview,
+                        now + OVERVIEW_CACHE_TTL_MILLIS,
+                        now + OVERVIEW_STALE_TTL_MILLIS);
+                return overview;
+            } catch (RuntimeException ex) {
+                if (cached != null && cached.staleUntilMillis > now) {
+                    log.warn("research lab overview refresh failed, return stale cache", ex);
+                    return cached.value;
+                }
+                throw ex;
+            }
+        }
+    }
+
+    private ResearchLabPayloads.Overview loadOverview() {
         Map<String, Long> counts = new LinkedHashMap<>();
         counts.put("samples", mapper(AiSampleMapper.class).selectCount(new QueryWrapper<>()));
         counts.put("matureLabels", mapper(AiSampleLabelMapper.class).selectCount(
@@ -611,5 +647,11 @@ public class AiResearchLabQueryServiceImpl implements AiResearchLabQueryService 
 
     private <T> T mapper(Class<T> mapperType) {
         return sqlSession.getMapper(mapperType);
+    }
+
+    private record CachedOverview(
+            ResearchLabPayloads.Overview value,
+            long expiresAtMillis,
+            long staleUntilMillis) {
     }
 }
