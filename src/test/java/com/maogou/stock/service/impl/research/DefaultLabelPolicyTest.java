@@ -13,6 +13,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -46,6 +47,7 @@ class DefaultLabelPolicyTest {
         );
 
         assertThat(limitUp.label().executionStatus).isEqualTo("UNFILLED");
+        assertThat(limitUp.label().fillStatus).isEqualTo("UNFILLED");
         assertThat(limitUp.label().executionReason).isEqualTo("LIMIT_UP_ENTRY");
         assertThat(limitUp.label().netReturn).isNull();
         assertThat(limitUp.costEvidence()).isNull();
@@ -67,6 +69,7 @@ class DefaultLabelPolicyTest {
         );
 
         assertThat(result.label().executionStatus).isEqualTo("EXECUTED");
+        assertThat(result.label().fillStatus).isEqualTo("FILLED");
         assertThat(result.label().exitTradeDate).isEqualTo(LocalDate.parse("2026-07-15"));
         assertThat(result.label().executionReason).isEqualTo("EXIT_DELAYED_1_TRADING_DAYS");
         assertThat(result.label().marketEvidenceJson).contains("2026-07-14");
@@ -92,6 +95,7 @@ class DefaultLabelPolicyTest {
         );
 
         assertThat(result.label().executionStatus).isEqualTo("EXIT_BLOCKED");
+        assertThat(result.label().fillStatus).isEqualTo("PARTIAL");
         assertThat(result.label().netReturn).isNull();
         assertThat(result.label().exitTradeDate).isEqualTo(LocalDate.parse("2026-07-21"));
         assertThat(result.costEvidence()).isNull();
@@ -110,6 +114,7 @@ class DefaultLabelPolicyTest {
                 new BigDecimal("0.0005"),
                 new BigDecimal("0.00001"),
                 new BigDecimal("2.0"),
+                new BigDecimal("3.0"),
                 5,
                 new BigDecimal("0.08"),
                 new BigDecimal("-0.08")
@@ -131,6 +136,8 @@ class DefaultLabelPolicyTest {
         assertThat(cost.quantity).isEqualByComparingTo("200");
         assertThat(cost.buyCommissionAmount).isEqualByComparingTo("5.00");
         assertThat(cost.sellCommissionAmount).isEqualByComparingTo("5.00");
+        assertThat(cost.impactCostBps).isEqualByComparingTo("3.0");
+        assertThat(cost.impactCostAmount).isPositive();
         JsonNode snapshot = objectMapper.readTree(result.label().policySnapshotJson);
         assertThat(snapshot.path("labelVersion").asText()).isEqualTo(DefaultLabelPolicy.VERSION);
         assertThat(snapshot.path("standardPrincipal").decimalValue()).isEqualByComparingTo("100000");
@@ -164,6 +171,165 @@ class DefaultLabelPolicyTest {
                 .hasMessageContaining("标签版本");
     }
 
+    @Test
+    void verifiedTradingStatesAreRequiredForResearchLabelsAndParticipateInFingerprint() {
+        KlineSeriesSnapshot series = stockSeries(List.of(
+                bar("2026-07-10", "10", "10", "9.8", "10.2", 1000),
+                bar("2026-07-13", "10", "10.1", "9.9", "10.2", 1000),
+                bar("2026-07-14", "10.2", "10.3", "10.1", "10.4", 1000)
+        ));
+        List<AiSampleLabelService.TradingDay> days = calendars("2026-07-13", "2026-07-14");
+        AiSampleLabelService.SampleInput missing = strictSample(series, Map.of());
+        AiSampleLabelService.SampleInput first = strictSample(series, Map.of(
+                LocalDate.parse("2026-07-13"), state("state-13-v1"),
+                LocalDate.parse("2026-07-14"), state("state-14-v1")));
+        AiSampleLabelService.SampleInput revised = strictSample(series, Map.of(
+                LocalDate.parse("2026-07-13"), state("state-13-v2"),
+                LocalDate.parse("2026-07-14"), state("state-14-v1")));
+
+        DefaultLabelPolicy.BuildResult blocked = policy.build(missing, 1, days, CALENDAR_VERSION,
+                DefaultLabelPolicy.VERSION, VERIFIED_AT);
+        DefaultLabelPolicy.BuildResult initial = policy.build(first, 1, days, CALENDAR_VERSION,
+                DefaultLabelPolicy.VERSION, VERIFIED_AT);
+        DefaultLabelPolicy.BuildResult changed = policy.build(revised, 1, days, CALENDAR_VERSION,
+                DefaultLabelPolicy.VERSION, VERIFIED_AT);
+
+        assertThat(blocked.label().executionStatus).isEqualTo("UNFILLED");
+        assertThat(blocked.label().fillStatus).isEqualTo("INVALID_SOURCE");
+        assertThat(blocked.label().executionReason).isEqualTo("UNVERIFIED_ENTRY_TRADING_STATE");
+        assertThat(initial.label().executionStatus).isEqualTo("EXECUTED");
+        assertThat(changed.label().inputFingerprint).isNotEqualTo(initial.label().inputFingerprint);
+        assertThat(changed.label().marketEvidenceJson).contains("state-13-v2");
+    }
+
+    @Test
+    void filledLabelIncludesRelativeSectorRiskAndHoldingMetrics() {
+        KlineSeriesSnapshot stock = stockSeries(List.of(
+                bar("2026-07-10", "10", "10", "9.8", "10.2", 1000),
+                bar("2026-07-13", "10", "10.5", "9", "11", 1000),
+                bar("2026-07-14", "10.5", "11", "10", "12", 1000)
+        ));
+        KlineSeriesSnapshot benchmark = stockSeries(List.of(
+                bar("2026-07-13", "100", "100.5", "99", "101", 1000),
+                bar("2026-07-14", "100.5", "101", "100", "102", 1000)
+        ));
+        KlineSeriesSnapshot sector = stockSeries(List.of(
+                bar("2026-07-13", "100", "101", "99", "102", 1000),
+                bar("2026-07-14", "101", "102", "100", "103", 1000)
+        ));
+        AiSampleLabelService.SampleInput input = new AiSampleLabelService.SampleInput(
+                101L, "600519", SIGNAL_DATE, "NORMAL", "sample-fingerprint-101",
+                stock, benchmark, sector);
+
+        DefaultLabelPolicy.BuildResult result = policy.build(
+                input, 2, calendars("2026-07-13", "2026-07-14"),
+                CALENDAR_VERSION, DefaultLabelPolicy.VERSION, VERIFIED_AT);
+
+        assertThat(result.label().fillStatus).isEqualTo("FILLED");
+        assertThat(result.label().plannedExitTradeDate).isEqualTo(LocalDate.parse("2026-07-14"));
+        assertThat(result.label().exitDelayTradingDays).isZero();
+        assertThat(result.label().holdingTradingDays).isEqualTo(2);
+        assertThat(result.label().sectorExcessReturn).isNotNull();
+        assertThat(result.label().sectorMembershipFingerprint).isNull();
+        assertThat(result.label().marketEvidenceJson).contains("\"sectorEvidenceStatus\":\"AVAILABLE\"");
+        assertThat(result.label().maxDrawdown).isNegative();
+        assertThat(result.label().holdingVolatility).isNotNegative();
+        assertThat(result.costEvidence().impactCostAmount).isPositive();
+    }
+
+    @Test
+    void revisedSectorEvidenceChangesImmutableLabelFingerprint() {
+        KlineSeriesSnapshot stock = stockSeries(List.of(
+                bar("2026-07-10", "10", "10", "9.8", "10.2", 1000),
+                bar("2026-07-13", "10", "10.5", "9.9", "10.6", 1000),
+                bar("2026-07-14", "10.5", "11", "10.4", "11.2", 1000)
+        ));
+        KlineSeriesSnapshot initialSector = stockSeries(List.of(
+                bar("2026-07-13", "100", "101", "99", "102", 1000),
+                bar("2026-07-14", "101", "102", "100", "103", 1000)
+        ));
+        KlineSeriesSnapshot revisedSector = stockSeries(List.of(
+                bar("2026-07-13", "100", "101", "99", "102", 1000),
+                bar("2026-07-14", "101", "99", "98", "102", 1000)
+        ));
+        AiSampleLabelService.SampleInput initial = new AiSampleLabelService.SampleInput(
+                101L, "600519", SIGNAL_DATE, "NORMAL", "sample-fingerprint-101",
+                stock, null, initialSector);
+        AiSampleLabelService.SampleInput revised = new AiSampleLabelService.SampleInput(
+                101L, "600519", SIGNAL_DATE, "NORMAL", "sample-fingerprint-101",
+                stock, null, revisedSector);
+
+        DefaultLabelPolicy.BuildResult first = policy.build(initial, 2,
+                calendars("2026-07-13", "2026-07-14"), CALENDAR_VERSION,
+                DefaultLabelPolicy.VERSION, VERIFIED_AT);
+        DefaultLabelPolicy.BuildResult second = policy.build(revised, 2,
+                calendars("2026-07-13", "2026-07-14"), CALENDAR_VERSION,
+                DefaultLabelPolicy.VERSION, VERIFIED_AT);
+
+        assertThat(second.label().sectorExcessReturn).isNotEqualByComparingTo(
+                first.label().sectorExcessReturn);
+        assertThat(second.label().inputFingerprint).isNotEqualTo(first.label().inputFingerprint);
+    }
+
+    @Test
+    void strictSectorEvidenceRequiresMembershipFingerprint() {
+        KlineSeriesSnapshot series = stockSeries(List.of(
+                bar("2026-07-10", "10", "10", "9.8", "10.2", 1000),
+                bar("2026-07-13", "10", "10.5", "9.9", "10.6", 1000)
+        ));
+        AiSampleLabelService.SampleInput input = new AiSampleLabelService.SampleInput(
+                101L, "600519", SIGNAL_DATE, "NORMAL", "sample-fingerprint-101",
+                series, null, series, null, Map.of(
+                LocalDate.parse("2026-07-13"), state("state-13-v1")), true);
+
+        assertThatThrownBy(() -> policy.build(input, 1, calendars("2026-07-13"),
+                CALENDAR_VERSION, DefaultLabelPolicy.VERSION, VERIFIED_AT))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("行业归属证据");
+    }
+
+    @Test
+    void revisedSectorMembershipChangesImmutableLabelFingerprint() {
+        KlineSeriesSnapshot series = stockSeries(List.of(
+                bar("2026-07-10", "10", "10", "9.8", "10.2", 1000),
+                bar("2026-07-13", "10", "10.5", "9.9", "10.6", 1000)
+        ));
+        Map<LocalDate, AiSampleLabelService.TradingState> states = Map.of(
+                LocalDate.parse("2026-07-13"), state("state-13-v1"));
+        AiSampleLabelService.SampleInput initial = new AiSampleLabelService.SampleInput(
+                101L, "600519", SIGNAL_DATE, "NORMAL", "sample-fingerprint-101",
+                series, null, series, "membership-v1", states, true);
+        AiSampleLabelService.SampleInput revised = new AiSampleLabelService.SampleInput(
+                101L, "600519", SIGNAL_DATE, "NORMAL", "sample-fingerprint-101",
+                series, null, series, "membership-v2", states, true);
+
+        DefaultLabelPolicy.BuildResult first = policy.build(initial, 1,
+                calendars("2026-07-13"), CALENDAR_VERSION, DefaultLabelPolicy.VERSION, VERIFIED_AT);
+        DefaultLabelPolicy.BuildResult second = policy.build(revised, 1,
+                calendars("2026-07-13"), CALENDAR_VERSION, DefaultLabelPolicy.VERSION, VERIFIED_AT);
+
+        assertThat(second.label().inputFingerprint).isNotEqualTo(first.label().inputFingerprint);
+        assertThat(second.label().marketEvidenceJson).contains("membership-v2");
+        assertThat(second.label().sectorMembershipFingerprint).isEqualTo("membership-v2");
+    }
+
+    @Test
+    void missingSectorEvidenceIsExplicitAndNeverConvertedToZeroReturn() {
+        DefaultLabelPolicy.BuildResult result = build(
+                1,
+                stockSeries(List.of(
+                        bar("2026-07-10", "10", "10", "9.8", "10.2", 1000),
+                        bar("2026-07-13", "10", "10.2", "9.9", "10.3", 1000)
+                )),
+                calendars("2026-07-13")
+        );
+
+        assertThat(result.label().sectorReturn).isNull();
+        assertThat(result.label().sectorExcessReturn).isNull();
+        assertThat(result.label().marketEvidenceJson)
+                .contains("\"sectorEvidenceStatus\":\"UNAVAILABLE\"");
+    }
+
     private DefaultLabelPolicy.BuildResult build(
             int horizon,
             KlineSeriesSnapshot series,
@@ -190,6 +356,21 @@ class DefaultLabelPolicyTest {
                 null,
                 null
         );
+    }
+
+    private static AiSampleLabelService.SampleInput strictSample(
+            KlineSeriesSnapshot series,
+            Map<LocalDate, AiSampleLabelService.TradingState> states
+    ) {
+        return new AiSampleLabelService.SampleInput(
+                101L, "600519", SIGNAL_DATE, "NORMAL", "sample-fingerprint-101",
+                series, null, null, null, states, true);
+    }
+
+    private static AiSampleLabelService.TradingState state(String fingerprint) {
+        return new AiSampleLabelService.TradingState(
+                LocalDate.parse("2026-07-13"), fingerprint, "READY", 1, 1, 0, 0,
+                new BigDecimal("0.100000"), 0, 0);
     }
 
     private static KlineSeriesSnapshot stockSeries(List<KlinePointResponse> points) {

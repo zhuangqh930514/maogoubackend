@@ -116,6 +116,7 @@ public interface AiFactorValueMapper extends BaseMapper<AiFactorValue> {
               AND l.horizon_trading_days = #{horizonDays}
               AND l.label_status = 'MATURED'
               AND l.execution_status = 'EXECUTED'
+              AND l.is_current = 1
               AND l.label_available_at <= #{asOfTime}
             ORDER BY s.trade_date, s.id, v.id, l.id
             """)

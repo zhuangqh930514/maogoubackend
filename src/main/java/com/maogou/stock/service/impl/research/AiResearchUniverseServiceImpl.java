@@ -114,6 +114,11 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
         snapshot.asOfTime = request.asOfTime();
         snapshot.universeVersion = "%s/%s/R%04d".formatted(SYSTEM_CORE, request.tradeDate(), revision);
         snapshot.calendarVersion = request.calendarVersion();
+        snapshot.membershipSourceName = normalized(request.membershipSourceName());
+        snapshot.membershipSourceRevision = normalized(request.membershipSourceRevision());
+        snapshot.sourceObservedAt = request.sourceObservedAt();
+        snapshot.pointInTimeStatus = request.pointInTimeStatus().trim().toUpperCase();
+        snapshot.pointInTimeReason = normalized(request.pointInTimeReason());
         snapshot.sourceFingerprint = snapshotFingerprint;
         snapshot.itemCount = candidates.size();
         snapshot.qualityStatus = qualityStatus(includedCount, universe.minimumStockCount);
@@ -229,10 +234,15 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
         item.stockCode = candidate.stockCode();
         item.stockName = candidate.stockName();
         item.market = candidate.market();
-        item.listedStatus = "LISTED";
+        item.industryCode = candidate.industryCode();
+        item.industryName = candidate.industryName();
+        item.industryStandard = candidate.industryStandard();
+        item.listedStatus = candidate.listedStatus();
         item.sourceType = String.join(",", candidate.sourceTypes());
         boolean effective = candidate.included()
-                && (candidate.effectiveFrom() == null || !candidate.effectiveFrom().isAfter(tradeDate));
+                && "LISTED".equals(candidate.listedStatus())
+                && (candidate.effectiveFrom() == null || !candidate.effectiveFrom().isAfter(tradeDate))
+                && (candidate.effectiveTo() == null || !candidate.effectiveTo().isBefore(tradeDate));
         item.included = effective ? 1 : 0;
         item.inclusionReason = effective
                 ? "由" + String.join("、", candidate.sourceTypes()) + "纳入研究池"
@@ -241,17 +251,36 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
                 : candidate.effectiveFrom() != null && candidate.effectiveFrom().isAfter(tradeDate)
                 ? "目标交易日尚未进入研究范围" : candidate.excludeReason();
         item.effectiveFrom = candidate.effectiveFrom() == null ? tradeDate : candidate.effectiveFrom();
-        item.evidenceJson = json(Map.of(
-                "sourceTypes", candidate.sourceTypes(),
-                "included", effective,
-                "effectiveFrom", item.effectiveFrom.toString(),
-                "excludeReason", candidate.excludeReason() == null ? "" : candidate.excludeReason()
-        ));
+        item.effectiveTo = candidate.effectiveTo();
+        Map<String, Object> evidence = new LinkedHashMap<>();
+        evidence.put("sourceTypes", candidate.sourceTypes());
+        evidence.put("sourceReferences", candidate.sourceReferences());
+        evidence.put("sourceEvidenceFingerprints", candidate.sourceEvidenceFingerprints());
+        evidence.put("industryCode", item.industryCode == null ? "" : item.industryCode);
+        evidence.put("industryName", item.industryName == null ? "" : item.industryName);
+        evidence.put("industryStandard", item.industryStandard == null ? "" : item.industryStandard);
+        evidence.put("industryEvidenceFingerprints", candidate.industryEvidenceFingerprints());
+        evidence.put("included", effective);
+        evidence.put("listedStatus", item.listedStatus);
+        evidence.put("effectiveFrom", item.effectiveFrom.toString());
+        evidence.put("effectiveTo", item.effectiveTo == null ? "" : item.effectiveTo.toString());
+        evidence.put("excludeReason", candidate.excludeReason() == null ? "" : candidate.excludeReason());
+        item.evidenceJson = json(evidence);
         item.sourceFingerprint = sha256(String.join("|",
                 item.stockCode,
+                item.stockName == null ? "" : item.stockName,
+                item.market == null ? "" : item.market,
+                item.industryCode == null ? "" : item.industryCode,
+                item.industryName == null ? "" : item.industryName,
+                item.industryStandard == null ? "" : item.industryStandard,
                 item.sourceType,
                 String.valueOf(item.included),
+                item.listedStatus,
                 item.effectiveFrom.toString(),
+                item.effectiveTo == null ? "" : item.effectiveTo.toString(),
+                String.join(",", candidate.sourceReferences()),
+                String.join(",", candidate.sourceEvidenceFingerprints()),
+                String.join(",", candidate.industryEvidenceFingerprints()),
                 item.excludeReason == null ? "" : item.excludeReason
         ));
         item.createdAt = LocalDateTime.now();
@@ -262,9 +291,19 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
         String canonicalItems = candidates.stream()
                 .map(candidate -> String.join("|",
                         candidate.stockCode(),
+                        candidate.stockName() == null ? "" : candidate.stockName(),
+                        candidate.market() == null ? "" : candidate.market(),
+                        candidate.industryCode() == null ? "" : candidate.industryCode(),
+                        candidate.industryName() == null ? "" : candidate.industryName(),
+                        candidate.industryStandard() == null ? "" : candidate.industryStandard(),
                         String.join(",", candidate.sourceTypes()),
                         String.valueOf(candidate.included()),
+                        candidate.listedStatus(),
                         candidate.effectiveFrom() == null ? "" : candidate.effectiveFrom().toString(),
+                        candidate.effectiveTo() == null ? "" : candidate.effectiveTo().toString(),
+                        String.join(",", candidate.sourceReferences()),
+                        String.join(",", candidate.sourceEvidenceFingerprints()),
+                        String.join(",", candidate.industryEvidenceFingerprints()),
                         candidate.excludeReason() == null ? "" : candidate.excludeReason()
                 ))
                 .reduce((left, right) -> left + "\n" + right)
@@ -274,6 +313,11 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
                 request.tradeDate().toString(),
                 request.asOfTime().toString(),
                 request.calendarVersion(),
+                value(request.membershipSourceName()),
+                value(request.membershipSourceRevision()),
+                request.sourceObservedAt() == null ? "" : request.sourceObservedAt().toString(),
+                request.pointInTimeStatus(),
+                value(request.pointInTimeReason()),
                 canonicalItems
         ));
     }
@@ -339,6 +383,24 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
                 || request.calendarVersion() == null || request.calendarVersion().isBlank()) {
             throw new IllegalArgumentException("股票池快照缺少交易日、截止时间或日历版本");
         }
+        if (!Set.of("READY", "PARTIAL", "UNAVAILABLE").contains(
+                request.pointInTimeStatus() == null ? "" : request.pointInTimeStatus().trim().toUpperCase())) {
+            throw new IllegalArgumentException("股票池快照缺少合法的时点状态");
+        }
+        if ("READY".equalsIgnoreCase(request.pointInTimeStatus())
+                && (request.membershipSourceName() == null || request.membershipSourceName().isBlank()
+                || request.membershipSourceRevision() == null || request.membershipSourceRevision().isBlank()
+                || request.sourceObservedAt() == null)) {
+            throw new IllegalArgumentException("READY 股票池快照必须声明来源、版本和观测时间");
+        }
+    }
+
+    private static String normalized(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    private static String value(String value) {
+        return value == null ? "" : value.trim();
     }
 
     private record MergedCandidate(
@@ -348,7 +410,15 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
             Set<String> sourceTypes,
             boolean included,
             String excludeReason,
-            LocalDate effectiveFrom
+            LocalDate effectiveFrom,
+            LocalDate effectiveTo,
+            String listedStatus,
+            Set<String> sourceReferences,
+            Set<String> sourceEvidenceFingerprints,
+            String industryCode,
+            String industryName,
+            String industryStandard,
+            Set<String> industryEvidenceFingerprints
     ) {
     }
 
@@ -360,6 +430,15 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
         private boolean included;
         private String excludeReason;
         private LocalDate effectiveFrom;
+        private LocalDate effectiveTo;
+        private boolean unboundedEffectiveTo;
+        private String listedStatus;
+        private final Set<String> sourceReferences = new TreeSet<>();
+        private final Set<String> sourceEvidenceFingerprints = new TreeSet<>();
+        private String industryCode;
+        private String industryName;
+        private String industryStandard;
+        private final Set<String> industryEvidenceFingerprints = new TreeSet<>();
 
         private CandidateAccumulator(String stockCode) {
             this.stockCode = stockCode;
@@ -383,6 +462,44 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
                     && (effectiveFrom == null || candidate.effectiveFrom().isBefore(effectiveFrom))) {
                 effectiveFrom = candidate.effectiveFrom();
             }
+            if (candidate.effectiveTo() == null) {
+                unboundedEffectiveTo = true;
+                effectiveTo = null;
+            } else if (!unboundedEffectiveTo
+                    && (effectiveTo == null || candidate.effectiveTo().isAfter(effectiveTo))) {
+                effectiveTo = candidate.effectiveTo();
+            }
+            if (candidate.listedStatus() != null && !candidate.listedStatus().isBlank()) {
+                listedStatus = candidate.listedStatus().trim().toUpperCase();
+            }
+            if (candidate.sourceReference() != null && !candidate.sourceReference().isBlank()) {
+                sourceReferences.add(candidate.sourceReference().trim());
+            }
+            if (candidate.sourceEvidenceFingerprint() != null
+                    && !candidate.sourceEvidenceFingerprint().isBlank()) {
+                sourceEvidenceFingerprints.add(candidate.sourceEvidenceFingerprint().trim());
+            }
+            if (candidate.industryCode() != null && !candidate.industryCode().isBlank()) {
+                String normalizedIndustryCode = candidate.industryCode().trim().toUpperCase();
+                if (industryCode != null && !industryCode.equals(normalizedIndustryCode)) {
+                    throw new IllegalArgumentException("同一股票在同一快照存在冲突行业归属：" + stockCode);
+                }
+                industryCode = normalizedIndustryCode;
+            }
+            if (candidate.industryName() != null && !candidate.industryName().isBlank()) {
+                industryName = candidate.industryName().trim();
+            }
+            if (candidate.industryStandard() != null && !candidate.industryStandard().isBlank()) {
+                String normalizedIndustryStandard = candidate.industryStandard().trim().toUpperCase();
+                if (industryStandard != null && !industryStandard.equals(normalizedIndustryStandard)) {
+                    throw new IllegalArgumentException("同一股票在同一快照存在冲突行业分类标准：" + stockCode);
+                }
+                industryStandard = normalizedIndustryStandard;
+            }
+            if (candidate.industryEvidenceFingerprint() != null
+                    && !candidate.industryEvidenceFingerprint().isBlank()) {
+                industryEvidenceFingerprints.add(candidate.industryEvidenceFingerprint().trim());
+            }
         }
 
         private MergedCandidate build() {
@@ -396,7 +513,15 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
                     sources,
                     included,
                     included ? null : excludeReason,
-                    effectiveFrom
+                    effectiveFrom,
+                    effectiveTo,
+                    listedStatus == null ? "LISTED" : listedStatus,
+                    Set.copyOf(sourceReferences),
+                    Set.copyOf(sourceEvidenceFingerprints),
+                    industryCode,
+                    industryName,
+                    industryStandard,
+                    Set.copyOf(industryEvidenceFingerprints)
             );
         }
     }

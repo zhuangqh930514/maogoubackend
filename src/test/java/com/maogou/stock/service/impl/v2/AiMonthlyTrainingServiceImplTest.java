@@ -24,6 +24,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
@@ -35,6 +36,37 @@ class AiMonthlyTrainingServiceImplTest {
 
     @TempDir
     Path temporary;
+
+    @Test
+    void defaultsToModelPackageOnlyToProtectProductionResources() {
+        assertThat(new AppProperties().getScheduler().getTrainingExecutionMode())
+                .isEqualTo("MODEL_PACKAGE_ONLY");
+    }
+
+    @Test
+    void modelPackageOnlyModeSkipsHeavyTrainingBeforeReadingResearchTables() {
+        Fixture fixture = fixture();
+        fixture.properties.getScheduler().setTrainingExecutionMode("MODEL_PACKAGE_ONLY");
+
+        AiResearchCycleResult result = runner(fixture).run(5L, now());
+
+        assertThat(result.status()).isEqualTo("SKIPPED");
+        assertThat(result.message()).contains("本地研究库", "候选模型包");
+        verify(fixture.readinessService, never()).assess(any());
+        verify(fixture.datasetService, never()).buildDataset(any());
+        verify(fixture.modelTrainer, never()).train(any());
+    }
+
+    @Test
+    void rejectsUnknownTrainingExecutionModeInsteadOfFallingBackToHeavyTraining() {
+        Fixture fixture = fixture();
+        fixture.properties.getScheduler().setTrainingExecutionMode("REMOTE");
+
+        assertThatThrownBy(() -> runner(fixture).run(5L, now()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("不支持的模型训练执行模式");
+        verify(fixture.readinessService, never()).assess(any());
+    }
 
     @Test
     void insufficientMatureSamplesAreSkippedBeforeCreatingArtifacts() {
@@ -50,7 +82,7 @@ class AiMonthlyTrainingServiceImplTest {
         assertThat(result.status()).isEqualTo("SKIPPED");
         assertThat(result.message()).contains("120 / 20000");
         verify(fixture.datasetItemMapper).selectDominantSourceSummary(
-                "LABEL/1.0.0", 3, now());
+                "LABEL/1.1.0", 3, now());
         verify(fixture.datasetService, never()).buildDataset(any());
         verify(fixture.modelTrainer, never()).train(any());
     }
@@ -148,6 +180,28 @@ class AiMonthlyTrainingServiceImplTest {
         verify(fixture.releaseMapper, never()).insert(any(AiStrategyRelease.class));
     }
 
+    @Test
+    void rejectsTrainingArtifactsWithoutVerifiedOnnxParity() throws Exception {
+        Fixture fixture = fixture();
+        fixture.properties.getScheduler().setMonthlyMinimumSamples(10);
+        fixture.properties.getScheduler().setTrainingArtifactRoot(temporary.toString());
+        when(fixture.datasetItemMapper.selectDominantSourceSummary(any(), any(), any()))
+                .thenReturn(summary(30_000));
+        when(fixture.datasetItemMapper.selectEligibleTradeDates(
+                any(), any(), any(), any(), any())).thenReturn(dates(120));
+        AiTrainingDataset dataset = new AiTrainingDataset();
+        dataset.id = 71L;
+        dataset.rowCount = 30_000;
+        when(fixture.datasetService.buildDataset(any())).thenReturn(
+                new AiTrainingDatasetService.DatasetBuildResult(dataset, List.of()));
+        stubTrainingArtifacts(fixture, false);
+
+        assertThatThrownBy(() -> runner(fixture).run(5L, now()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("ONNX 一致性验证");
+        verify(fixture.datasetService, never()).registerModel(any());
+    }
+
     private AiMonthlyTrainingServiceImpl runner(Fixture fixture) {
         return new AiMonthlyTrainingServiceImpl(
                 fixture.properties, fixture.datasetItemMapper, fixture.readinessService,
@@ -158,6 +212,7 @@ class AiMonthlyTrainingServiceImplTest {
 
     private static Fixture fixture() {
         AppProperties properties = new AppProperties();
+        properties.getScheduler().setTrainingExecutionMode("IN_PROCESS");
         AiTrainingReadinessService readinessService = mock(AiTrainingReadinessService.class);
         when(readinessService.assess(any())).thenReturn(ready());
         AiStrategyRelease champion = new AiStrategyRelease();
@@ -180,7 +235,7 @@ class AiMonthlyTrainingServiceImplTest {
     private static AiTrainingSourceSummary summary(int rows) {
         AiTrainingSourceSummary value = new AiTrainingSourceSummary();
         value.featureVersion = "POINT_IN_TIME_V2.1";
-        value.labelVersion = "LABEL/1.0.0";
+        value.labelVersion = "LABEL/1.1.0";
         value.calendarVersion = "CN_A_CALENDAR/1.0.0";
         value.rowCount = rows;
         value.tradingDayCount = 20;
@@ -196,6 +251,11 @@ class AiMonthlyTrainingServiceImplTest {
     }
 
     private static void stubTrainingArtifacts(Fixture fixture) throws Exception {
+        stubTrainingArtifacts(fixture, true);
+    }
+
+    private static void stubTrainingArtifacts(Fixture fixture, boolean parityVerified)
+            throws Exception {
         when(fixture.modelTrainer.train(any())).thenAnswer(invocation -> {
             AiModelTrainer.TrainingRequest request = invocation.getArgument(0);
             Files.createDirectories(request.outputDirectory());
@@ -205,13 +265,17 @@ class AiMonthlyTrainingServiceImplTest {
                     request.outputDirectory().resolve("feature_manifest.json"),
                     "{\"features\":[\"momentum\"]}");
             Path metrics = Files.writeString(request.outputDirectory().resolve("metrics.json"),
-                    metricsJson(checksum(onnx), checksum(manifest)));
+                    metricsJson(checksum(onnx), checksum(manifest), parityVerified));
             return new AiModelTrainer.TrainingArtifacts(
                     "LOGISTIC_REGRESSION", model, onnx, manifest, metrics);
         });
     }
 
-    private static String metricsJson(String onnxChecksum, String manifestChecksum) {
+    private static String metricsJson(
+            String onnxChecksum,
+            String manifestChecksum,
+            boolean parityVerified
+    ) {
         return """
                 {
                   "trainerVersion":"TRAIN_RANKER_V2_1",
@@ -220,9 +284,9 @@ class AiMonthlyTrainingServiceImplTest {
                   "parameters":{},
                   "calibration":{"method":"sigmoid","fitSplit":"TRAIN","fitted":true,"coefficient":1.0,"intercept":0.0},
                   "splits":{"validation":{"rocAuc":0.70},"test":{"rocAuc":0.68}},
-                  "artifacts":{"onnxExported":true,"modelSha256":"%s","onnxSha256":"%s","featureManifestSha256":"%s"}
+                  "artifacts":{"onnxExported":true,"modelSha256":"%s","onnxSha256":"%s","featureManifestSha256":"%s","onnxParity":{"verified":%s,"sampleCount":48,"maxAbsoluteError":0.000001}}
                 }
-                """.formatted(onnxChecksum, onnxChecksum, manifestChecksum);
+                """.formatted(onnxChecksum, onnxChecksum, manifestChecksum, parityVerified);
     }
 
     private static String checksum(Path path) throws Exception {
@@ -238,7 +302,8 @@ class AiMonthlyTrainingServiceImplTest {
         return new AiTrainingReadinessGate().evaluate(new AiTrainingReadinessGate.Evidence(
                 120, 200,
                 java.util.Map.of(1, 20_000, 2, 20_000, 3, 30_000, 5, 20_000),
-                java.util.Map.of("UP", 20, "DOWN", 20, "SIDEWAYS", 20)));
+                java.util.Map.of("UP", 20, "DOWN", 20, "SIDEWAYS", 20),
+                90_000, 89_000, 90_000, 89_000, 90_000, 89_000));
     }
 
     private record Fixture(

@@ -12,6 +12,9 @@ public final class AiTrainingReadinessGate {
     public static final int MINIMUM_STOCKS = 200;
     public static final int MINIMUM_LABELS_PER_HORIZON = 20_000;
     public static final int MINIMUM_REGIME_DAYS = 20;
+    public static final double MINIMUM_TRADABILITY_STATE_COVERAGE = 0.98d;
+    public static final double MINIMUM_UNIVERSE_MEMBERSHIP_COVERAGE = 0.98d;
+    public static final double MINIMUM_SECTOR_EVIDENCE_COVERAGE = 0.98d;
     public static final List<Integer> CORE_HORIZONS = List.of(1, 2, 3, 5);
     public static final List<String> REQUIRED_REGIMES = List.of("UP", "DOWN", "SIDEWAYS");
 
@@ -40,15 +43,40 @@ public final class AiTrainingReadinessGate {
 
         int remainingTradingDays = Math.max(0, MINIMUM_TRADING_DAYS - evidence.tradingDays());
         int remainingStocks = Math.max(0, MINIMUM_STOCKS - evidence.stocks());
+        int eligibleTradabilityLabels = Math.max(0, evidence.tradabilityEligibleLabels());
+        int readyTradabilityLabels = Math.max(0, evidence.readyTradabilityLabels());
+        double tradabilityCoverage = eligibleTradabilityLabels == 0 ? 0d
+                : (double) readyTradabilityLabels / eligibleTradabilityLabels;
+        double remainingTradabilityCoverage = Math.max(0d,
+                MINIMUM_TRADABILITY_STATE_COVERAGE - tradabilityCoverage);
+        int eligibleUniverseLabels = Math.max(0, evidence.universeEligibleLabels());
+        int readyUniverseLabels = Math.max(0, evidence.readyUniverseLabels());
+        double universeCoverage = eligibleUniverseLabels == 0 ? 0d
+                : (double) readyUniverseLabels / eligibleUniverseLabels;
+        double remainingUniverseCoverage = Math.max(0d,
+                MINIMUM_UNIVERSE_MEMBERSHIP_COVERAGE - universeCoverage);
+        int eligibleSectorLabels = Math.max(0, evidence.sectorEligibleLabels());
+        int readySectorLabels = Math.max(0, evidence.readySectorLabels());
+        double sectorEvidenceCoverage = eligibleSectorLabels == 0 ? 0d
+                : (double) readySectorLabels / eligibleSectorLabels;
+        double remainingSectorEvidenceCoverage = Math.max(0d,
+                MINIMUM_SECTOR_EVIDENCE_COVERAGE - sectorEvidenceCoverage);
         boolean ready = remainingTradingDays == 0
                 && remainingStocks == 0
                 && remainingLabels.values().stream().allMatch(value -> value == 0)
-                && missingRegimes.isEmpty();
+                && missingRegimes.isEmpty()
+                && remainingTradabilityCoverage == 0d
+                && remainingUniverseCoverage == 0d
+                && remainingSectorEvidenceCoverage == 0d;
         return new Readiness(
                 ready ? "READY" : "INSUFFICIENT_DATA",
                 evidence.tradingDays(), evidence.stocks(), Map.copyOf(actualLabels), Map.copyOf(actualRegimes),
                 remainingTradingDays, remainingStocks, Map.copyOf(remainingLabels),
-                Map.copyOf(remainingRegimes), List.copyOf(missingRegimes));
+                Map.copyOf(remainingRegimes), List.copyOf(missingRegimes), eligibleTradabilityLabels,
+                readyTradabilityLabels, tradabilityCoverage, remainingTradabilityCoverage,
+                eligibleUniverseLabels, readyUniverseLabels, universeCoverage, remainingUniverseCoverage,
+                eligibleSectorLabels, readySectorLabels, sectorEvidenceCoverage,
+                remainingSectorEvidenceCoverage);
     }
 
     private static Map<String, Integer> normalizedRegimes(Map<String, Integer> raw) {
@@ -79,12 +107,55 @@ public final class AiTrainingReadinessGate {
             int tradingDays,
             int stocks,
             Map<Integer, Integer> matureExecutableLabels,
-            Map<String, Integer> regimeTradingDays
+            Map<String, Integer> regimeTradingDays,
+            int tradabilityEligibleLabels,
+            int readyTradabilityLabels,
+            int universeEligibleLabels,
+            int readyUniverseLabels,
+            int sectorEligibleLabels,
+            int readySectorLabels
     ) {
         public Evidence {
             matureExecutableLabels = matureExecutableLabels == null
                     ? Map.of() : Map.copyOf(matureExecutableLabels);
             regimeTradingDays = regimeTradingDays == null ? Map.of() : Map.copyOf(regimeTradingDays);
+        }
+
+        public Evidence(
+                int tradingDays,
+                int stocks,
+                Map<Integer, Integer> matureExecutableLabels,
+                Map<String, Integer> regimeTradingDays,
+                int tradabilityEligibleLabels,
+                int readyTradabilityLabels,
+                int universeEligibleLabels,
+                int readyUniverseLabels
+        ) {
+            this(tradingDays, stocks, matureExecutableLabels, regimeTradingDays,
+                    tradabilityEligibleLabels, readyTradabilityLabels,
+                    universeEligibleLabels, readyUniverseLabels, 0, 0);
+        }
+
+        public Evidence(
+                int tradingDays,
+                int stocks,
+                Map<Integer, Integer> matureExecutableLabels,
+                Map<String, Integer> regimeTradingDays,
+                int tradabilityEligibleLabels,
+                int readyTradabilityLabels
+        ) {
+            this(tradingDays, stocks, matureExecutableLabels, regimeTradingDays,
+                    tradabilityEligibleLabels, readyTradabilityLabels, 0, 0, 0, 0);
+        }
+
+        public Evidence(
+                int tradingDays,
+                int stocks,
+                Map<Integer, Integer> matureExecutableLabels,
+                Map<String, Integer> regimeTradingDays
+        ) {
+            this(tradingDays, stocks, matureExecutableLabels, regimeTradingDays,
+                    0, 0, 0, 0, 0, 0);
         }
     }
 
@@ -98,7 +169,19 @@ public final class AiTrainingReadinessGate {
             int remainingStocks,
             Map<Integer, Integer> remainingLabels,
             Map<String, Integer> remainingRegimeDays,
-            List<String> missingRegimes
-    ) {
+            List<String> missingRegimes,
+            int tradabilityEligibleLabels,
+            int readyTradabilityLabels,
+            double tradabilityCoverage,
+            double remainingTradabilityCoverage,
+            int universeEligibleLabels,
+            int readyUniverseLabels,
+            double universeCoverage,
+            double remainingUniverseCoverage,
+            int sectorEligibleLabels,
+            int readySectorLabels,
+            double sectorEvidenceCoverage,
+            double remainingSectorEvidenceCoverage
+        ) {
     }
 }

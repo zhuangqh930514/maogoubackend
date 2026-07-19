@@ -90,7 +90,7 @@ public class AiResearchLabQueryServiceImpl implements AiResearchLabQueryService 
         Map<String, Long> counts = new LinkedHashMap<>();
         counts.put("samples", mapper(AiSampleMapper.class).selectCount(new QueryWrapper<>()));
         counts.put("matureLabels", mapper(AiSampleLabelMapper.class).selectCount(
-                new QueryWrapper<AiSampleLabel>().eq("label_status", "MATURED")));
+                new QueryWrapper<AiSampleLabel>().eq("label_status", "MATURED").eq("is_current", 1)));
         counts.put("predictions", mapper(AiPredictionMapper.class).selectCount(new QueryWrapper<>()));
         counts.put("datasets", mapper(AiTrainingDatasetMapper.class).selectCount(new QueryWrapper<>()));
         counts.put("shadowChallengers", mapper(AiStrategyReleaseMapper.class).selectCount(
@@ -178,7 +178,8 @@ public class AiResearchLabQueryServiceImpl implements AiResearchLabQueryService 
         related.put("factors", items("factorValue", mapper(AiFactorValueMapper.class).selectList(
                 new QueryWrapper<AiFactorValue>().eq("sample_id", id).orderByAsc("factor_definition_id"))));
         List<AiSampleLabel> labels = mapper(AiSampleLabelMapper.class).selectList(
-                new QueryWrapper<AiSampleLabel>().eq("sample_id", id).orderByAsc("horizon_trading_days"));
+                new QueryWrapper<AiSampleLabel>().eq("sample_id", id).eq("is_current", 1)
+                        .orderByAsc("horizon_trading_days"));
         related.put("labels", items("sampleLabel", labels));
         List<Long> labelIds = labels.stream().map(label -> label.id).toList();
         related.put("labelCosts", items("labelCostEvidence", labelIds.isEmpty() ? List.of()
@@ -246,6 +247,7 @@ public class AiResearchLabQueryServiceImpl implements AiResearchLabQueryService 
     public ResearchLabPayloads.PageResult<ResearchLabPayloads.EvidenceItem> labels(
             ResearchLabPayloads.QueryFilter filter) {
         QueryWrapper<AiSampleLabel> query = new QueryWrapper<>();
+        query.eq("is_current", 1);
         stock(query, filter, "stock_code");
         dates(query, filter, "entry_trade_date");
         status(query, filter, "label_status");
@@ -279,6 +281,7 @@ public class AiResearchLabQueryServiceImpl implements AiResearchLabQueryService 
     public ResearchLabPayloads.PageResult<ResearchLabPayloads.EvidenceItem> factorPerformance(
             ResearchLabPayloads.QueryFilter filter) {
         QueryWrapper<AiFactorPerformance> query = new QueryWrapper<>();
+        query.eq("is_current", 1);
         dates(query, filter, "window_end_date");
         status(query, filter, "drift_status");
         quality(query, filter, "confidence_level");

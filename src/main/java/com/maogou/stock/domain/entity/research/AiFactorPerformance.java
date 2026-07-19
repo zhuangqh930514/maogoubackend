@@ -28,6 +28,10 @@ public class AiFactorPerformance {
     public String windowType;
     public LocalDate windowStartDate;
     public LocalDate windowEndDate;
+    public Integer revisionNo;
+    public Integer isCurrent;
+    public Long supersedesPerformanceId;
+    public String revisionReason;
     public String inputFingerprint;
     public Integer sampleCount;
     public Integer successCount;

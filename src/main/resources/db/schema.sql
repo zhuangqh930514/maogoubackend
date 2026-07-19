@@ -198,6 +198,11 @@ CREATE TABLE IF NOT EXISTS ai_research_universe_snapshot (
     as_of_time DATETIME(3) NOT NULL,
     universe_version VARCHAR(64) NOT NULL,
     calendar_version VARCHAR(64) NOT NULL,
+    membership_source_name VARCHAR(64) NULL,
+    membership_source_revision VARCHAR(64) NULL,
+    source_observed_at DATETIME(3) NULL,
+    point_in_time_status VARCHAR(32) NOT NULL DEFAULT 'UNAVAILABLE',
+    point_in_time_reason VARCHAR(255) NULL,
     source_fingerprint VARCHAR(128) NOT NULL,
     item_count INT NOT NULL DEFAULT 0,
     quality_status VARCHAR(32) NOT NULL DEFAULT 'UNAVAILABLE',
@@ -208,6 +213,8 @@ CREATE TABLE IF NOT EXISTS ai_research_universe_snapshot (
     UNIQUE KEY uk_universe_snapshot_fingerprint
         (research_universe_id, source_fingerprint),
     KEY idx_universe_snapshot_trade (trade_date, status, quality_status),
+    KEY idx_universe_snapshot_point_in_time
+        (trade_date, point_in_time_status, status, quality_status),
     CONSTRAINT fk_universe_snapshot_universe
         FOREIGN KEY (research_universe_id) REFERENCES ai_research_universe (id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
@@ -222,18 +229,21 @@ CREATE TABLE IF NOT EXISTS ai_research_universe_item (
     sector_name VARCHAR(64) NULL,
     industry_code VARCHAR(32) NULL,
     industry_name VARCHAR(64) NULL,
+    industry_standard VARCHAR(32) NULL,
     listed_status VARCHAR(32) NOT NULL DEFAULT 'LISTED',
     source_type VARCHAR(96) NOT NULL,
     included TINYINT NOT NULL DEFAULT 1,
     inclusion_reason VARCHAR(255) NULL,
     exclude_reason VARCHAR(255) NULL,
     effective_from DATE NOT NULL,
+    effective_to DATE NULL,
     evidence_json MEDIUMTEXT NOT NULL,
     source_fingerprint VARCHAR(128) NOT NULL,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     UNIQUE KEY uk_universe_item_stock (universe_snapshot_id, stock_code),
     KEY idx_universe_item_stock_snapshot (stock_code, universe_snapshot_id),
     KEY idx_universe_item_sector (universe_snapshot_id, sector_code, included),
+    KEY idx_universe_item_effective (stock_code, effective_from, effective_to, included),
     CONSTRAINT chk_universe_item_included CHECK (included IN (0, 1)),
     CONSTRAINT fk_universe_item_snapshot
         FOREIGN KEY (universe_snapshot_id) REFERENCES ai_research_universe_snapshot (id)
@@ -259,6 +269,7 @@ CREATE TABLE IF NOT EXISTS ai_data_batch (
     success_count INT NOT NULL DEFAULT 0,
     failed_count INT NOT NULL DEFAULT 0,
     error_message TEXT NULL,
+    error_detail MEDIUMTEXT NULL,
     status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
     started_at DATETIME(3) NOT NULL,
     completed_at DATETIME(3) NULL,
@@ -296,11 +307,96 @@ CREATE TABLE IF NOT EXISTS ai_source_observation (
     UNIQUE KEY uk_source_observation_fingerprint (source_fingerprint),
     KEY idx_source_batch_type (data_batch_id, source_type, quality_status),
     KEY idx_source_stock_type_event (stock_code, source_type, event_time, published_at),
+    KEY idx_source_stock_type_quality_asof (stock_code, source_type, quality_status, as_of_time, id),
     KEY idx_source_available (available_at, provider_code, endpoint_type),
     KEY idx_source_visibility (as_of_time, published_at, quality_status),
     CONSTRAINT chk_source_observation_timeline CHECK (fetched_at >= first_seen_at),
     CONSTRAINT fk_source_observation_batch
         FOREIGN KEY (data_batch_id) REFERENCES ai_data_batch (id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_security_daily_state (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    stock_code VARCHAR(16) NOT NULL,
+    trade_date DATE NOT NULL,
+    source_batch_id BIGINT NULL,
+    source_revision VARCHAR(64) NOT NULL,
+    revision_no INT NOT NULL DEFAULT 1,
+    is_current TINYINT NOT NULL DEFAULT 1,
+    supersedes_state_id BIGINT NULL,
+    listed_on DATE NULL,
+    listed_days INT NULL,
+    security_status VARCHAR(32) NOT NULL DEFAULT 'UNKNOWN',
+    st_status VARCHAR(32) NOT NULL DEFAULT 'UNKNOWN',
+    is_st TINYINT NULL,
+    suspended TINYINT NULL,
+    limit_ratio DECIMAL(10, 6) NULL,
+    limit_up_price DECIMAL(18, 4) NULL,
+    limit_down_price DECIMAL(18, 4) NULL,
+    is_limit_up TINYINT NULL,
+    is_limit_down TINYINT NULL,
+    buy_tradable TINYINT NULL,
+    sell_tradable TINYINT NULL,
+    quality_status VARCHAR(32) NOT NULL DEFAULT 'UNAVAILABLE',
+    missing_reason VARCHAR(255) NULL,
+    evidence_json MEDIUMTEXT NOT NULL,
+    source_fingerprint VARCHAR(128) NOT NULL,
+    observed_at DATETIME(3) NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    current_guard TINYINT GENERATED ALWAYS AS (
+        CASE WHEN is_current = 1 THEN 1 ELSE NULL END
+    ) STORED,
+    UNIQUE KEY uk_security_daily_state_revision (stock_code, trade_date, revision_no),
+    UNIQUE KEY uk_security_daily_state_current (stock_code, trade_date, current_guard),
+    UNIQUE KEY uk_security_daily_state_fingerprint (source_fingerprint),
+    KEY idx_security_daily_state_current_date (trade_date, is_current, quality_status),
+    KEY idx_security_daily_state_stock_date (stock_code, trade_date, is_current),
+    CONSTRAINT fk_security_daily_state_supersedes
+        FOREIGN KEY (supersedes_state_id) REFERENCES ai_security_daily_state (id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_industry_daily_bar (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    industry_code VARCHAR(32) NOT NULL,
+    industry_name VARCHAR(128) NOT NULL,
+    classification_standard VARCHAR(32) NOT NULL,
+    trade_date DATE NOT NULL,
+    open_price DECIMAL(20, 6) NOT NULL,
+    high_price DECIMAL(20, 6) NOT NULL,
+    low_price DECIMAL(20, 6) NOT NULL,
+    close_price DECIMAL(20, 6) NOT NULL,
+    volume DECIMAL(24, 6) NOT NULL DEFAULT 0,
+    amount DECIMAL(24, 6) NOT NULL DEFAULT 0,
+    source_name VARCHAR(32) NOT NULL,
+    source_revision VARCHAR(64) NOT NULL,
+    revision_no INT NOT NULL DEFAULT 1,
+    is_current TINYINT NOT NULL DEFAULT 1,
+    supersedes_bar_id BIGINT NULL,
+    quality_status VARCHAR(32) NOT NULL,
+    source_ref VARCHAR(255) NOT NULL,
+    evidence_json MEDIUMTEXT NOT NULL,
+    source_fingerprint VARCHAR(128) NOT NULL,
+    observed_at DATETIME(3) NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    current_guard TINYINT GENERATED ALWAYS AS (
+        CASE WHEN is_current = 1 THEN 1 ELSE NULL END
+    ) STORED,
+    UNIQUE KEY uk_industry_bar_revision
+        (industry_code, classification_standard, trade_date, revision_no),
+    UNIQUE KEY uk_industry_bar_current
+        (industry_code, classification_standard, trade_date, current_guard),
+    UNIQUE KEY uk_industry_bar_fingerprint (source_fingerprint),
+    KEY idx_industry_bar_series
+        (industry_code, classification_standard, trade_date, is_current, quality_status),
+    KEY idx_industry_bar_observed (observed_at, source_name, source_revision),
+    CONSTRAINT fk_industry_bar_supersedes
+        FOREIGN KEY (supersedes_bar_id) REFERENCES ai_industry_daily_bar (id),
+    CONSTRAINT chk_industry_bar_prices CHECK (
+        open_price > 0 AND high_price > 0 AND low_price > 0 AND close_price > 0
+        AND high_price >= open_price AND high_price >= close_price AND high_price >= low_price
+        AND low_price <= open_price AND low_price <= close_price
+    ),
+    CONSTRAINT chk_industry_bar_nonnegative CHECK (volume >= 0 AND amount >= 0)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 
 CREATE TABLE IF NOT EXISTS ai_source_health (
@@ -592,10 +688,16 @@ CREATE TABLE IF NOT EXISTS ai_sample_label (
     stock_code VARCHAR(16) NOT NULL,
     horizon_trading_days INT NOT NULL,
     label_version VARCHAR(32) NOT NULL,
+    revision_no INT NOT NULL DEFAULT 1,
+    is_current TINYINT NOT NULL DEFAULT 1,
+    supersedes_label_id BIGINT NULL,
+    revision_reason VARCHAR(64) NULL,
     calendar_version VARCHAR(64) NOT NULL,
     input_fingerprint VARCHAR(128) NOT NULL,
     entry_trade_date DATE NULL,
+    planned_exit_trade_date DATE NULL,
     exit_trade_date DATE NULL,
+    exit_delay_trading_days INT NOT NULL DEFAULT 0,
     entry_price DECIMAL(18, 4) NULL,
     exit_price DECIMAL(18, 4) NULL,
     gross_return DECIMAL(12, 6) NULL,
@@ -603,9 +705,15 @@ CREATE TABLE IF NOT EXISTS ai_sample_label (
     benchmark_return DECIMAL(12, 6) NULL,
     sector_return DECIMAL(12, 6) NULL,
     excess_return DECIMAL(12, 6) NULL,
+    sector_excess_return DECIMAL(12, 6) NULL,
+    sector_membership_fingerprint VARCHAR(128) NULL,
     max_favorable_return DECIMAL(12, 6) NULL,
     max_adverse_return DECIMAL(12, 6) NULL,
+    max_drawdown DECIMAL(12, 6) NULL,
+    holding_volatility DECIMAL(12, 6) NULL,
+    holding_trading_days INT NULL,
     actual_direction VARCHAR(16) NULL,
+    fill_status VARCHAR(32) NOT NULL DEFAULT 'INVALID_SOURCE',
     execution_status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
     execution_reason VARCHAR(255) NULL,
     label_status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
@@ -616,7 +724,9 @@ CREATE TABLE IF NOT EXISTS ai_sample_label (
     verified_at DATETIME(3) NULL,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     UNIQUE KEY uk_sample_label_version
-        (sample_id, horizon_trading_days, label_version),
+        (sample_id, horizon_trading_days, label_version, revision_no),
+    KEY idx_sample_label_current
+        (sample_id, horizon_trading_days, label_version, is_current),
     KEY idx_label_maturity_status
         (label_available_at, execution_status, horizon_trading_days),
     KEY idx_label_training_readiness
@@ -627,13 +737,19 @@ CREATE TABLE IF NOT EXISTS ai_sample_label (
         (label_version, horizon_trading_days, label_status, execution_status,
          label_available_at, sample_id, calendar_version),
     KEY idx_sample_label_stock_exit (stock_code, exit_trade_date),
+    KEY idx_sample_label_fill_status
+        (label_version, fill_status, execution_status, is_current),
+    KEY idx_label_sector_evidence
+        (label_version, is_current, sector_membership_fingerprint, label_available_at),
     KEY idx_sample_label_calendar (entry_calendar_id, exit_calendar_id),
     CONSTRAINT chk_sample_label_horizon CHECK (horizon_trading_days IN (1, 2, 3, 5)),
     CONSTRAINT fk_sample_label_sample FOREIGN KEY (sample_id) REFERENCES ai_sample (id),
     CONSTRAINT fk_sample_label_entry_calendar
         FOREIGN KEY (entry_calendar_id) REFERENCES ai_trading_calendar (id),
     CONSTRAINT fk_sample_label_exit_calendar
-        FOREIGN KEY (exit_calendar_id) REFERENCES ai_trading_calendar (id)
+        FOREIGN KEY (exit_calendar_id) REFERENCES ai_trading_calendar (id),
+    CONSTRAINT fk_sample_label_supersedes
+        FOREIGN KEY (supersedes_label_id) REFERENCES ai_sample_label (id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 
 CREATE TABLE IF NOT EXISTS ai_label_cost_evidence (
@@ -649,11 +765,13 @@ CREATE TABLE IF NOT EXISTS ai_label_cost_evidence (
     stamp_duty_rate DECIMAL(12, 8) NOT NULL,
     transfer_fee_rate DECIMAL(12, 8) NOT NULL,
     slippage_bps DECIMAL(12, 4) NOT NULL,
+    impact_cost_bps DECIMAL(12, 4) NOT NULL,
     buy_commission_amount DECIMAL(20, 6) NOT NULL,
     sell_commission_amount DECIMAL(20, 6) NOT NULL,
     stamp_duty_amount DECIMAL(20, 6) NOT NULL,
     transfer_fee_amount DECIMAL(20, 6) NOT NULL,
     slippage_amount DECIMAL(20, 6) NOT NULL,
+    impact_cost_amount DECIMAL(20, 6) NOT NULL,
     total_cost_amount DECIMAL(20, 6) NOT NULL,
     evidence_json MEDIUMTEXT NOT NULL,
     source_fingerprint VARCHAR(128) NOT NULL,
@@ -699,6 +817,10 @@ CREATE TABLE IF NOT EXISTS ai_factor_performance (
     window_type VARCHAR(32) NOT NULL,
     window_start_date DATE NOT NULL,
     window_end_date DATE NOT NULL,
+    revision_no INT NOT NULL DEFAULT 1,
+    is_current TINYINT NOT NULL DEFAULT 1,
+    supersedes_performance_id BIGINT NULL,
+    revision_reason VARCHAR(64) NULL,
     input_fingerprint VARCHAR(128) NOT NULL,
     sample_count INT NOT NULL DEFAULT 0,
     success_count INT NOT NULL DEFAULT 0,
@@ -716,7 +838,10 @@ CREATE TABLE IF NOT EXISTS ai_factor_performance (
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     UNIQUE KEY uk_factor_performance_window
         (factor_definition_id, horizon_trading_days, market_regime, window_type,
-         window_start_date, window_end_date),
+         window_start_date, window_end_date, revision_no),
+    KEY idx_factor_performance_current
+        (factor_definition_id, horizon_trading_days, market_regime, window_type,
+         window_start_date, window_end_date, is_current),
     KEY idx_factor_performance_rank
         (horizon_trading_days, confidence_level, wilson_lower_bound),
     KEY idx_factor_performance_window
@@ -724,7 +849,9 @@ CREATE TABLE IF NOT EXISTS ai_factor_performance (
     CONSTRAINT chk_factor_performance_window CHECK (window_start_date <= window_end_date),
     CONSTRAINT chk_factor_performance_horizon CHECK (horizon_trading_days IN (1, 2, 3, 5)),
     CONSTRAINT fk_factor_performance_definition
-        FOREIGN KEY (factor_definition_id) REFERENCES ai_factor_definition (id)
+        FOREIGN KEY (factor_definition_id) REFERENCES ai_factor_definition (id),
+    CONSTRAINT fk_factor_performance_supersedes
+        FOREIGN KEY (supersedes_performance_id) REFERENCES ai_factor_performance (id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 
 CREATE TABLE IF NOT EXISTS ai_training_dataset_item (
@@ -738,6 +865,9 @@ CREATE TABLE IF NOT EXISTS ai_training_dataset_item (
     label_available_at DATETIME(3) NOT NULL,
     feature_fingerprint VARCHAR(128) NOT NULL,
     label_fingerprint VARCHAR(128) NOT NULL,
+    universe_fingerprint VARCHAR(128) NOT NULL,
+    trading_state_fingerprint VARCHAR(128) NOT NULL,
+    sector_membership_fingerprint VARCHAR(128) NOT NULL,
     included_at DATETIME(3) NOT NULL,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     UNIQUE KEY uk_training_dataset_item_lineage
@@ -747,6 +877,9 @@ CREATE TABLE IF NOT EXISTS ai_training_dataset_item (
     KEY idx_training_dataset_item_split
         (training_dataset_id, split_type, sample_as_of_time),
     KEY idx_training_dataset_item_label (sample_label_id),
+    KEY idx_training_dataset_item_pit_lineage
+        (training_dataset_id, universe_fingerprint, trading_state_fingerprint,
+         sector_membership_fingerprint),
     CONSTRAINT chk_training_dataset_visibility CHECK (label_available_at <= included_at),
     CONSTRAINT fk_training_dataset_item_dataset
         FOREIGN KEY (training_dataset_id) REFERENCES ai_training_dataset (id),
@@ -979,6 +1112,7 @@ CREATE TABLE IF NOT EXISTS ai_pipeline_run (
     success_count INT NOT NULL DEFAULT 0,
     failed_count INT NOT NULL DEFAULT 0,
     error_message TEXT NULL,
+    error_detail MEDIUMTEXT NULL,
     started_at DATETIME(3) NULL,
     finished_at DATETIME(3) NULL,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -1017,6 +1151,7 @@ CREATE TABLE IF NOT EXISTS ai_pipeline_step (
     checkpoint_json MEDIUMTEXT NULL,
     output_fingerprint VARCHAR(128) NULL,
     error_message TEXT NULL,
+    error_detail MEDIUMTEXT NULL,
     started_at DATETIME(3) NULL,
     finished_at DATETIME(3) NULL,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),

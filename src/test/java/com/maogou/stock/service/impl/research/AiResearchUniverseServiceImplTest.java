@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -32,6 +33,22 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class AiResearchUniverseServiceImplTest {
+
+    @Test
+    void rejectsReadyPointInTimeSnapshotWithoutAuditableSourceMetadata() {
+        AiResearchUniverseService service = new AiResearchUniverseServiceImpl(
+                mock(AiResearchUniverseMapper.class), mock(AiResearchUniverseSnapshotMapper.class),
+                mock(AiResearchUniverseItemMapper.class), mock(WatchStockMapper.class),
+                mock(TradeRecordMapper.class), new ObjectMapper());
+
+        assertThatThrownBy(() -> service.createSystemCoreSnapshot(
+                new AiResearchUniverseService.SnapshotRequest(
+                        LocalDate.parse("2026-07-14"), LocalDateTime.parse("2026-07-14T16:00:00"),
+                        "CN_A_CALENDAR/2026.1", List.of(), false,
+                        null, null, null, "READY", null)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("来源、版本和观测时间");
+    }
 
     @Test
     void usesSystemBaselineWhenConfiguredComponentsAreEmpty() {

@@ -83,7 +83,39 @@ public class AiFactorPerformanceServiceImpl implements AiFactorPerformanceServic
         if (candidates.isEmpty()) {
             return new EvaluationResult(List.of(), List.of(), List.of());
         }
-        performanceMapper.insertBatchImmutable(candidates);
+        List<AiFactorPerformance> current = performanceMapper.selectCurrentWindowForUpdate(
+                batch.factorVersion(), batch.horizonDays(), batch.marketRegime(),
+                batch.windowType(), batch.windowStartDate(), batch.windowEndDate());
+        Map<String, AiFactorPerformance> currentByFactor = new HashMap<>();
+        current.forEach(item -> {
+            AiFactorPerformance previous = currentByFactor.putIfAbsent(item.factorCode, item);
+            if (previous != null) {
+                throw new IllegalStateException("同一因子窗口存在多个当前版本：" + item.factorCode);
+            }
+        });
+        List<AiFactorPerformance> pending = new ArrayList<>();
+        List<Long> supersededIds = new ArrayList<>();
+        for (AiFactorPerformance candidate : candidates) {
+            AiFactorPerformance existing = currentByFactor.get(candidate.factorCode);
+            if (existing == null) {
+                candidate.revisionNo = 1;
+                candidate.isCurrent = 1;
+                pending.add(candidate);
+            } else if (!Objects.equals(existing.inputFingerprint, candidate.inputFingerprint)) {
+                candidate.revisionNo = value(existing.revisionNo, 1) + 1;
+                candidate.isCurrent = 1;
+                candidate.supersedesPerformanceId = existing.id;
+                candidate.revisionReason = "SOURCE_EVIDENCE_CHANGED";
+                pending.add(candidate);
+                supersededIds.add(existing.id);
+            }
+        }
+        if (!supersededIds.isEmpty()) {
+            performanceMapper.markSuperseded(supersededIds.stream().distinct().toList());
+        }
+        if (!pending.isEmpty()) {
+            performanceMapper.insertBatchImmutable(pending);
+        }
         List<AiFactorPerformance> persisted = performanceMapper.selectWindowForShare(
                 batch.factorVersion(), batch.horizonDays(), batch.marketRegime(),
                 batch.windowType(), batch.windowStartDate(), batch.windowEndDate());
@@ -116,6 +148,10 @@ public class AiFactorPerformanceServiceImpl implements AiFactorPerformanceServic
                 .map(performance -> performance.factorCode)
                 .toList();
         return new EvaluationResult(List.copyOf(result), driftEvents, reweightEligible);
+    }
+
+    private static int value(Integer value, int fallback) {
+        return value == null ? fallback : value;
     }
 
     private AiFactorPerformance performance(
@@ -258,12 +294,26 @@ public class AiFactorPerformanceServiceImpl implements AiFactorPerformanceServic
             }
             if (!Objects.equals(expected.metricName, actual.metricName)
                     || !Objects.equals(expected.subjectKey, actual.subjectKey)
-                    || !Objects.equals(expected.evidenceJson, actual.evidenceJson)) {
+                    || !sameJson(expected.evidenceJson, actual.evidenceJson)) {
                 throw new IllegalStateException("不可变漂移事件冲突：" + expected.eventFingerprint);
             }
             result.add(actual);
         }
         return List.copyOf(result);
+    }
+
+    private boolean sameJson(String expected, String actual) {
+        if (Objects.equals(expected, actual)) {
+            return true;
+        }
+        if (expected == null || actual == null) {
+            return false;
+        }
+        try {
+            return objectMapper.readTree(expected).equals(objectMapper.readTree(actual));
+        } catch (JsonProcessingException exception) {
+            return false;
+        }
     }
 
     private static String driftStatus(

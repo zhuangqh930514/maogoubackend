@@ -111,6 +111,9 @@ def test_train_ranker_exports_calibrated_baseline_manifest_metrics_and_optional_
         assert manifest["onnxOutput"]["kind"] in {"PROBABILITY_UP", "RAW_SCORE"}
         assert manifest["calibration"] == metrics["calibration"]
         assert metrics["artifacts"]["onnxSha256"]
+        assert metrics["artifacts"]["onnxParity"]["verified"] is True
+        assert metrics["artifacts"]["onnxParity"]["sampleCount"] == 48
+        assert metrics["artifacts"]["onnxParity"]["maxAbsoluteError"] <= 1e-5
 
 
 def test_validation_and_test_extremes_cannot_change_train_fitted_state(tmp_path: Path) -> None:
@@ -235,8 +238,7 @@ def test_exports_lightgbm_ranker_to_onnx_when_optional_dependencies_exist(
 ) -> None:
     lightgbm = pytest.importorskip("lightgbm")
     pytest.importorskip("onnxmltools")
-    onnx = pytest.importorskip("onnx")
-    reference = pytest.importorskip("onnx.reference")
+    onnxruntime = pytest.importorskip("onnxruntime")
     features = np.asarray(
         [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]] * 2,
         dtype=np.float64,
@@ -252,7 +254,9 @@ def test_exports_lightgbm_ranker_to_onnx_when_optional_dependencies_exist(
     assert output is not None
     assert output.exists()
     assert output.stat().st_size > 0
-    evaluator = reference.ReferenceEvaluator(onnx.load(output))
+    evaluator = onnxruntime.InferenceSession(
+        str(output), providers=["CPUExecutionProvider"]
+    )
     actual = np.asarray(
         evaluator.run(None, {"features": features.astype(np.float32)})[0]
     ).reshape(-1)

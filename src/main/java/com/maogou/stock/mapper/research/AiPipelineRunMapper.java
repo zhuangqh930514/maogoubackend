@@ -33,7 +33,7 @@ public interface AiPipelineRunMapper extends BaseMapper<AiPipelineRun> {
                 scope_type, owner_user_id, parent_run_id, data_batch_id, strategy_release_id,
                 model_version_id, trade_date, pipeline_type, idempotency_key, input_fingerprint,
                 status, execution_owner, lease_until, next_retry_at, current_step, retry_count,
-                processed_count, success_count, failed_count, error_message, started_at,
+                processed_count, success_count, failed_count, error_message, error_detail, started_at,
                 finished_at, created_at, updated_at
             ) VALUES (
                 #{item.scopeType}, #{item.ownerUserId}, #{item.parentRunId}, #{item.dataBatchId},
@@ -42,7 +42,7 @@ public interface AiPipelineRunMapper extends BaseMapper<AiPipelineRun> {
                 #{item.status}, #{item.executionOwner}, #{item.leaseUntil}, #{item.nextRetryAt},
                 #{item.currentStep}, #{item.retryCount},
                 #{item.processedCount}, #{item.successCount}, #{item.failedCount},
-                #{item.errorMessage}, #{item.startedAt}, #{item.finishedAt},
+                #{item.errorMessage}, #{item.errorDetail}, #{item.startedAt}, #{item.finishedAt},
                 #{item.createdAt}, #{item.updatedAt}
             ) ON DUPLICATE KEY UPDATE id = id
             """)
@@ -92,6 +92,7 @@ public interface AiPipelineRunMapper extends BaseMapper<AiPipelineRun> {
                 retry_count = #{item.retryCount},
                 processed_count = #{item.processedCount}, success_count = #{item.successCount},
                 failed_count = #{item.failedCount}, error_message = #{item.errorMessage},
+                error_detail = #{item.errorDetail},
                 started_at = #{item.startedAt}, finished_at = #{item.finishedAt}, updated_at = #{now}
             WHERE id = #{item.id}
               AND execution_owner = #{owner}

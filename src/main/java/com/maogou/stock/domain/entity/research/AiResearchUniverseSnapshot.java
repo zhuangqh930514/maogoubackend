@@ -16,6 +16,11 @@ public class AiResearchUniverseSnapshot {
     public LocalDateTime asOfTime;
     public String universeVersion;
     public String calendarVersion;
+    public String membershipSourceName;
+    public String membershipSourceRevision;
+    public LocalDateTime sourceObservedAt;
+    public String pointInTimeStatus;
+    public String pointInTimeReason;
     public String sourceFingerprint;
     public Integer itemCount;
     public String qualityStatus;

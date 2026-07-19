@@ -406,6 +406,65 @@ def _onnx_output_contract(path: Path | None, algorithm: str) -> dict[str, Any] |
     return {"name": selected, "index": 0, "kind": "RAW_SCORE"}
 
 
+def _verify_onnx_parity(
+    path: Path | None,
+    model: Any,
+    algorithm: str,
+    features: np.ndarray,
+    output_contract: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if path is None or output_contract is None:
+        return None
+    try:
+        import onnxruntime
+    except ImportError as exc:
+        raise RuntimeError("onnxruntime is required to verify exported ONNX") from exc
+    sample_count = min(256, features.shape[0])
+    if sample_count <= 0:
+        raise ValueError("ONNX parity requires at least one sample")
+    sample = np.asarray(features[:sample_count], dtype=np.float32)
+    session = onnxruntime.InferenceSession(
+        str(path), providers=["CPUExecutionProvider"]
+    )
+    output_name = str(output_contract["name"])
+    actual = np.asarray(
+        session.run([output_name], {"features": sample})[0]
+    )
+    if algorithm == "LOGISTIC_REGRESSION":
+        expected = np.asarray(model.predict_proba(sample))[:, 1]
+        if actual.ndim == 2:
+            actual = actual[:, int(output_contract.get("index", 1))]
+    else:
+        expected = np.asarray(model.predict(sample))
+    actual = actual.reshape(-1)
+    expected = expected.reshape(-1)
+    if actual.shape != expected.shape:
+        raise ValueError(
+            f"ONNX parity output shape mismatch: {actual.shape} != {expected.shape}"
+        )
+    absolute_error = np.abs(actual.astype(np.float64) - expected.astype(np.float64))
+    max_absolute_error = float(np.max(absolute_error))
+    absolute_tolerance = 1e-5
+    relative_tolerance = 1e-4
+    if not np.allclose(
+        actual, expected, rtol=relative_tolerance, atol=absolute_tolerance
+    ):
+        raise ValueError(
+            "ONNX parity failed: "
+            f"maxAbsoluteError={max_absolute_error:.12g}, "
+            f"atol={absolute_tolerance}, rtol={relative_tolerance}"
+        )
+    return {
+        "verified": True,
+        "sampleCount": sample_count,
+        "maxAbsoluteError": max_absolute_error,
+        "absoluteTolerance": absolute_tolerance,
+        "relativeTolerance": relative_tolerance,
+        "runtimeVersion": onnxruntime.__version__,
+        "provider": "CPUExecutionProvider",
+    }
+
+
 def train_ranker(
     dataset_path: str | Path,
     output_dir: str | Path,
@@ -508,6 +567,9 @@ def train_ranker(
             selected_model, algorithm, len(dataset.feature_names), output / "model.onnx"
         )
     onnx_output = _onnx_output_contract(onnx_path, algorithm)
+    onnx_parity = _verify_onnx_parity(
+        onnx_path, selected_model, algorithm, dataset.features, onnx_output
+    )
     calibration = _calibration_contract(selected_calibrator)
     manifest_path = output / "feature_manifest.json"
     manifest = {
@@ -539,6 +601,7 @@ def train_ranker(
             "onnxSha256": _sha256(onnx_path) if onnx_path is not None else None,
             "featureManifestSha256": _sha256(manifest_path),
             "onnxExported": onnx_path is not None,
+            "onnxParity": onnx_parity,
         },
     }
     _write_json(metrics_path, metrics)

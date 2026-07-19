@@ -16,12 +16,12 @@ public interface AiPipelineStepMapper extends BaseMapper<AiPipelineStep> {
             INSERT INTO ai_pipeline_step (
                 pipeline_run_id, step_key, step_order, status, retry_count, next_retry_at, lease_until,
                 input_count, output_count, checkpoint_json, output_fingerprint,
-                error_message, started_at, finished_at, created_at, updated_at
+                error_message, error_detail, started_at, finished_at, created_at, updated_at
             ) VALUES (
                 #{item.pipelineRunId}, #{item.stepKey}, #{item.stepOrder}, #{item.status},
                 #{item.retryCount}, #{item.nextRetryAt}, #{item.leaseUntil},
                 #{item.inputCount}, #{item.outputCount},
-                #{item.checkpointJson}, #{item.outputFingerprint}, #{item.errorMessage},
+                #{item.checkpointJson}, #{item.outputFingerprint}, #{item.errorMessage}, #{item.errorDetail},
                 #{item.startedAt}, #{item.finishedAt}, #{item.createdAt}, #{item.updatedAt}
             ) ON DUPLICATE KEY UPDATE id = id
             """)
@@ -43,7 +43,8 @@ public interface AiPipelineStepMapper extends BaseMapper<AiPipelineStep> {
                 s.input_count = #{item.inputCount}, s.output_count = #{item.outputCount},
                 s.checkpoint_json = #{item.checkpointJson},
                 s.output_fingerprint = #{item.outputFingerprint},
-                s.error_message = #{item.errorMessage}, s.started_at = #{item.startedAt},
+                s.error_message = #{item.errorMessage}, s.error_detail = #{item.errorDetail},
+                s.started_at = #{item.startedAt},
                 s.finished_at = #{item.finishedAt}, s.updated_at = #{now}
             WHERE s.id = #{item.id}
               AND r.execution_owner = #{owner}

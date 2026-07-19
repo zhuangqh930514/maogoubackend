@@ -31,6 +31,7 @@ public class AiPipelineRun {
     public Integer successCount;
     public Integer failedCount;
     public String errorMessage;
+    public String errorDetail;
     public LocalDateTime startedAt;
     public LocalDateTime finishedAt;
     public LocalDateTime createdAt;

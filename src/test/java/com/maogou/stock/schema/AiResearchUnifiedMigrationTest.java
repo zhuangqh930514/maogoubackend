@@ -52,6 +52,7 @@ class AiResearchUnifiedMigrationTest {
             "ai_research_universe",
             "ai_research_universe_snapshot",
             "ai_research_universe_item",
+            "ai_industry_daily_bar",
             "ai_data_batch",
             "ai_source_observation",
             "ai_source_health",
@@ -61,6 +62,7 @@ class AiResearchUnifiedMigrationTest {
             "ai_strategy_release",
             "ai_prediction",
             "ai_trading_calendar",
+            "ai_security_daily_state",
             "ai_sample_label",
             "ai_label_cost_evidence",
             "ai_prediction_evaluation",
@@ -118,6 +120,8 @@ class AiResearchUnifiedMigrationTest {
     );
     private static final Set<String> REQUIRED_INDEXES = Set.of(
             "uk_sample_label_version",
+            "idx_sample_label_current",
+            "idx_factor_performance_current",
             "uk_prediction_evaluation",
             "uk_report_prediction",
             "uk_decision_item_prediction",
@@ -214,6 +218,8 @@ class AiResearchUnifiedMigrationTest {
             assertUnifiedTables(connection);
             assertPerformanceIndexes(connection);
             assertThat(columnNames(connection, "user_account")).contains("system_role");
+            assertThat(columnNames(connection, "ai_pipeline_run"))
+                    .contains("error_message", "error_detail");
             assertThat(scalarLong(connection,
                     "SELECT COUNT(*) FROM user_account WHERE id = 1 AND system_role = 'USER'"))
                     .isEqualTo(1);
@@ -380,7 +386,12 @@ class AiResearchUnifiedMigrationTest {
         assertThat(columnNames(connection, "user_account")).contains("system_role");
         assertThat(columnNames(connection, "ai_data_batch")).doesNotContain("user_id");
         assertThat(columnNames(connection, "ai_research_universe_item"))
-                .contains("source_type", "included", "exclude_reason", "effective_from");
+                .contains("source_type", "included", "exclude_reason", "effective_from", "effective_to");
+        assertThat(columnNames(connection, "ai_research_universe_snapshot"))
+                .contains("membership_source_name", "membership_source_revision", "source_observed_at",
+                        "point_in_time_status", "point_in_time_reason");
+        assertThat(columnNames(connection, "ai_training_dataset_item"))
+                .contains("universe_fingerprint", "trading_state_fingerprint");
         assertThat(columnNames(connection, "ai_source_observation"))
                 .contains("event_time", "published_at", "first_seen_at", "fetched_at",
                         "as_of_time", "source_revision", "source_fingerprint");
@@ -389,8 +400,12 @@ class AiResearchUnifiedMigrationTest {
                 .doesNotContain("user_id");
         assertThat(columnNames(connection, "ai_sample_label"))
                 .contains("sample_id", "horizon_trading_days", "label_available_at",
-                        "policy_snapshot_json", "market_evidence_json")
+                        "policy_snapshot_json", "market_evidence_json", "planned_exit_trade_date",
+                        "exit_delay_trading_days", "sector_excess_return", "max_drawdown",
+                        "holding_volatility", "holding_trading_days", "fill_status")
                 .doesNotContain("prediction_id", "user_id");
+        assertThat(columnNames(connection, "ai_label_cost_evidence"))
+                .contains("impact_cost_bps", "impact_cost_amount");
         assertThat(columnNames(connection, "ai_pipeline_run"))
                 .contains("scope_type", "owner_user_id", "parent_run_id", "next_retry_at", "lease_until")
                 .doesNotContain("user_id");

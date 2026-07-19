@@ -32,6 +32,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.HexFormat;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 
 @Service
@@ -75,6 +76,14 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
     public AiResearchCycleResult run(Long ignoredActorUserId, LocalDateTime triggeredAt) {
         validate(triggeredAt);
         AppProperties.Scheduler scheduler = properties.getScheduler();
+        String executionMode = String.valueOf(scheduler.getTrainingExecutionMode())
+                .trim().toUpperCase(Locale.ROOT);
+        if ("MODEL_PACKAGE_ONLY".equals(executionMode)) {
+            return skipped("生产环境已禁用进程内重训练，请在本地研究库完成训练并导入已校验的候选模型包");
+        }
+        if (!"IN_PROCESS".equals(executionMode)) {
+            throw new IllegalStateException("不支持的模型训练执行模式：" + executionMode);
+        }
         AiTrainingReadinessGate.Readiness readiness = readinessService.assess(triggeredAt);
         if (!"READY".equals(readiness.status())) {
             return new AiResearchCycleResult(
@@ -201,8 +210,10 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
                 || !onnxChecksum.equalsIgnoreCase(
                 metrics.path("artifacts").path("modelSha256").asText())
                 || !manifestChecksum.equalsIgnoreCase(
-                metrics.path("artifacts").path("featureManifestSha256").asText())) {
-            throw new IllegalStateException("模型产物与 metrics SHA256 不一致");
+                metrics.path("artifacts").path("featureManifestSha256").asText())
+                || !metrics.path("artifacts").path("onnxParity")
+                .path("verified").asBoolean(false)) {
+            throw new IllegalStateException("模型产物校验不一致或未通过 ONNX 一致性验证");
         }
         return new VerifiedArtifacts(
                 new AiModelTrainer.TrainingArtifacts(
@@ -362,7 +373,10 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
         return "训练数据尚未就绪：remainingTradingDays=" + readiness.remainingTradingDays()
                 + ", remainingStocks=" + readiness.remainingStocks()
                 + ", remainingLabels=" + readiness.remainingLabels()
-                + ", missingRegimes=" + readiness.missingRegimes();
+                + ", missingRegimes=" + readiness.missingRegimes()
+                + ", tradabilityCoverage=" + readiness.tradabilityCoverage()
+                + ", universeCoverage=" + readiness.universeCoverage()
+                + ", sectorEvidenceCoverage=" + readiness.sectorEvidenceCoverage();
     }
 
     private static String sha256(Path path) {

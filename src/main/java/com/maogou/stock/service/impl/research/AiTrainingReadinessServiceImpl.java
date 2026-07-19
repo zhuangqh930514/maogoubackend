@@ -33,6 +33,12 @@ public class AiTrainingReadinessServiceImpl implements AiTrainingReadinessServic
         int stocks = 0;
         Map<Integer, Integer> labels = new LinkedHashMap<>();
         Map<String, Integer> regimes = new LinkedHashMap<>();
+        int tradabilityEligibleLabels = 0;
+        int readyTradabilityLabels = 0;
+        int universeEligibleLabels = 0;
+        int readyUniverseLabels = 0;
+        int sectorEligibleLabels = 0;
+        int readySectorLabels = 0;
         if (metrics != null) {
             for (AiTrainingReadinessMetric metric : metrics) {
                 if (metric == null || metric.dimensionType == null || metric.dimensionKey == null) {
@@ -44,12 +50,34 @@ public class AiTrainingReadinessServiceImpl implements AiTrainingReadinessServic
                     case "STOCKS" -> stocks = count;
                     case "HORIZON" -> labels.put(Integer.parseInt(metric.dimensionKey), count);
                     case "REGIME" -> regimes.put(metric.dimensionKey, count);
+                    case "TRADABILITY_STATE" -> {
+                        if ("ELIGIBLE".equals(metric.dimensionKey)) {
+                            tradabilityEligibleLabels = count;
+                        } else if ("READY".equals(metric.dimensionKey)) {
+                            readyTradabilityLabels = count;
+                        }
+                    }
+                    case "UNIVERSE_MEMBERSHIP" -> {
+                        if ("ELIGIBLE".equals(metric.dimensionKey)) {
+                            universeEligibleLabels = count;
+                        } else if ("READY".equals(metric.dimensionKey)) {
+                            readyUniverseLabels = count;
+                        }
+                    }
+                    case "SECTOR_EVIDENCE" -> {
+                        if ("ELIGIBLE".equals(metric.dimensionKey)) {
+                            sectorEligibleLabels = count;
+                        } else if ("READY".equals(metric.dimensionKey)) {
+                            readySectorLabels = count;
+                        }
+                    }
                     default -> {
                     }
                 }
             }
         }
         return gate.evaluate(new AiTrainingReadinessGate.Evidence(
-                tradingDays, stocks, labels, regimes));
+                tradingDays, stocks, labels, regimes, tradabilityEligibleLabels, readyTradabilityLabels,
+                universeEligibleLabels, readyUniverseLabels, sectorEligibleLabels, readySectorLabels));
     }
 }

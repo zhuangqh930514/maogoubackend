@@ -15,6 +15,7 @@ import com.maogou.stock.mapper.research.AiSourceObservationMapper;
 import com.maogou.stock.mapper.research.AiTradingCalendarMapper;
 import com.maogou.stock.service.research.AiHistoricalEvidenceImportService;
 import com.maogou.stock.service.research.AiResearchUniverseService;
+import com.maogou.stock.service.research.AiSecurityDailyStateService;
 import com.maogou.stock.service.research.AiSampleSnapshotService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -169,6 +170,16 @@ class AiHistoricalEvidenceImportServiceImplTest {
             assertThat(observation.providerCode).doesNotContainIgnoringCase("MOCK");
         });
         verify(fixture.dataBatchMapper).updateById(batch);
+        ArgumentCaptor<AiSecurityDailyStateService.StateCommand> states = ArgumentCaptor.forClass(
+                AiSecurityDailyStateService.StateCommand.class);
+        verify(fixture.securityDailyStateService, org.mockito.Mockito.times(2)).store(states.capture());
+        assertThat(states.getAllValues()).allSatisfy(state -> {
+            assertThat(state.qualityStatus()).isEqualTo("PARTIAL");
+            assertThat(state.stStatus()).isEqualTo("UNKNOWN");
+            assertThat(state.isSt()).isNull();
+            assertThat(state.buyTradable()).isNull();
+            assertThat(state.sourceFingerprint()).hasSize(64);
+        });
     }
 
     @Test
@@ -200,11 +211,12 @@ class AiHistoricalEvidenceImportServiceImplTest {
     private static AiHistoricalEvidenceImportService service(Fixture fixture) {
         return new AiHistoricalEvidenceImportServiceImpl(
                 fixture.calendarMapper,
-                fixture.provider,
+                List.of(fixture.provider),
                 fixture.universeService,
                 fixture.snapshotService,
                 fixture.dataBatchMapper,
                 fixture.observationMapper,
+                fixture.securityDailyStateService,
                 new ObjectMapper().findAndRegisterModules());
     }
 
@@ -216,6 +228,7 @@ class AiHistoricalEvidenceImportServiceImplTest {
                 mock(AiSampleSnapshotService.class),
                 mock(AiDataBatchMapper.class),
                 mock(AiSourceObservationMapper.class),
+                mock(AiSecurityDailyStateService.class),
                 new AtomicLong(100));
     }
 
@@ -308,6 +321,7 @@ class AiHistoricalEvidenceImportServiceImplTest {
             AiSampleSnapshotService snapshotService,
             AiDataBatchMapper dataBatchMapper,
             AiSourceObservationMapper observationMapper,
+            AiSecurityDailyStateService securityDailyStateService,
             AtomicLong ids
     ) {
     }

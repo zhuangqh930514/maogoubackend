@@ -22,11 +22,13 @@ public class AiLabelCostEvidence {
     public BigDecimal stampDutyRate;
     public BigDecimal transferFeeRate;
     public BigDecimal slippageBps;
+    public BigDecimal impactCostBps;
     public BigDecimal buyCommissionAmount;
     public BigDecimal sellCommissionAmount;
     public BigDecimal stampDutyAmount;
     public BigDecimal transferFeeAmount;
     public BigDecimal slippageAmount;
+    public BigDecimal impactCostAmount;
     public BigDecimal totalCostAmount;
     public String evidenceJson;
     public String sourceFingerprint;

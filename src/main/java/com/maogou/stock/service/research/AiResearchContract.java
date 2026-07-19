@@ -2,9 +2,11 @@ package com.maogou.stock.service.research;
 
 public final class AiResearchContract {
 
-    public static final String LABEL_VERSION = "LABEL/1.0.0";
+    public static final String RESEARCH_SCHEMA_VERSION = "20260714-unified-1.1";
+    public static final String LABEL_VERSION = "LABEL/1.1.0";
     public static final String FACTOR_VERSION = "1.0.0";
     public static final String CALENDAR_VERSION = "CN_A_CALENDAR/1.0.0";
+    public static final String UNIVERSE_MEMBERSHIP_VERSION = "CN_A_SYSTEM_CORE/1.0.0";
     public static final String SYSTEM_UNIVERSE_CODE = "CN_A_SYSTEM_CORE";
     public static final String MODEL_FAMILY = "A_SHARE_MULTI_HORIZON";
     public static final String BENCHMARK_SYMBOL = "000300.SH";

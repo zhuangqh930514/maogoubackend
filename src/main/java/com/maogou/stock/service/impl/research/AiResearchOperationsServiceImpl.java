@@ -170,7 +170,7 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
         AiPipelineRun run = prepareRun("GLOBAL", null, null, tradeDate, "GLOBAL_WEEKLY_RESEARCH",
                 request.strategyReleaseId(), request.modelVersionId(), key,
                 fingerprint("GLOBAL_WEEKLY_RESEARCH", tradeDate), actorUserId, null);
-        submitManaged(run, "RUN_WEEKLY", () -> counts(weeklyRunner.run(actorUserId, LocalDateTime.now())));
+        submitManagedCycle(run, "RUN_WEEKLY", () -> weeklyRunner.run(actorUserId, LocalDateTime.now()));
         return accepted(run);
     }
 
@@ -181,7 +181,7 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
         AiPipelineRun run = prepareRun("GLOBAL", null, null, tradeDate, "GLOBAL_MONTHLY_TRAINING",
                 request.strategyReleaseId(), request.modelVersionId(), key,
                 fingerprint("GLOBAL_MONTHLY_TRAINING", tradeDate), actorUserId, null);
-        submitManaged(run, "RUN_TRAINING", () -> counts(trainingRunner.run(actorUserId, LocalDateTime.now())));
+        submitManagedCycle(run, "RUN_TRAINING", () -> trainingRunner.run(actorUserId, LocalDateTime.now()));
         return accepted(run);
     }
 
@@ -382,7 +382,15 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
             return;
         }
         AiPipelineStep step = prepareExecutionStep(run.id, stepKey);
-        submit(run, () -> executeManaged(run.id, step, operation));
+        submit(run, () -> executeManaged(run.id, step, () -> managedCounts(operation.run())));
+    }
+
+    private void submitManagedCycle(AiPipelineRun run, String stepKey, CycleOperation operation) {
+        if (complete(run.status) || "RUNNING".equals(run.status)) {
+            return;
+        }
+        AiPipelineStep step = prepareExecutionStep(run.id, stepKey);
+        submit(run, () -> executeManaged(run.id, step, () -> managedCycleResult(operation.run())));
     }
 
     private void submit(AiPipelineRun run, Runnable operation) {
@@ -415,7 +423,7 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
         return stored;
     }
 
-    private void executeManaged(Long runId, AiPipelineStep step, Operation operation) {
+    private void executeManaged(Long runId, AiPipelineStep step, ManagedOperation operation) {
         String owner = UUID.randomUUID().toString();
         LocalDateTime started = LocalDateTime.now();
         if (runMapper.claimExecution(runId, owner, started.plus(OPERATION_LEASE), started) != 1) {
@@ -427,6 +435,7 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
             run.currentStep = step.stepKey;
             run.startedAt = run.startedAt == null ? started : run.startedAt;
             run.errorMessage = null;
+            run.errorDetail = null;
             run.updatedAt = started;
             updateRun(run, owner);
 
@@ -434,28 +443,36 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
             step.startedAt = started;
             step.finishedAt = null;
             step.errorMessage = null;
+            step.errorDetail = null;
             step.updatedAt = started;
             updateStep(step, owner);
 
-            Counts counts = operation.run();
+            ManagedResult result = operation.run();
             LocalDateTime finished = LocalDateTime.now();
-            step.status = counts.failed() > 0 ? "SUCCESS_WITH_WARNINGS" : "SUCCESS";
-            step.inputCount = counts.processed();
-            step.outputCount = counts.success();
-            step.outputFingerprint = fingerprint(run.pipelineType, run.id, counts.processed(),
-                    counts.success(), counts.failed(), finished);
-            step.checkpointJson = json(Map.of(
-                    "processedCount", counts.processed(),
-                    "successCount", counts.success(),
-                    "failedCount", counts.failed()));
+            step.status = result.stepStatus();
+            step.inputCount = result.processed();
+            step.outputCount = result.success();
+            step.outputFingerprint = fingerprint(run.pipelineType, run.id, result.runStatus(),
+                    result.processed(), result.success(), result.failed(), result.message(), finished);
+            Map<String, Object> checkpoint = new LinkedHashMap<>();
+            checkpoint.put("terminalStatus", result.runStatus());
+            checkpoint.put("processedCount", result.processed());
+            checkpoint.put("successCount", result.success());
+            checkpoint.put("failedCount", result.failed());
+            checkpoint.put("message", result.message());
+            step.checkpointJson = json(checkpoint);
+            step.errorMessage = result.problem() ? PipelineMessageFormatter.summary(result.message()) : null;
+            step.errorDetail = result.problem() ? PipelineMessageFormatter.detail(result.message()) : null;
             step.finishedAt = finished;
             step.updatedAt = finished;
             updateStep(step, owner);
 
-            run.status = counts.failed() > 0 ? "PARTIAL_SUCCESS" : "SUCCESS";
-            run.processedCount = counts.processed();
-            run.successCount = counts.success();
-            run.failedCount = counts.failed();
+            run.status = result.runStatus();
+            run.processedCount = result.processed();
+            run.successCount = result.success();
+            run.failedCount = result.failed();
+            run.errorMessage = result.problem() ? PipelineMessageFormatter.summary(result.message()) : null;
+            run.errorDetail = result.problem() ? PipelineMessageFormatter.detail(result.message()) : null;
             run.finishedAt = finished;
             run.updatedAt = finished;
             updateRun(run, owner);
@@ -467,10 +484,12 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
     }
 
     private void failManaged(Long runId, AiPipelineStep step, String owner, RuntimeException exception) {
-        String message = rootMessage(exception);
+        String detail = rootMessage(exception);
+        String message = PipelineMessageFormatter.summary(detail);
         LocalDateTime now = LocalDateTime.now();
         step.status = "FAILED";
         step.errorMessage = message;
+        step.errorDetail = PipelineMessageFormatter.detail(detail);
         step.finishedAt = now;
         step.updatedAt = now;
         updateStep(step, owner);
@@ -479,6 +498,7 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
         run.processedCount = Math.max(1, value(run.processedCount));
         run.failedCount = Math.max(1, value(run.failedCount));
         run.errorMessage = message;
+        run.errorDetail = step.errorDetail;
         run.finishedAt = now;
         run.updatedAt = now;
         updateRun(run, owner);
@@ -492,7 +512,9 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
         LocalDateTime now = LocalDateTime.now();
         run.status = "FAILED";
         run.failedCount = Math.max(1, value(run.failedCount));
-        run.errorMessage = rootMessage(exception);
+        String detail = rootMessage(exception);
+        run.errorMessage = PipelineMessageFormatter.summary(detail);
+        run.errorDetail = PipelineMessageFormatter.detail(detail);
         run.finishedAt = now;
         run.updatedAt = now;
         runMapper.updateById(run);
@@ -607,11 +629,45 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
         return new ResearchLabPayloads.ActionAccepted(run.id, current == null ? run.status : current.status);
     }
 
-    private static Counts counts(AiResearchCycleResult result) {
+    static ManagedResult managedCycleResult(AiResearchCycleResult result) {
         if (result == null) {
             throw new IllegalStateException("研究运行器未返回执行结果");
         }
-        return new Counts(result.processedCount(), result.successCount(), result.failedCount());
+        int processed = Math.max(0, result.processedCount());
+        int success = Math.max(0, result.successCount());
+        int failed = Math.max(0, result.failedCount());
+        if (success + failed > processed) {
+            processed = success + failed;
+        }
+        String status = result.status() == null ? "" : result.status().trim().toUpperCase();
+        String message = result.message() == null ? "" : result.message().trim();
+        return switch (status) {
+            case "SUCCESS" -> failed > 0
+                    ? new ManagedResult("PARTIAL_SUCCESS", "SUCCESS_WITH_WARNINGS",
+                    processed, success, failed, message)
+                    : new ManagedResult("SUCCESS", "SUCCESS", processed, success, 0, message);
+            case "PARTIAL_SUCCESS", "SUCCESS_WITH_WARNINGS" ->
+                    new ManagedResult("PARTIAL_SUCCESS", "SUCCESS_WITH_WARNINGS",
+                            processed, success, failed, message);
+            case "SKIPPED" -> new ManagedResult(
+                    "SKIPPED", "SKIPPED", processed, success, failed, message);
+            case "INSUFFICIENT_DATA" -> new ManagedResult(
+                    "INSUFFICIENT_DATA", "INSUFFICIENT_DATA", processed, success, failed, message);
+            case "FAILED" -> new ManagedResult(
+                    "FAILED", "FAILED", Math.max(processed, 1), success, Math.max(failed, 1), message);
+            default -> throw new IllegalStateException("研究运行器返回未知状态：" + status);
+        };
+    }
+
+    private static ManagedResult managedCounts(Counts counts) {
+        if (counts == null) {
+            throw new IllegalStateException("研究操作未返回执行计数");
+        }
+        return counts.failed() > 0
+                ? new ManagedResult("PARTIAL_SUCCESS", "SUCCESS_WITH_WARNINGS",
+                counts.processed(), counts.success(), counts.failed(), "")
+                : new ManagedResult("SUCCESS", "SUCCESS",
+                counts.processed(), counts.success(), 0, "");
     }
 
     private static void requireUser(Long userId) {
@@ -667,7 +723,8 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
     }
 
     private static boolean complete(String status) {
-        return "SUCCESS".equals(status) || "PARTIAL_SUCCESS".equals(status);
+        return "SUCCESS".equals(status) || "PARTIAL_SUCCESS".equals(status)
+                || "SKIPPED".equals(status) || "INSUFFICIENT_DATA".equals(status);
     }
 
     private static int value(Integer value) {
@@ -686,6 +743,29 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
     @FunctionalInterface
     private interface Operation {
         Counts run();
+    }
+
+    @FunctionalInterface
+    private interface CycleOperation {
+        AiResearchCycleResult run();
+    }
+
+    @FunctionalInterface
+    private interface ManagedOperation {
+        ManagedResult run();
+    }
+
+    record ManagedResult(
+            String runStatus,
+            String stepStatus,
+            int processed,
+            int success,
+            int failed,
+            String message
+    ) {
+        boolean problem() {
+            return !"SUCCESS".equals(runStatus);
+        }
     }
 
     private record Counts(int processed, int success, int failed) {

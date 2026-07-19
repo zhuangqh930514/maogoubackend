@@ -22,6 +22,7 @@ public class AiPipelineStep {
     public String checkpointJson;
     public String outputFingerprint;
     public String errorMessage;
+    public String errorDetail;
     public LocalDateTime startedAt;
     public LocalDateTime finishedAt;
     public LocalDateTime createdAt;

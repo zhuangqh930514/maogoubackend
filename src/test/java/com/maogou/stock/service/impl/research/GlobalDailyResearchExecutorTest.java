@@ -12,6 +12,7 @@ import com.maogou.stock.dto.market.KlinePointResponse;
 import com.maogou.stock.dto.market.StockDetailResponse;
 import com.maogou.stock.dto.market.StockQuoteResponse;
 import com.maogou.stock.infrastructure.market.ResearchMarketDataClient;
+import com.maogou.stock.infrastructure.market.ResearchMarketDataProvider;
 import com.maogou.stock.infrastructure.market.ResearchSourceResult;
 import com.maogou.stock.infrastructure.market.ResearchSourceStatus;
 import com.maogou.stock.mapper.research.AiDataBatchMapper;
@@ -22,6 +23,7 @@ import com.maogou.stock.mapper.research.AiSourceObservationMapper;
 import com.maogou.stock.service.MarketDataService;
 import com.maogou.stock.service.research.AiFactorEngine;
 import com.maogou.stock.service.research.AiGlobalDailyResearchExecutor;
+import com.maogou.stock.service.research.AiIndustryDailyBarService;
 import com.maogou.stock.service.research.AiLabelVerificationCoordinator;
 import com.maogou.stock.service.research.AiPredictionEngine;
 import com.maogou.stock.service.research.AiResearchUniverseService;
@@ -47,6 +49,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -243,6 +246,47 @@ class GlobalDailyResearchExecutorTest {
                 any());
     }
 
+    @Test
+    void persistsFormalIndustrySeriesAsImmutableNormalizedBarsOncePerIndustry() {
+        Fixture fixture = fixture();
+        when(fixture.snapshotMapper.selectById(91L)).thenReturn(snapshot());
+        when(fixture.itemMapper.selectList(any())).thenReturn(List.of(
+                item(1L, "600519", "WATCHLIST:USER:5"),
+                item(2L, "000858", "WATCHLIST:USER:6")));
+        when(fixture.snapshotService.startOrGetBatch(any(), any(), anyString(), any(), anyString()))
+                .thenReturn(batch());
+        when(fixture.marketDataService.stockDetailAt(anyString(), any()))
+                .thenAnswer(invocation -> detail(invocation.getArgument(0), invocation.getArgument(1)));
+        ResearchMarketDataProvider.IndustryMembershipData membership =
+                new ResearchMarketDataProvider.IndustryMembershipData(
+                        "600519", "801120.SI", "食品饮料", LocalDate.of(2021, 12, 13), null,
+                        STARTED_AT, "membership-fingerprint");
+        when(fixture.resilientMarketDataClient.fetchIndustryAt(anyString(), any())).thenReturn(
+                new ResearchSourceResult<>(membership, ResearchSourceStatus.REALTIME, "READY",
+                        "TUSHARE", STARTED_AT, STARTED_AT, "membership-response", "", List.of()));
+        when(fixture.resilientMarketDataClient.fetchKlineAt(
+                org.mockito.ArgumentMatchers.eq("801120.SI"),
+                org.mockito.ArgumentMatchers.eq("day"),
+                org.mockito.ArgumentMatchers.eq(80), any())).thenReturn(industryResult());
+
+        fixture.executor.execute("FETCH_SOURCE_DATA", context(Map.of(
+                "SNAPSHOT_UNIVERSE", "{\"universeSnapshotId\":91}")));
+
+        ArgumentCaptor<AiIndustryDailyBarService.BarCommand> captor = ArgumentCaptor.forClass(
+                AiIndustryDailyBarService.BarCommand.class);
+        verify(fixture.industryDailyBarService, atLeastOnce()).store(captor.capture());
+        assertThat(captor.getAllValues()).allSatisfy(command -> {
+            assertThat(command.industryCode()).isEqualTo("801120.SI");
+            assertThat(command.classificationStandard()).isEqualTo("PROVIDER_NATIVE");
+            assertThat(command.sourceName()).isEqualTo("TUSHARE");
+            assertThat(command.sourceFingerprint()).hasSize(64);
+        });
+        verify(fixture.resilientMarketDataClient, times(1)).fetchKlineAt(
+                org.mockito.ArgumentMatchers.eq("801120.SI"),
+                org.mockito.ArgumentMatchers.eq("day"),
+                org.mockito.ArgumentMatchers.eq(80), any());
+    }
+
     private static Fixture fixture() {
         AiResearchUniverseItemMapper itemMapper = mock(AiResearchUniverseItemMapper.class);
         ResearchMarketDataClient researchMarketDataClient = mock(ResearchMarketDataClient.class);
@@ -271,6 +315,7 @@ class GlobalDailyResearchExecutorTest {
                 new BenchmarkSeriesService(researchMarketDataClient, properties),
                 new IndustryMembershipService(itemMapper, researchMarketDataClient,
                         Clock.fixed(Instant.parse("2026-07-14T08:00:00Z"), ZoneId.of("Asia/Shanghai"))),
+                mock(AiIndustryDailyBarService.class),
                 new NewsSentimentFeatureService(researchMarketDataClient, properties),
                 new ObjectMapper().findAndRegisterModules());
     }
@@ -366,6 +411,7 @@ class GlobalDailyResearchExecutorTest {
             ResearchMarketDataClient resilientMarketDataClient,
             BenchmarkSeriesService benchmarkSeriesService,
             IndustryMembershipService industryMembershipService,
+            AiIndustryDailyBarService industryDailyBarService,
             NewsSentimentFeatureService newsSentimentFeatureService,
             ObjectMapper objectMapper,
             GlobalDailyResearchExecutor executor
@@ -385,18 +431,20 @@ class GlobalDailyResearchExecutorTest {
                 ResearchMarketDataClient resilientMarketDataClient,
                 BenchmarkSeriesService benchmarkSeriesService,
                 IndustryMembershipService industryMembershipService,
+                AiIndustryDailyBarService industryDailyBarService,
                 NewsSentimentFeatureService newsSentimentFeatureService,
                 ObjectMapper objectMapper
         ) {
             this(universeService, snapshotMapper, itemMapper, dataBatchMapper, observationMapper,
                     sampleMapper, snapshotService, marketDataService, factorEngine, predictionEngine,
                     labelCoordinator, resilientMarketDataClient, benchmarkSeriesService,
-                    industryMembershipService, newsSentimentFeatureService, objectMapper,
+                    industryMembershipService, industryDailyBarService, newsSentimentFeatureService, objectMapper,
                     new GlobalDailyResearchExecutor(
                             universeService, snapshotMapper, itemMapper, dataBatchMapper, observationMapper,
                             sampleMapper, snapshotService, marketDataService, factorEngine, predictionEngine,
                             labelCoordinator, resilientMarketDataClient, benchmarkSeriesService,
-                            industryMembershipService, newsSentimentFeatureService, objectMapper));
+                            industryMembershipService, industryDailyBarService,
+                            newsSentimentFeatureService, objectMapper));
         }
 
         private GlobalDailyResearchExecutor newExecutor() {
@@ -404,7 +452,8 @@ class GlobalDailyResearchExecutorTest {
                     universeService, snapshotMapper, itemMapper, dataBatchMapper, observationMapper,
                     sampleMapper, snapshotService, marketDataService, factorEngine, predictionEngine,
                     labelCoordinator, resilientMarketDataClient, benchmarkSeriesService,
-                    industryMembershipService, newsSentimentFeatureService, objectMapper);
+                    industryMembershipService, industryDailyBarService,
+                    newsSentimentFeatureService, objectMapper);
         }
     }
 
@@ -417,5 +466,17 @@ class GlobalDailyResearchExecutorTest {
                                 BigDecimal.TEN, 1000L, new BigDecimal("10000"))));
         return new ResearchSourceResult<>(series, ResearchSourceStatus.REALTIME, "READY",
                 "EASTMONEY", STARTED_AT, STARTED_AT, series.sourceFingerprint(), "", List.of());
+    }
+
+    private static ResearchSourceResult<com.maogou.stock.dto.market.KlineSeriesSnapshot> industryResult() {
+        com.maogou.stock.dto.market.KlineSeriesSnapshot series =
+                com.maogou.stock.dto.market.KlineSeriesSnapshot.create(
+                        "801120.SI", "day", "NONE", "TUSHARE", STARTED_AT, STARTED_AT,
+                        List.of(new KlinePointResponse(
+                                TRADE_DATE, new BigDecimal("100"), new BigDecimal("101"),
+                                new BigDecimal("99"), new BigDecimal("102"), 1000L,
+                                new BigDecimal("100000"))));
+        return new ResearchSourceResult<>(series, ResearchSourceStatus.REALTIME, "READY",
+                "TUSHARE", STARTED_AT, STARTED_AT, series.sourceFingerprint(), "", List.of());
     }
 }

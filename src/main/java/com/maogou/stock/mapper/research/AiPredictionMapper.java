@@ -61,9 +61,11 @@ public interface AiPredictionMapper extends BaseMapper<AiPrediction> {
              AND l.horizon_trading_days = p.horizon_trading_days
              AND l.label_version = #{labelVersion}
              AND l.label_status = 'MATURED'
+             AND l.is_current = 1
             LEFT JOIN ai_prediction_evaluation e
               FORCE INDEX (idx_evaluation_version_prediction)
               ON e.prediction_id = p.id
+             AND e.sample_label_id = l.id
              AND e.evaluation_version = #{evaluationVersion}
             WHERE p.trade_date < #{tradeDate}
               AND p.horizon_trading_days IN (1, 2, 3, 5)

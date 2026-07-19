@@ -27,6 +27,7 @@ import com.maogou.stock.service.MarketDataService;
 import com.maogou.stock.service.research.AiFactorEngine;
 import com.maogou.stock.service.research.AiGlobalDailyResearchExecutor;
 import com.maogou.stock.service.research.AiLabelVerificationCoordinator;
+import com.maogou.stock.service.research.AiIndustryDailyBarService;
 import com.maogou.stock.service.research.AiPredictionEngine;
 import com.maogou.stock.service.research.AiResearchUniverseService;
 import com.maogou.stock.service.research.AiResearchContract;
@@ -79,6 +80,7 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
     private final ResearchMarketDataClient resilientMarketDataClient;
     private final BenchmarkSeriesService benchmarkSeriesService;
     private final IndustryMembershipService industryMembershipService;
+    private final AiIndustryDailyBarService industryDailyBarService;
     private final NewsSentimentFeatureService newsSentimentFeatureService;
     private final ObjectMapper objectMapper;
 
@@ -97,6 +99,7 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
             ResearchMarketDataClient resilientMarketDataClient,
             BenchmarkSeriesService benchmarkSeriesService,
             IndustryMembershipService industryMembershipService,
+            AiIndustryDailyBarService industryDailyBarService,
             NewsSentimentFeatureService newsSentimentFeatureService,
             ObjectMapper objectMapper
     ) {
@@ -114,6 +117,7 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         this.resilientMarketDataClient = resilientMarketDataClient;
         this.benchmarkSeriesService = benchmarkSeriesService;
         this.industryMembershipService = industryMembershipService;
+        this.industryDailyBarService = industryDailyBarService;
         this.newsSentimentFeatureService = newsSentimentFeatureService;
         this.objectMapper = objectMapper;
     }
@@ -141,9 +145,13 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
     }
 
     private StepOutcome snapshotUniverse(PipelineContext context) {
+        boolean observedOnTradeDate = context.tradeDate().equals(context.startedAt().toLocalDate());
         AiResearchUniverseService.SnapshotResult result = universeService.createSystemCoreSnapshot(
                 new AiResearchUniverseService.SnapshotRequest(
-                        context.tradeDate(), context.startedAt(), AiResearchContract.CALENDAR_VERSION, List.of()));
+                        context.tradeDate(), context.startedAt(), AiResearchContract.CALENDAR_VERSION, List.of(), true,
+                        "SYSTEM_CORE_LIVE_PROVIDER", AiResearchContract.UNIVERSE_MEMBERSHIP_VERSION,
+                        context.startedAt(), observedOnTradeDate ? "READY" : "PARTIAL",
+                        observedOnTradeDate ? null : "当前股票目录不能作为历史交易日的完整成分证据"));
         if (result.snapshot() == null || result.snapshot().id == null || result.universe() == null) {
             throw new IllegalStateException("全局研究股票池未生成有效快照");
         }
@@ -198,6 +206,7 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         }
         Set<String> seenCodes = new LinkedHashSet<>();
         Map<String, ResearchSourceResult<KlineSeriesSnapshot>> sectorSeriesByIndustry = new LinkedHashMap<>();
+        Set<String> normalizedIndustryBars = new LinkedHashSet<>();
         for (AiResearchUniverseItem item : items) {
             if (!seenCodes.add(item.stockCode)) {
                 continue;
@@ -219,6 +228,13 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
                                 "行业行情调用",
                                 () -> resilientMarketDataClient.fetchKlineAt(
                                         membership.industryCode(), "day", 80, fetchStartedAt)));
+                if (sectorSeries.formalReady() && normalizedIndustryBars.add(membership.industryCode())) {
+                    try {
+                        persistIndustryBars(membership, sectorSeries, context.tradeDate(), fetchStartedAt);
+                    } catch (RuntimeException exception) {
+                        errors.add(membership.industryCode() + ": 行业日线固化失败：" + rootMessage(exception));
+                    }
+                }
                 storeObservation(sourceObservation(
                         batch, item.stockCode, "INDUSTRY_BENCHMARK", "KLINE",
                         sectorSeries.providerCode(), sectorSeries.sourceUpdatedAt(), null,
@@ -284,6 +300,49 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         checkpoint.put("fetchedAt", fetchStartedAt);
         return success("FETCH_SOURCE_DATA", seenCodes.size(), success,
                 Math.max(0, seenCodes.size() - success), checkpoint, batch.id, errors);
+    }
+
+    private void persistIndustryBars(
+            IndustryMembershipService.Membership membership,
+            ResearchSourceResult<KlineSeriesSnapshot> result,
+            LocalDate tradeDate,
+            LocalDateTime observedAt
+    ) {
+        KlineSeriesSnapshot series = result.data();
+        if (series == null || series.points() == null || series.points().isEmpty()
+                || membership.industryCode() == null || membership.industryName() == null) {
+            throw new IllegalStateException("行业日线或行业归属为空");
+        }
+        String responseFingerprint = result.responseFingerprint() == null
+                ? series.sourceFingerprint() : result.responseFingerprint();
+        String sourceRevision = "LIVE-" + responseFingerprint.substring(
+                0, Math.min(48, responseFingerprint.length()));
+        for (KlinePointResponse point : series.points().stream()
+                .filter(Objects::nonNull)
+                .filter(value -> value.tradeDate() != null && !value.tradeDate().isAfter(tradeDate))
+                .sorted(Comparator.comparing(KlinePointResponse::tradeDate))
+                .toList()) {
+            Map<String, Object> evidence = new LinkedHashMap<>();
+            evidence.put("format", "MAOGOU_LIVE_INDUSTRY_BAR_V1");
+            evidence.put("providerCode", result.providerCode());
+            evidence.put("responseFingerprint", responseFingerprint);
+            evidence.put("seriesFingerprint", series.sourceFingerprint());
+            evidence.put("seriesAsOfTime", series.asOfTime());
+            evidence.put("seriesFetchedAt", series.fetchedAt());
+            evidence.put("observedAt", observedAt);
+            String sourceRef = result.providerCode() + "/industry-kline/" + membership.industryCode();
+            String fingerprint = fingerprint(String.join("|",
+                    "LIVE_INDUSTRY_BAR/1.0.0", membership.industryCode(), point.tradeDate().toString(),
+                    String.valueOf(point.open()), String.valueOf(point.high()), String.valueOf(point.low()),
+                    String.valueOf(point.close()), String.valueOf(point.volume()), String.valueOf(point.amount()),
+                    responseFingerprint));
+            industryDailyBarService.store(new AiIndustryDailyBarService.BarCommand(
+                    membership.industryCode(), membership.industryName(), "PROVIDER_NATIVE",
+                    point.tradeDate(), point.open(), point.high(), point.low(), point.close(),
+                    BigDecimal.valueOf(point.volume()), point.amount() == null ? BigDecimal.ZERO : point.amount(),
+                    result.providerCode(), sourceRevision, "READY", sourceRef, json(evidence),
+                    fingerprint, observedAt));
+        }
     }
 
     private StepOutcome resumeExistingSourceData(

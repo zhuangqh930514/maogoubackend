@@ -4,25 +4,40 @@ import com.maogou.stock.common.ApiResponse;
 import com.maogou.stock.dto.research.ResearchLabPayloads;
 import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.security.ResearchOperatorAuthorizer;
+import com.maogou.stock.service.research.AiModelPackageImportService;
+import com.maogou.stock.service.research.AiHistoricalIndustryBarImportService;
+import com.maogou.stock.service.research.AiHistoricalTradingStateImportService;
 import com.maogou.stock.service.research.AiResearchOperationsService;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.multipart.MultipartFile;
 
 @RestController
 @RequestMapping("/api/ai/research-lab")
 public class ResearchOperationsController {
 
     private final AiResearchOperationsService operationsService;
+    private final AiModelPackageImportService modelPackageImportService;
+    private final AiHistoricalTradingStateImportService historicalTradingStateImportService;
+    private final AiHistoricalIndustryBarImportService historicalIndustryBarImportService;
     private final ResearchOperatorAuthorizer authorizer;
 
     public ResearchOperationsController(
             AiResearchOperationsService operationsService,
+            AiModelPackageImportService modelPackageImportService,
+            AiHistoricalTradingStateImportService historicalTradingStateImportService,
+            AiHistoricalIndustryBarImportService historicalIndustryBarImportService,
             ResearchOperatorAuthorizer authorizer
     ) {
         this.operationsService = operationsService;
+        this.modelPackageImportService = modelPackageImportService;
+        this.historicalTradingStateImportService = historicalTradingStateImportService;
+        this.historicalIndustryBarImportService = historicalIndustryBarImportService;
         this.authorizer = authorizer;
     }
 
@@ -59,6 +74,39 @@ public class ResearchOperationsController {
             @RequestBody(required = false) ResearchLabPayloads.ActionRequest request) {
         authorizer.requireOperator();
         return ApiResponse.ok(operationsService.runTraining(currentUserId(), value(request)));
+    }
+
+    @PostMapping(value = "/actions/import-model-package", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ApiResponse<AiModelPackageImportService.ImportResult> importModelPackage(
+            @RequestParam("package") MultipartFile packageFile) {
+        authorizer.requireOperator();
+        return ApiResponse.ok(modelPackageImportService.importCandidate(packageFile, currentUserId()));
+    }
+
+    @PostMapping(value = "/actions/import-historical-trading-state", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ApiResponse<AiHistoricalTradingStateImportService.ImportResult> importHistoricalTradingState(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam("sourceName") String sourceName,
+            @RequestParam("sourceRevision") String sourceRevision,
+            @RequestParam("sourceObservedAt") @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE_TIME)
+            java.time.LocalDateTime sourceObservedAt) {
+        authorizer.requireOperator();
+        return ApiResponse.ok(historicalTradingStateImportService.importCsv(
+                new AiHistoricalTradingStateImportService.ImportRequest(
+                        file, sourceName, sourceRevision, sourceObservedAt, currentUserId())));
+    }
+
+    @PostMapping(value = "/actions/import-historical-industry-bars", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ApiResponse<AiHistoricalIndustryBarImportService.ImportResult> importHistoricalIndustryBars(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam("sourceName") String sourceName,
+            @RequestParam("sourceRevision") String sourceRevision,
+            @RequestParam("sourceObservedAt") @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE_TIME)
+            java.time.LocalDateTime sourceObservedAt) {
+        authorizer.requireOperator();
+        return ApiResponse.ok(historicalIndustryBarImportService.importCsv(
+                new AiHistoricalIndustryBarImportService.ImportRequest(
+                        file, sourceName, sourceRevision, sourceObservedAt, currentUserId())));
     }
 
     @PostMapping("/actions/run-user-projection")

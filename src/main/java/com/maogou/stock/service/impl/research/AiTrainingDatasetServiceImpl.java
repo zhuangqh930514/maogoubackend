@@ -44,6 +44,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.TreeSet;
 
 @Service
 public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
@@ -72,8 +74,9 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
         validateBuildRequest(request);
         AiTrainingDatasetSourceQuery query = sourceQuery(request);
         String sourceQueryJson = json(sourceQueryEvidence(query));
-        String selectionPolicyJson = json(selectionPolicyEvidence());
         ArtifactBuildResult artifact = buildArtifact(request, query);
+        DataCardArtifact dataCard = writeDataCard(request, artifact.dataCard());
+        String selectionPolicyJson = json(selectionPolicyEvidence(dataCard));
         List<SelectedSource> selected = artifact.selected();
         String lineageFingerprint = lineageFingerprint(request, selected, sourceQueryJson, selectionPolicyJson);
 
@@ -138,6 +141,7 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
                  FileLock ignored = lockChannel.lock()) {
                 temporary = Files.createTempFile(parent, "." + absolute.getFileName() + ".", ".tmp");
                 List<SelectedSource> selected = new ArrayList<>();
+                DataCardAccumulator dataCard = new DataCardAccumulator();
                 Set<String> lineageKeys = new HashSet<>();
                 try (BufferedWriter output = Files.newBufferedWriter(
                         temporary, StandardCharsets.UTF_8,
@@ -162,6 +166,7 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
                             output.write(artifactRow(source, split, features));
                             output.newLine();
                             selected.add(new SelectedSource(compact(source), split));
+                            dataCard.add(source, split, features);
                         }
                         AiTrainingDatasetSource last = page.get(page.size() - 1);
                         afterTradeDate = last.tradeDate;
@@ -179,7 +184,7 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
                     }
                     Files.deleteIfExists(temporary);
                     temporary = null;
-                    return new ArtifactBuildResult(List.copyOf(selected), generatedChecksum);
+                    return new ArtifactBuildResult(List.copyOf(selected), generatedChecksum, dataCard.snapshot());
                 }
                 try {
                     Files.move(temporary, absolute,
@@ -188,7 +193,7 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
                     Files.move(temporary, absolute, StandardCopyOption.REPLACE_EXISTING);
                 }
                 temporary = null;
-                return new ArtifactBuildResult(List.copyOf(selected), generatedChecksum);
+                return new ArtifactBuildResult(List.copyOf(selected), generatedChecksum, dataCard.snapshot());
             }
         } catch (IOException ex) {
             throw new IllegalStateException("无法写入训练数据产物", ex);
@@ -214,6 +219,11 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
                 || source.labelAvailableAt == null || source.featureSnapshot == null
                 || source.featureFingerprint == null || source.featureFingerprint.isBlank()
                 || source.labelFingerprint == null || source.labelFingerprint.isBlank()
+                || source.universeFingerprint == null || source.universeFingerprint.isBlank()
+                || source.tradingStateFingerprint == null || source.tradingStateFingerprint.isBlank()
+                || source.sectorMembershipFingerprint == null
+                || source.sectorMembershipFingerprint.isBlank()
+                || source.sectorExcessReturn == null
                 || source.horizonTradingDays == null || source.horizonTradingDays <= 0
                 || !Objects.equals(request.featureVersion(), source.featureVersion)
                 || !Objects.equals(request.labelVersion(), source.labelVersion)
@@ -291,18 +301,25 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
         target.put("horizonDays", source.horizonTradingDays);
         target.put("netReturn", source.netReturn);
         target.put("excessReturn", source.excessReturn);
+        target.put("sectorExcessReturn", source.sectorExcessReturn);
         target.put("actualDirection", source.actualDirection);
         target.put("executionStatus", source.executionStatus);
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("sampleId", source.sampleId);
         row.put("labelId", source.sampleLabelId);
         row.put("stockCode", source.stockCode);
+        row.put("marketRegime", source.marketRegime);
+        row.put("sectorCode", source.sectorCode);
+        row.put("sectorName", source.sectorName);
         row.put("tradeDate", source.tradeDate.toString());
         row.put("sampleAsOfTime", source.sampleAsOfTime.toString());
         row.put("labelAvailableAt", source.labelAvailableAt.toString());
         row.put("split", split);
         row.put("featureFingerprint", source.featureFingerprint);
         row.put("labelFingerprint", source.labelFingerprint);
+        row.put("universeFingerprint", source.universeFingerprint);
+        row.put("tradingStateFingerprint", source.tradingStateFingerprint);
+        row.put("sectorMembershipFingerprint", source.sectorMembershipFingerprint);
         row.put("features", features);
         row.put("target", target);
         return json(row);
@@ -313,6 +330,9 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
         value.sampleId = source.sampleId;
         value.sampleLabelId = source.sampleLabelId;
         value.stockCode = source.stockCode;
+        value.marketRegime = source.marketRegime;
+        value.sectorCode = source.sectorCode;
+        value.sectorName = source.sectorName;
         value.tradeDate = source.tradeDate;
         value.sampleAsOfTime = source.sampleAsOfTime;
         value.labelAvailableAt = source.labelAvailableAt;
@@ -322,10 +342,14 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
         value.horizonTradingDays = source.horizonTradingDays;
         value.netReturn = source.netReturn;
         value.excessReturn = source.excessReturn;
+        value.sectorExcessReturn = source.sectorExcessReturn;
         value.actualDirection = source.actualDirection;
         value.executionStatus = source.executionStatus;
         value.featureFingerprint = source.featureFingerprint;
         value.labelFingerprint = source.labelFingerprint;
+        value.universeFingerprint = source.universeFingerprint;
+        value.tradingStateFingerprint = source.tradingStateFingerprint;
+        value.sectorMembershipFingerprint = source.sectorMembershipFingerprint;
         return value;
     }
 
@@ -387,6 +411,9 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
             item.labelAvailableAt = source.labelAvailableAt;
             item.featureFingerprint = source.featureFingerprint;
             item.labelFingerprint = source.labelFingerprint;
+            item.universeFingerprint = source.universeFingerprint;
+            item.tradingStateFingerprint = source.tradingStateFingerprint;
+            item.sectorMembershipFingerprint = source.sectorMembershipFingerprint;
             item.includedAt = includedAt;
             item.createdAt = includedAt;
             items.add(item);
@@ -429,7 +456,11 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
                     || !Objects.equals(item.sampleAsOfTime, persisted.sampleAsOfTime)
                     || !Objects.equals(item.labelAvailableAt, persisted.labelAvailableAt)
                     || !Objects.equals(item.featureFingerprint, persisted.featureFingerprint)
-                    || !Objects.equals(item.labelFingerprint, persisted.labelFingerprint)) {
+                    || !Objects.equals(item.labelFingerprint, persisted.labelFingerprint)
+                    || !Objects.equals(item.universeFingerprint, persisted.universeFingerprint)
+                    || !Objects.equals(item.tradingStateFingerprint, persisted.tradingStateFingerprint)
+                    || !Objects.equals(item.sectorMembershipFingerprint,
+                    persisted.sectorMembershipFingerprint)) {
                 throw new IllegalStateException("不可变训练明细冲突：" + item.sampleId + "/" + item.sampleLabelId);
             }
         }
@@ -462,9 +493,9 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
         return evidence;
     }
 
-    private static Map<String, Object> selectionPolicyEvidence() {
+    private static Map<String, Object> selectionPolicyEvidence(DataCardArtifact dataCard) {
         Map<String, Object> policy = new LinkedHashMap<>();
-        policy.put("version", "TRAINING_SELECTION_V2_2");
+        policy.put("version", "TRAINING_SELECTION_V2_3");
         policy.put("horizonPolicy", "EXACT_TARGET_HORIZON");
         policy.put("splitBasis", "sample.tradeDate");
         policy.put("featureCutoff", "all feature timestamps <= sample.asOfTime");
@@ -472,7 +503,174 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
         policy.put("validationLabelCutoff", "labelAvailableAt < testStartDate");
         policy.put("testLabelCutoff", "labelAvailableAt <= dataset.asOfTime");
         policy.put("ordering", List.of("split", "tradeDate", "stockCode", "sampleId", "labelId"));
+        policy.put("dataCardFormat", "MAOGOU_TRAINING_DATA_CARD_V1");
+        policy.put("dataCardUri", dataCard.uri());
+        policy.put("dataCardChecksum", dataCard.checksum());
+        policy.put("dataCardSummary", dataCard.summary());
         return policy;
+    }
+
+    private DataCardArtifact writeDataCard(DatasetBuildRequest request, DataCardSummary summary) {
+        Path artifact = request.artifactPath().toAbsolutePath().normalize();
+        Path target = artifact.resolveSibling(artifact.getFileName() + ".data-card.json");
+        Map<String, Object> document = new LinkedHashMap<>();
+        document.put("format", "MAOGOU_TRAINING_DATA_CARD_V1");
+        document.put("datasetKey", request.datasetKey());
+        document.put("versionNo", request.versionNo());
+        document.put("featureVersion", request.featureVersion());
+        document.put("labelVersion", request.labelVersion());
+        document.put("calendarVersion", request.calendarVersion());
+        document.put("asOfTime", request.asOfTime().toString());
+        document.put("summary", summary.values());
+        String content = json(document);
+        String checksum = writeImmutableText(target, content, "训练数据卡");
+        return new DataCardArtifact(target.toUri().toString(), checksum, summary.values());
+    }
+
+    private static String writeImmutableText(Path target, String content, String label) {
+        Path temporary = null;
+        try {
+            Path parent = target.getParent();
+            if (parent == null) {
+                throw new IllegalStateException("训练数据卡缺少父目录：" + target);
+            }
+            Files.createDirectories(parent);
+            Path lock = parent.resolve("." + target.getFileName() + ".lock");
+            try (FileChannel lockChannel = FileChannel.open(lock, StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+                 FileLock ignored = lockChannel.lock()) {
+                temporary = Files.createTempFile(parent, "." + target.getFileName() + ".", ".tmp");
+                Files.writeString(temporary, content, StandardCharsets.UTF_8,
+                        StandardOpenOption.TRUNCATE_EXISTING);
+                String expected = sha256(temporary);
+                if (Files.exists(target)) {
+                    if (!Objects.equals(expected, sha256(target))) {
+                        throw new IllegalStateException("不可变" + label + "已存在且内容不同：" + target);
+                    }
+                    return expected;
+                }
+                try {
+                    Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE);
+                } catch (AtomicMoveNotSupportedException exception) {
+                    Files.move(temporary, target);
+                }
+                temporary = null;
+                return expected;
+            }
+        } catch (IOException exception) {
+            throw new IllegalStateException("无法写入" + label, exception);
+        } finally {
+            if (temporary != null) {
+                try {
+                    Files.deleteIfExists(temporary);
+                } catch (IOException ignored) {
+                    // The final artifact is immutable; a temporary file is harmless cleanup debt.
+                }
+            }
+        }
+    }
+
+    private static final class DataCardAccumulator {
+        private int rowCount;
+        private int sectorEvidenceRows;
+        private final Set<String> stocks = new TreeSet<>();
+        private final TreeSet<LocalDate> tradingDays = new TreeSet<>();
+        private final Map<String, Integer> splitCounts = new TreeMap<>();
+        private final Map<String, Integer> directionCounts = new TreeMap<>();
+        private final Map<String, Integer> regimeCounts = new TreeMap<>();
+        private final Map<String, Integer> sectorCounts = new TreeMap<>();
+        private final Map<String, Integer> featurePresentRows = new TreeMap<>();
+        private final Map<String, Integer> featureNullRows = new TreeMap<>();
+
+        private void add(AiTrainingDatasetSource source, String split, JsonNode features) {
+            rowCount++;
+            if (source.stockCode != null) {
+                stocks.add(source.stockCode);
+            }
+            if (source.tradeDate != null) {
+                tradingDays.add(source.tradeDate);
+            }
+            increment(splitCounts, split);
+            increment(directionCounts, value(source.actualDirection, "UNKNOWN"));
+            increment(regimeCounts, value(source.marketRegime, "UNKNOWN"));
+            increment(sectorCounts, value(source.sectorCode, "UNKNOWN") + ":" + value(source.sectorName, "未知行业"));
+            if (source.sectorExcessReturn != null && source.sectorMembershipFingerprint != null
+                    && !source.sectorMembershipFingerprint.isBlank()) {
+                sectorEvidenceRows++;
+            }
+            collectFeatures(features, "features");
+        }
+
+        private void collectFeatures(JsonNode node, String path) {
+            if (node == null || node.isNull()) {
+                increment(featurePresentRows, path);
+                increment(featureNullRows, path);
+                return;
+            }
+            if (node.isObject()) {
+                node.fields().forEachRemaining(entry -> collectFeatures(entry.getValue(), path + "." + entry.getKey()));
+                return;
+            }
+            if (node.isArray()) {
+                if (node.isEmpty()) {
+                    increment(featureNullRows, path + "[]");
+                } else {
+                    for (JsonNode item : node) {
+                        collectFeatures(item, path + "[]");
+                    }
+                }
+                return;
+            }
+            increment(featurePresentRows, path);
+            if (node.isTextual() && node.asText().isBlank()) {
+                increment(featureNullRows, path);
+            }
+        }
+
+        private DataCardSummary snapshot() {
+            Map<String, Object> values = new LinkedHashMap<>();
+            values.put("rowCount", rowCount);
+            values.put("stockCount", stocks.size());
+            values.put("tradingDayCount", tradingDays.size());
+            values.put("firstTradeDate", tradingDays.isEmpty() ? "UNAVAILABLE" : tradingDays.first().toString());
+            values.put("lastTradeDate", tradingDays.isEmpty() ? "UNAVAILABLE" : tradingDays.last().toString());
+            values.put("splitRows", Map.copyOf(splitCounts));
+            values.put("directionRows", Map.copyOf(directionCounts));
+            values.put("marketRegimeRows", Map.copyOf(regimeCounts));
+            values.put("sectorRows", Map.copyOf(sectorCounts));
+            values.put("sectorEvidenceRows", sectorEvidenceRows);
+            values.put("sectorEvidenceCoverage",
+                    rowCount == 0 ? 0d : (double) sectorEvidenceRows / rowCount);
+            Map<String, Object> missingness = new TreeMap<>();
+            Set<String> features = new TreeSet<>();
+            features.addAll(featurePresentRows.keySet());
+            features.addAll(featureNullRows.keySet());
+            for (String feature : features) {
+                int present = featurePresentRows.getOrDefault(feature, 0);
+                int explicitNull = featureNullRows.getOrDefault(feature, 0);
+                int missing = Math.max(0, rowCount - Math.min(rowCount, present)) + explicitNull;
+                Map<String, Object> metric = new LinkedHashMap<>();
+                metric.put("presentRows", present);
+                metric.put("missingRows", Math.min(rowCount, missing));
+                metric.put("missingRate", rowCount == 0 ? 0d : (double) Math.min(rowCount, missing) / rowCount);
+                missingness.put(feature, metric);
+            }
+            values.put("featureMissingness", missingness);
+            values.put("pointInTimeAudit", Map.of(
+                    "featureTimestamps", "PASSED_BEFORE_SAMPLE_AS_OF",
+                    "labelAvailability", "PASSED_BY_TEMPORAL_SPLIT",
+                    "entryTradability", "READY_AND_BUY_TRADABLE_REQUIRED",
+                    "historicalUniverse", "READY_POINT_IN_TIME_MEMBERSHIP_REQUIRED",
+                    "sectorEvidence", "SECTOR_EXCESS_RETURN_AND_MEMBERSHIP_LINEAGE_REQUIRED"));
+            return new DataCardSummary(values);
+        }
+
+        private static void increment(Map<String, Integer> values, String key) {
+            values.merge(key, 1, Integer::sum);
+        }
+
+        private static String value(String input, String fallback) {
+            return input == null || input.isBlank() ? fallback : input;
+        }
     }
 
     private static String lineageFingerprint(
@@ -490,7 +688,10 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
                     .append(value.source().sampleId).append(':')
                     .append(value.source().sampleLabelId).append(':')
                     .append(value.source().featureFingerprint).append(':')
-                    .append(value.source().labelFingerprint);
+                    .append(value.source().labelFingerprint).append(':')
+                    .append(value.source().universeFingerprint).append(':')
+                    .append(value.source().tradingStateFingerprint).append(':')
+                    .append(value.source().sectorMembershipFingerprint);
         }
         return sha256(String.join("|", request.datasetKey(), request.versionNo(),
                 sourceQueryJson, selectionPolicyJson, rows.toString()));
@@ -655,6 +856,8 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
                 && Double.compare(intercept,
                 manifestCalibration.path("intercept").asDouble(Double.NaN)) == 0
                 && metrics.path("artifacts").path("onnxExported").asBoolean(false)
+                && metrics.path("artifacts").path("onnxParity")
+                .path("verified").asBoolean(false)
                 && registration.artifactChecksum().equalsIgnoreCase(
                 metrics.path("artifacts").path("onnxSha256").asText());
         double validationAuc = metrics.path("splits").path("validation").path("rocAuc").asDouble(Double.NaN);
@@ -773,7 +976,20 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
 
     private record ArtifactBuildResult(
             List<SelectedSource> selected,
-            String checksum
+            String checksum,
+            DataCardSummary dataCard
+    ) {
+    }
+
+    private record DataCardArtifact(
+            String uri,
+            String checksum,
+            Map<String, Object> summary
+    ) {
+    }
+
+    private record DataCardSummary(
+            Map<String, Object> values
     ) {
     }
 }

@@ -77,6 +77,20 @@ class AiTrainingDatasetServiceImplTest {
                 .isEqualByComparingTo("10.1");
         assertThat(first.path("target").path("excessReturn").decimalValue())
                 .isEqualByComparingTo("0.02");
+
+        Path dataCardPath = tempDir.resolve("dataset.jsonl.data-card.json");
+        JsonNode dataCard = new ObjectMapper().readTree(Files.readString(dataCardPath));
+        assertThat(dataCard.path("format").asText()).isEqualTo("MAOGOU_TRAINING_DATA_CARD_V1");
+        assertThat(dataCard.path("summary").path("rowCount").asInt()).isEqualTo(6);
+        assertThat(dataCard.path("summary").path("stockCount").asInt()).isEqualTo(6);
+        assertThat(dataCard.path("summary").path("splitRows").path("TRAIN").asInt()).isEqualTo(2);
+        assertThat(dataCard.path("summary").path("featureMissingness").path("features.quote.price")
+                .path("missingRate").asDouble()).isZero();
+        assertThat(dataCard.path("summary").path("pointInTimeAudit").path("historicalUniverse").asText())
+                .isEqualTo("READY_POINT_IN_TIME_MEMBERSHIP_REQUIRED");
+        JsonNode policy = new ObjectMapper().readTree(result.dataset().selectionPolicyJson);
+        assertThat(policy.path("dataCardChecksum").asText()).hasSize(64);
+        assertThat(policy.path("dataCardUri").asText()).contains("dataset.jsonl.data-card.json");
     }
 
     @Test
@@ -273,7 +287,8 @@ class AiTrainingDatasetServiceImplTest {
                     + "\"artifacts\":{\"modelSha256\":\"" + artifactChecksum
                     + "\",\"featureManifestSha256\":\"" + manifestChecksum
                     + "\",\"onnxSha256\":\"" + artifactChecksum
-                    + "\",\"onnxExported\":true}}";
+                    + "\",\"onnxExported\":true,\"onnxParity\":{\"verified\":true,"
+                    + "\"sampleCount\":120,\"maxAbsoluteError\":0.000001}}}";
         return new AiTrainingDatasetService.ModelRegistration(
                 trainingDatasetId, "A_SHARE_MULTI_HORIZON", "ranker", "2026-07-v1", "RANKER",
                 "LOGISTIC_REGRESSION", "SAMPLE_V2_1", "TRAINER_V2_1", 930514L,
@@ -318,10 +333,14 @@ class AiTrainingDatasetServiceImplTest {
                 + source.sampleAsOfTime.minusMinutes(1) + "\"}}";
         source.netReturn = new BigDecimal("0.03");
         source.excessReturn = new BigDecimal("0.02");
+        source.sectorExcessReturn = new BigDecimal("0.01");
         source.actualDirection = "UP";
         source.executionStatus = "EXECUTED";
         source.featureFingerprint = "sample-" + sampleId;
         source.labelFingerprint = "label-" + labelId;
+        source.universeFingerprint = "universe-" + sampleId;
+        source.tradingStateFingerprint = "state-" + labelId;
+        source.sectorMembershipFingerprint = "sector-membership-" + labelId;
         return source;
     }
 

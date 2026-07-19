@@ -18,6 +18,7 @@ import com.maogou.stock.mapper.research.AiTradingCalendarMapper;
 import com.maogou.stock.service.research.AiHistoricalEvidenceImportService;
 import com.maogou.stock.service.research.AiResearchContract;
 import com.maogou.stock.service.research.AiResearchUniverseService;
+import com.maogou.stock.service.research.AiSecurityDailyStateService;
 import com.maogou.stock.service.research.AiSampleSnapshotService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
@@ -53,6 +54,7 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
     private final AiSampleSnapshotService snapshotService;
     private final AiDataBatchMapper dataBatchMapper;
     private final AiSourceObservationMapper observationMapper;
+    private final AiSecurityDailyStateService securityDailyStateService;
     private final ObjectMapper objectMapper;
 
     @Autowired
@@ -63,6 +65,7 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
             AiSampleSnapshotService snapshotService,
             AiDataBatchMapper dataBatchMapper,
             AiSourceObservationMapper observationMapper,
+            AiSecurityDailyStateService securityDailyStateService,
             ObjectMapper objectMapper
     ) {
         this.calendarMapper = calendarMapper;
@@ -71,7 +74,21 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
         this.snapshotService = snapshotService;
         this.dataBatchMapper = dataBatchMapper;
         this.observationMapper = observationMapper;
+        this.securityDailyStateService = securityDailyStateService;
         this.objectMapper = objectMapper;
+    }
+
+    AiHistoricalEvidenceImportServiceImpl(
+            AiTradingCalendarMapper calendarMapper,
+            List<HistoricalMarketDataProvider> marketDataProviders,
+            AiResearchUniverseService universeService,
+            AiSampleSnapshotService snapshotService,
+            AiDataBatchMapper dataBatchMapper,
+            AiSourceObservationMapper observationMapper,
+            ObjectMapper objectMapper
+    ) {
+        this(calendarMapper, marketDataProviders, universeService, snapshotService,
+                dataBatchMapper, observationMapper, null, objectMapper);
     }
 
     AiHistoricalEvidenceImportServiceImpl(
@@ -84,7 +101,7 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
             ObjectMapper objectMapper
     ) {
         this(calendarMapper, List.of(marketDataProvider), universeService, snapshotService,
-                dataBatchMapper, observationMapper, objectMapper);
+                dataBatchMapper, observationMapper, null, objectMapper);
     }
 
     @Override
@@ -318,7 +335,9 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
                 .toList();
         AiResearchUniverseService.SnapshotResult snapshot = universeService.createSystemCoreSnapshot(
                 new AiResearchUniverseService.SnapshotRequest(
-                        tradeDate, researchAsOf, AiResearchContract.CALENDAR_VERSION, candidates, false));
+                        tradeDate, researchAsOf, AiResearchContract.CALENDAR_VERSION, candidates, false,
+                        CATALOG_SOURCE, catalog.sourceFingerprint(), request.requestedAt(), "PARTIAL",
+                        "历史股票池来自当前上市目录，不能证明目标交易日成分完整性"));
         if (snapshot.snapshot() == null || snapshot.snapshot().id == null
                 || !"READY".equals(snapshot.snapshot().qualityStatus)
                 || snapshot.snapshot().sourceFingerprint == null
@@ -368,6 +387,7 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
                     adjusted.source(), researchAsOf, latestFetchedAt(raw, adjusted),
                     adjustmentEvidence(raw, adjusted, tradeDate, latestFetchedAt(raw, adjusted)),
                     sourceUri(adjusted.source())));
+            storeDailyTradingState(batch, security.security(), raw, tradeDate, researchAsOf);
         }
 
         AiDataBatch completed = snapshotService.completeBatch(batch.id, new AiSampleSnapshotService.BatchCompletion(
@@ -437,6 +457,84 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
         } catch (DuplicateKeyException ignored) {
             // Immutable evidence with the same fingerprint is already stored.
         }
+    }
+
+    private void storeDailyTradingState(
+            AiDataBatch batch,
+            HistoricalMarketDataProvider.Security security,
+            KlineSeriesSnapshot raw,
+            LocalDate tradeDate,
+            LocalDateTime observedAt
+    ) {
+        if (securityDailyStateService == null) {
+            return;
+        }
+        KlinePointResponse current = byDate(raw).get(tradeDate);
+        KlinePointResponse previous = raw.points().stream()
+                .filter(point -> point != null && point.tradeDate() != null && point.tradeDate().isBefore(tradeDate))
+                .max(Comparator.comparing(KlinePointResponse::tradeDate))
+                .orElse(null);
+        boolean suspended = current == null || current.volume() == null || current.volume() <= 0;
+        Integer listedDays = security.listedOn() == null || security.listedOn().isAfter(tradeDate)
+                ? null : Math.toIntExact(java.time.temporal.ChronoUnit.DAYS.between(security.listedOn(), tradeDate) + 1);
+        boolean namedSt = security.stockName() != null
+                && security.stockName().toUpperCase(Locale.ROOT).contains("ST");
+        String stStatus = namedSt ? "NAME_OBSERVED" : "UNKNOWN";
+        Integer isSt = namedSt ? 1 : null;
+        BigDecimal limitRatio = namedSt ? new BigDecimal("0.050000") : null;
+        BigDecimal limitUp = limitPrice(previous, limitRatio, true);
+        BigDecimal limitDown = limitPrice(previous, limitRatio, false);
+        Integer isLimitUp = limitFlag(current, limitUp);
+        Integer isLimitDown = limitFlag(current, limitDown);
+        boolean basicTradable = !suspended && current != null && current.open() != null
+                && current.close() != null && current.open().signum() > 0 && current.close().signum() > 0;
+        Integer buyTradable = limitRatio == null ? null
+                : Integer.valueOf(basicTradable && !Integer.valueOf(1).equals(isLimitUp) ? 1 : 0);
+        Integer sellTradable = limitRatio == null ? null
+                : Integer.valueOf(basicTradable && !Integer.valueOf(1).equals(isLimitDown) ? 1 : 0);
+        String qualityStatus = stStatus.equals("UNKNOWN") ? "PARTIAL" : "READY";
+        String missingReason = stStatus.equals("UNKNOWN")
+                ? "历史 ST 状态未由来源提供，未推断非 ST 涨跌停规则" : null;
+        Map<String, Object> evidence = new LinkedHashMap<>();
+        evidence.put("rawSeriesFingerprint", raw.sourceFingerprint());
+        evidence.put("provider", raw.source());
+        evidence.put("tradeDate", tradeDate);
+        evidence.put("listedOn", security.listedOn());
+        evidence.put("stockNameObserved", security.stockName());
+        evidence.put("stStatus", stStatus);
+        evidence.put("previousClose", previous == null ? null : previous.close());
+        evidence.put("currentOpen", current == null ? null : current.open());
+        evidence.put("currentClose", current == null ? null : current.close());
+        evidence.put("currentVolume", current == null ? null : current.volume());
+        String evidenceJson = json(evidence);
+        securityDailyStateService.store(new AiSecurityDailyStateService.StateCommand(
+                security.stockCode(), tradeDate, batch.id, raw.sourceFingerprint(), security.listedOn(), listedDays,
+                suspended ? "SUSPENDED" : "LISTED", stStatus, isSt, suspended ? 1 : 0,
+                limitRatio, limitUp, limitDown, isLimitUp, isLimitDown, buyTradable, sellTradable,
+                qualityStatus, missingReason, evidenceJson,
+                sha256(raw.sourceFingerprint() + "|SECURITY_DAILY_STATE|" + evidenceJson), observedAt));
+    }
+
+    private static BigDecimal limitPrice(KlinePointResponse previous, BigDecimal ratio, boolean upper) {
+        if (previous == null || previous.close() == null || previous.close().signum() <= 0 || ratio == null) {
+            return null;
+        }
+        BigDecimal multiplier = upper ? BigDecimal.ONE.add(ratio) : BigDecimal.ONE.subtract(ratio);
+        return previous.close().multiply(multiplier).setScale(2, RoundingMode.HALF_UP);
+    }
+
+    private static boolean atLimit(KlinePointResponse current, BigDecimal limit) {
+        return current != null && current.open() != null && current.high() != null && current.low() != null
+                && limit != null && current.open().compareTo(current.high()) == 0
+                && current.open().compareTo(current.low()) == 0
+                && current.close() != null && current.close().compareTo(limit) == 0;
+    }
+
+    private static Integer limitFlag(KlinePointResponse current, BigDecimal limit) {
+        if (limit == null) {
+            return null;
+        }
+        return atLimit(current, limit) ? 1 : 0;
     }
 
     private static StockDetailResponse detail(

@@ -77,7 +77,20 @@ public interface AiSampleMapper extends BaseMapper<AiSample> {
     @Select("""
             <script>
             SELECT s.id, s.data_batch_id, s.stock_code, s.trade_date,
-                   s.tradable_status, s.source_fingerprint
+                   s.tradable_status, s.source_fingerprint,
+                   CASE WHEN EXISTS (
+                       SELECT 1
+                       FROM ai_sample_label current_label
+                       INNER JOIN ai_security_daily_state state
+                         ON state.stock_code = s.stock_code
+                        AND state.trade_date BETWEEN current_label.entry_trade_date AND current_label.exit_trade_date
+                        AND state.is_current = 1
+                        AND state.quality_status = 'READY'
+                       WHERE current_label.sample_id = s.id
+                         AND current_label.label_version = #{labelVersion}
+                         AND current_label.is_current = 1
+                         AND LOCATE(state.source_fingerprint, COALESCE(current_label.market_evidence_json, '')) = 0
+                   ) THEN 1 ELSE 0 END AS state_refresh_required
             FROM ai_sample s FORCE INDEX (idx_sample_pending_labels)
             WHERE s.trade_date &lt; #{tradeDate}
               AND s.quality_status IN ('READY', 'PARTIAL')
@@ -98,6 +111,7 @@ public interface AiSampleMapper extends BaseMapper<AiSample> {
             """)
     List<AiSample> selectLabelCandidateScanPage(
             @Param("tradeDate") LocalDate tradeDate,
+            @Param("labelVersion") String labelVersion,
             @Param("afterTradeDate") LocalDate afterTradeDate,
             @Param("afterStockCode") String afterStockCode,
             @Param("afterId") Long afterId,

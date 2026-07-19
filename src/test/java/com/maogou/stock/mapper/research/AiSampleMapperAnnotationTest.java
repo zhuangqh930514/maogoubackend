@@ -27,10 +27,10 @@ class AiSampleMapperAnnotationTest {
     }
 
     @Test
-    void pendingLabelCandidatesUseTheNarrowCoveringIndex() throws Exception {
+    void pendingLabelCandidatesUseTheNarrowCoveringIndexAndDetectStateRevisions() throws Exception {
         Method method = AiSampleMapper.class.getMethod(
                 "selectLabelCandidateScanPage", java.time.LocalDate.class,
-                java.time.LocalDate.class, String.class, Long.class, int.class);
+                String.class, java.time.LocalDate.class, String.class, Long.class, int.class);
         String sql = String.join("\n", method.getAnnotation(Select.class).value());
 
         assertThat(sql)
@@ -38,9 +38,12 @@ class AiSampleMapperAnnotationTest {
                 .contains("s.tradable_status, s.source_fingerprint")
                 .contains("FORCE INDEX (idx_sample_pending_labels)")
                 .contains("s.tradable_status = 'TRADABLE'")
+                .contains("ai_sample_label current_label")
+                .contains("ai_security_daily_state state")
+                .contains("state_refresh_required")
+                .contains("LOCATE(state.source_fingerprint")
                 .contains("s.id &lt; #{afterId,jdbcType=BIGINT}")
                 .contains("ORDER BY s.trade_date DESC, s.stock_code DESC, s.id DESC")
-                .doesNotContain("ai_sample_label")
                 .doesNotContain("SELECT s.*");
         assertThatCode(() -> new MybatisConfiguration().addMapper(AiSampleMapper.class))
                 .doesNotThrowAnyException();

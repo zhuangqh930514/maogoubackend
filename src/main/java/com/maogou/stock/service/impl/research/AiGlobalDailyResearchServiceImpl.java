@@ -107,6 +107,7 @@ public class AiGlobalDailyResearchServiceImpl implements AiGlobalDailyResearchSe
             run.status = "RUNNING";
             run.nextRetryAt = null;
             run.errorMessage = null;
+            run.errorDetail = null;
             run.finishedAt = null;
             run.startedAt = run.startedAt == null ? request.startedAt() : run.startedAt;
             run.updatedAt = LocalDateTime.now();
@@ -153,6 +154,7 @@ public class AiGlobalDailyResearchServiceImpl implements AiGlobalDailyResearchSe
             run.currentStep = DAILY_STEPS.get(DAILY_STEPS.size() - 1);
             run.nextRetryAt = null;
             run.errorMessage = warningSummary(steps);
+            run.errorDetail = warningDetail(steps);
             run.finishedAt = LocalDateTime.now();
             run.updatedAt = run.finishedAt;
             updateRunFenced(run, owner, run.updatedAt);
@@ -257,6 +259,7 @@ public class AiGlobalDailyResearchServiceImpl implements AiGlobalDailyResearchSe
         step.nextRetryAt = null;
         step.leaseUntil = now.plus(leaseDuration);
         step.errorMessage = null;
+        step.errorDetail = null;
         step.startedAt = now;
         step.finishedAt = null;
         step.updatedAt = now;
@@ -276,7 +279,8 @@ public class AiGlobalDailyResearchServiceImpl implements AiGlobalDailyResearchSe
         step.outputCount = outcome.successCount();
         step.checkpointJson = outcome.checkpointJson();
         step.outputFingerprint = outcome.outputFingerprint();
-        step.errorMessage = outcome.errors().isEmpty() ? null : String.join("；", outcome.errors());
+        step.errorMessage = PipelineMessageFormatter.summary(outcome.errors());
+        step.errorDetail = PipelineMessageFormatter.detail(outcome.errors());
         step.status = outcome.failedCount() > 0 || !outcome.errors().isEmpty()
                 || "SUCCESS_WITH_WARNINGS".equals(outcome.status())
                 ? "SUCCESS_WITH_WARNINGS" : "SUCCESS";
@@ -300,7 +304,10 @@ public class AiGlobalDailyResearchServiceImpl implements AiGlobalDailyResearchSe
         step.outputCount = outcome.successCount();
         step.checkpointJson = outcome.checkpointJson();
         step.outputFingerprint = outcome.outputFingerprint();
-        step.errorMessage = outcome.errors().isEmpty() ? "等待完整收盘数据" : String.join("；", outcome.errors());
+        step.errorMessage = outcome.errors().isEmpty()
+                ? "等待完整收盘数据" : PipelineMessageFormatter.summary(outcome.errors());
+        step.errorDetail = outcome.errors().isEmpty()
+                ? "等待完整收盘数据" : PipelineMessageFormatter.detail(outcome.errors());
         step.nextRetryAt = retryAt;
         step.leaseUntil = null;
         step.finishedAt = now;
@@ -313,18 +320,21 @@ public class AiGlobalDailyResearchServiceImpl implements AiGlobalDailyResearchSe
         run.currentStep = step.stepKey;
         run.nextRetryAt = retryAt;
         run.errorMessage = step.errorMessage;
+        run.errorDetail = step.errorDetail;
         run.finishedAt = null;
         run.updatedAt = now;
         updateRunFenced(run, owner, now);
     }
 
     private void failStep(AiPipelineRun run, AiPipelineStep step, RuntimeException exception, String owner) {
-        String message = rootMessage(exception);
+        String detail = rootMessage(exception);
+        String message = PipelineMessageFormatter.summary(detail);
         LocalDateTime now = LocalDateTime.now();
         step.status = "FAILED";
         step.nextRetryAt = null;
         step.leaseUntil = null;
         step.errorMessage = message;
+        step.errorDetail = PipelineMessageFormatter.detail(detail);
         step.finishedAt = now;
         step.updatedAt = now;
         updateStepFenced(step, owner, now);
@@ -335,6 +345,7 @@ public class AiGlobalDailyResearchServiceImpl implements AiGlobalDailyResearchSe
         run.currentStep = step.stepKey;
         run.nextRetryAt = null;
         run.errorMessage = message;
+        run.errorDetail = step.errorDetail;
         run.finishedAt = now;
         run.updatedAt = now;
         updateRunFenced(run, owner, now);
@@ -415,11 +426,18 @@ public class AiGlobalDailyResearchServiceImpl implements AiGlobalDailyResearchSe
     }
 
     private static String warningSummary(List<AiPipelineStep> steps) {
-        return steps.stream()
+        return PipelineMessageFormatter.summary(steps.stream()
                 .filter(step -> "SUCCESS_WITH_WARNINGS".equals(step.status))
                 .map(step -> step.stepKey + "：" + Objects.requireNonNullElse(step.errorMessage, "部分失败"))
-                .reduce((left, right) -> left + "；" + right)
-                .orElse(null);
+                .toList());
+    }
+
+    private static String warningDetail(List<AiPipelineStep> steps) {
+        return PipelineMessageFormatter.detail(steps.stream()
+                .filter(step -> "SUCCESS_WITH_WARNINGS".equals(step.status))
+                .map(step -> step.stepKey + "：" + Objects.requireNonNullElse(
+                        step.errorDetail, Objects.requireNonNullElse(step.errorMessage, "部分失败")))
+                .toList());
     }
 
     private static boolean isComplete(String status) {

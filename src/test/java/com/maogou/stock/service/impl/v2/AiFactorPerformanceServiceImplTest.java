@@ -16,11 +16,13 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -127,6 +129,40 @@ class AiFactorPerformanceServiceImplTest {
     }
 
     @Test
+    void acceptsPersistedDriftEvidenceWithEquivalentJsonPropertyOrder() throws Exception {
+        Fixture fixture = fixture();
+        AiFactorPerformanceService service = service(fixture);
+        List<AiFactorPerformanceService.Observation> baseline = new ArrayList<>();
+        List<AiFactorPerformanceService.Observation> current = new ArrayList<>();
+        for (int index = 0; index < 20; index++) {
+            baseline.add(observation(1000L + index, String.format("61%04d", index),
+                    "2026-06-01", "1.0", "0.02", "-0.01"));
+            current.add(observation(1100L + index, String.format("62%04d", index),
+                    "2026-07-01", "3.0", "-0.02", "-0.04"));
+        }
+        AiFactorPerformanceService.PerformanceBatch original = batch(current);
+        AiFactorPerformanceService.PerformanceBatch withBaseline = new AiFactorPerformanceService.PerformanceBatch(
+                original.factorVersion(), original.horizonDays(), original.marketRegime(), original.windowType(),
+                original.windowStartDate(), original.windowEndDate(), original.observations(), baseline,
+                original.detectorVersion(), original.thresholds(), original.evaluatedAt());
+
+        service.evaluateAndStore(withBaseline);
+        ObjectMapper mapper = new ObjectMapper();
+        for (AiDriftEvent event : fixture.driftDatabase) {
+            var fields = new ArrayList<Map.Entry<String, com.fasterxml.jackson.databind.JsonNode>>();
+            mapper.readTree(event.evidenceJson).fields().forEachRemaining(fields::add);
+            java.util.Collections.reverse(fields);
+            var reordered = mapper.createObjectNode();
+            fields.forEach(field -> reordered.set(field.getKey(), field.getValue()));
+            event.evidenceJson = mapper.writeValueAsString(reordered);
+        }
+
+        AiFactorPerformanceService.EvaluationResult repeated = service.evaluateAndStore(withBaseline);
+
+        assertThat(repeated.driftEvents()).hasSameSizeAs(fixture.driftDatabase);
+    }
+
+    @Test
     void rejectsCrossVersionOrCrossHorizonObservationsInsteadOfSilentlyDroppingThem() {
         Fixture fixture = fixture();
         AiFactorPerformanceService service = service(fixture);
@@ -185,18 +221,23 @@ class AiFactorPerformanceServiceImplTest {
     }
 
     @Test
-    void detectsDifferentLineageReusingTheSamePerformanceWindowKey() {
+    void createsNextRevisionWhenLateEvidenceChangesTheSamePerformanceWindow() {
         Fixture fixture = fixture();
         AiFactorPerformanceService service = service(fixture);
         AiFactorPerformanceService.Observation observation = observation(
                 801L, "600801", "2026-07-01", "1.0", "0.02", "-0.01");
         AiFactorPerformanceService.PerformanceBatch batch = batch(List.of(observation));
-        service.evaluateAndStore(batch);
+        AiFactorPerformance first = service.evaluateAndStore(batch).performances().get(0);
         observation.label().inputFingerprint = "tampered-label";
 
-        assertThatThrownBy(() -> service.evaluateAndStore(batch))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("不可变因子表现冲突");
+        AiFactorPerformance revised = service.evaluateAndStore(batch).performances().get(0);
+
+        assertThat(revised.id).isNotEqualTo(first.id);
+        assertThat(revised.revisionNo).isEqualTo(2);
+        assertThat(revised.isCurrent).isEqualTo(1);
+        assertThat(revised.supersedesPerformanceId).isEqualTo(first.id);
+        assertThat(first.isCurrent).isZero();
+        verify(fixture.performanceMapper).markSuperseded(List.of(first.id));
     }
 
     @Test
@@ -273,7 +314,7 @@ class AiFactorPerformanceServiceImplTest {
         label.sampleId = sampleId;
         label.stockCode = stockCode;
         label.horizonTradingDays = 3;
-        label.labelVersion = "LABEL/1.0.0";
+        label.labelVersion = "LABEL/1.1.0";
         label.inputFingerprint = "label-" + sampleId;
         label.excessReturn = new BigDecimal(excessReturn);
         label.maxAdverseReturn = new BigDecimal(adverseReturn);
@@ -298,7 +339,8 @@ class AiFactorPerformanceServiceImplTest {
                                 && existing.marketRegime.equals(item.marketRegime)
                                 && existing.windowType.equals(item.windowType)
                                 && existing.windowStartDate.equals(item.windowStartDate)
-                                && existing.windowEndDate.equals(item.windowEndDate));
+                                && existing.windowEndDate.equals(item.windowEndDate)
+                                && existing.revisionNo.equals(item.revisionNo));
                 if (!exists) {
                     item.id = ids.incrementAndGet();
                     database.add(item);
@@ -306,11 +348,24 @@ class AiFactorPerformanceServiceImplTest {
             }
             return items.size();
         });
+        when(performanceMapper.selectCurrentWindowForUpdate(
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyInt(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any())).thenAnswer(invocation -> database.stream()
+                .filter(item -> item.isCurrent == 1).toList());
+        when(performanceMapper.markSuperseded(anyList())).thenAnswer(invocation -> {
+            List<Long> idsToSupersede = invocation.getArgument(0);
+            database.stream().filter(item -> idsToSupersede.contains(item.id))
+                    .forEach(item -> item.isCurrent = 0);
+            return idsToSupersede.size();
+        });
         when(performanceMapper.selectWindowForShare(
                 org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyInt(),
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any())).thenAnswer(invocation -> List.copyOf(database));
+                org.mockito.ArgumentMatchers.any())).thenAnswer(invocation -> database.stream()
+                .filter(item -> item.isCurrent == 1).toList());
         when(driftMapper.insertBatchImmutable(anyList())).thenAnswer(invocation -> {
             List<AiDriftEvent> items = invocation.getArgument(0);
             for (AiDriftEvent item : items) {
@@ -328,12 +383,13 @@ class AiFactorPerformanceServiceImplTest {
                     return driftDatabase.stream()
                             .filter(item -> fingerprints.contains(item.eventFingerprint)).toList();
                 });
-        return new Fixture(performanceMapper, driftMapper);
+        return new Fixture(performanceMapper, driftMapper, driftDatabase);
     }
 
     private record Fixture(
             AiFactorPerformanceMapper performanceMapper,
-            AiDriftEventMapper driftMapper
+            AiDriftEventMapper driftMapper,
+            List<AiDriftEvent> driftDatabase
     ) {
     }
 }

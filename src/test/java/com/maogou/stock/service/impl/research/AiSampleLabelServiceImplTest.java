@@ -18,8 +18,8 @@ import java.util.ArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -33,7 +33,10 @@ class AiSampleLabelServiceImplTest {
         DefaultLabelPolicy policy = new DefaultLabelPolicy(new ObjectMapper().findAndRegisterModules());
         List<AiSampleLabel> labels = new ArrayList<>();
         List<AiLabelCostEvidence> costs = new ArrayList<>();
-        when(labelMapper.selectForSamplesAndVersion(any(), any())).thenAnswer(ignored -> List.copyOf(labels));
+        when(labelMapper.selectCurrentForSamplesAndVersionForUpdate(any(), any()))
+                .thenAnswer(ignored -> labels.stream().filter(value -> value.isCurrent == 1).toList());
+        when(labelMapper.selectForSamplesAndVersion(any(), any()))
+                .thenAnswer(ignored -> labels.stream().filter(value -> value.isCurrent == 1).toList());
         when(costMapper.selectForLabelsAndVersion(any(), any())).thenAnswer(ignored -> List.copyOf(costs));
         AtomicLong ids = new AtomicLong(100);
         when(labelMapper.insertBatchImmutable(any())).thenAnswer(invocation -> {
@@ -60,18 +63,51 @@ class AiSampleLabelServiceImplTest {
     }
 
     @Test
-    void existingLabelWithDifferentFingerprintFailsInsteadOfOverwritingHistory() {
+    void existingLabelWithDifferentFingerprintCreatesNextRevisionWithoutOverwritingHistory() {
         AiSampleLabelMapper labelMapper = mock(AiSampleLabelMapper.class);
         AiLabelCostEvidenceMapper costMapper = mock(AiLabelCostEvidenceMapper.class);
         DefaultLabelPolicy policy = new DefaultLabelPolicy(new ObjectMapper().findAndRegisterModules());
         AiSampleLabel existing = label("old-fingerprint");
         existing.id = 44L;
-        when(labelMapper.selectForSamplesAndVersion(any(), any())).thenReturn(List.of(existing));
+        existing.revisionNo = 1;
+        existing.isCurrent = 1;
+        List<AiSampleLabel> labels = new ArrayList<>(List.of(existing));
+        List<AiLabelCostEvidence> costs = new ArrayList<>();
+        when(labelMapper.selectCurrentForSamplesAndVersionForUpdate(any(), any()))
+                .thenAnswer(ignored -> labels.stream().filter(value -> value.isCurrent == 1).toList());
+        when(labelMapper.selectForSamplesAndVersion(any(), any()))
+                .thenAnswer(ignored -> labels.stream().filter(value -> value.isCurrent == 1).toList());
+        when(labelMapper.markSuperseded(anyList())).thenAnswer(invocation -> {
+            List<Long> ids = invocation.getArgument(0);
+            labels.stream().filter(value -> ids.contains(value.id)).forEach(value -> value.isCurrent = 0);
+            return ids.size();
+        });
+        when(labelMapper.insertBatchImmutable(any())).thenAnswer(invocation -> {
+            List<AiSampleLabel> inserted = invocation.getArgument(0);
+            inserted.forEach(value -> value.id = 100L + labels.size());
+            labels.addAll(inserted);
+            return inserted.size();
+        });
+        when(costMapper.selectForLabelsAndVersion(any(), any())).thenAnswer(ignored -> List.copyOf(costs));
+        when(costMapper.insertBatchImmutable(any())).thenAnswer(invocation -> {
+            List<AiLabelCostEvidence> inserted = invocation.getArgument(0);
+            costs.addAll(inserted);
+            return inserted.size();
+        });
         AiSampleLabelService service = new AiSampleLabelServiceImpl(labelMapper, costMapper, policy);
 
-        assertThatThrownBy(() -> service.matureAndStore(batch(List.of(sample()))))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("immutable fingerprint conflict");
+        List<AiSampleLabel> result = service.matureAndStore(batch(List.of(sample())));
+
+        assertThat(result).singleElement().satisfies(revision -> {
+            assertThat(revision.id).isNotEqualTo(existing.id);
+            assertThat(revision.revisionNo).isEqualTo(2);
+            assertThat(revision.isCurrent).isEqualTo(1);
+            assertThat(revision.supersedesLabelId).isEqualTo(existing.id);
+            assertThat(revision.revisionReason).isEqualTo("SOURCE_EVIDENCE_CHANGED");
+        });
+        assertThat(existing.isCurrent).isZero();
+        assertThat(labels).hasSize(2);
+        verify(labelMapper).markSuperseded(List.of(existing.id));
     }
 
     private static AiSampleLabelService.LabelBatch batch(List<AiSampleLabelService.SampleInput> samples) {
@@ -122,6 +158,8 @@ class AiSampleLabelServiceImplTest {
         label.horizonTradingDays = 1;
         label.labelVersion = DefaultLabelPolicy.VERSION;
         label.inputFingerprint = fingerprint;
+        label.revisionNo = 1;
+        label.isCurrent = 1;
         label.labelStatus = "MATURED";
         label.executionStatus = "EXECUTED";
         return label;

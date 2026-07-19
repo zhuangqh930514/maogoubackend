@@ -46,6 +46,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -108,6 +109,43 @@ class AiWeeklyResearchServiceImplTest {
                         && item.label().marketEvidenceJson == null);
         verify(fixture.sampleMapper, never()).selectList(any());
         verify(fixture.labelMapper, never()).selectList(any());
+    }
+
+    @Test
+    void isolatesOneFactorFailureAndContinuesTheRemainingWeeklyResearch() {
+        Fixture fixture = fixture();
+        LocalDate windowEnd = LocalDate.of(2026, 7, 16);
+        when(fixture.sampleMapper.selectLatestResearchTradeDate(any(), any(), any()))
+                .thenReturn(windowEnd);
+        when(fixture.sampleMapper.selectResearchMarketRegimes(any(), any(), any()))
+                .thenReturn(List.of("SIDEWAYS"));
+        AiFactorDefinition first = definition(91L, "MOMENTUM_RETURN_5D");
+        AiFactorDefinition second = definition(92L, "VOLATILITY_20D");
+        when(fixture.factorMapper.selectEnabledDefinitions(AiResearchContract.FACTOR_VERSION))
+                .thenReturn(List.of(first, second));
+        when(fixture.factorMapper.selectPerformanceSources(
+                any(), anyString(), anyString(), any(), anyString(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    Long definitionId = invocation.getArgument(0);
+                    AiFactorDefinition definition = definitionId.equals(first.id) ? first : second;
+                    return List.of(performanceSource(10_000L + definitionId, windowEnd, definition, "SIDEWAYS"));
+                });
+        AiFactorPerformance performance = new AiFactorPerformance();
+        performance.id = 501L;
+        when(fixture.factorPerformanceService.evaluateAndStore(any()))
+                .thenThrow(new IllegalStateException("first factor failed"))
+                .thenReturn(new AiFactorPerformanceService.EvaluationResult(
+                        List.of(performance), List.of(), List.of(second.factorCode)));
+        when(fixture.releaseMapper.selectGlobalActiveChampionForUpdate(anyString(), anyString()))
+                .thenReturn(null);
+
+        AiResearchCycleResult result = runner(fixture).run(5L, now());
+
+        assertThat(result.status()).isEqualTo("PARTIAL_SUCCESS");
+        assertThat(result.message()).contains("MOMENTUM_RETURN_5D", "first factor failed");
+        assertThat(result.successCount()).isEqualTo(1);
+        assertThat(result.failedCount()).isEqualTo(1);
+        verify(fixture.factorPerformanceService, times(2)).evaluateAndStore(any());
     }
 
     @Test
@@ -214,7 +252,7 @@ class AiWeeklyResearchServiceImplTest {
             label.id = 4000L + index;
             label.exitTradeDate = dates.get(index).plusDays(3);
             label.verifiedAt = label.exitTradeDate.atTime(16, 0);
-            label.labelVersion = "LABEL/1.0.0";
+            label.labelVersion = "LABEL/1.1.0";
             label.inputFingerprint = "label-" + label.id;
             label.executionStatus = "EXECUTED";
             label.executionStatus = "EXECUTED";
@@ -474,7 +512,7 @@ class AiWeeklyResearchServiceImplTest {
         value.excessReturn = new BigDecimal("0.04");
         value.labelStatus = "MATURED";
         value.executionStatus = "EXECUTED";
-        value.labelVersion = "LABEL/1.0.0";
+        value.labelVersion = "LABEL/1.1.0";
         value.exitTradeDate = LocalDate.of(2026, 7, 13);
         value.verifiedAt = now();
         return value;

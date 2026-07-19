@@ -19,6 +19,9 @@ public class AiTrainingDatasetItem {
     public LocalDateTime labelAvailableAt;
     public String featureFingerprint;
     public String labelFingerprint;
+    public String universeFingerprint;
+    public String tradingStateFingerprint;
+    public String sectorMembershipFingerprint;
     public LocalDateTime includedAt;
     public LocalDateTime createdAt;
 }

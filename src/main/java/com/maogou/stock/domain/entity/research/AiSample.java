@@ -36,5 +36,7 @@ public class AiSample {
     public String featureVersion;
     public String featureSnapshot;
     public String sourceFingerprint;
+    @com.baomidou.mybatisplus.annotation.TableField(exist = false)
+    public Integer stateRefreshRequired;
     public LocalDateTime createdAt;
 }

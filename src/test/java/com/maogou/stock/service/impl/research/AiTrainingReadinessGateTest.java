@@ -33,13 +33,59 @@ class AiTrainingReadinessGateTest {
                         120,
                         200,
                         Map.of(1, 20_000, 2, 20_100, 3, 25_000, 5, 20_000),
-                        Map.of("UP", 20, "DOWN", 22, "SIDEWAYS", 21)));
+                        Map.of("UP", 20, "DOWN", 22, "SIDEWAYS", 21),
+                        90_100, 89_000, 90_100, 89_000, 90_100, 89_000));
 
         assertThat(result.status()).isEqualTo("READY");
         assertThat(result.remainingTradingDays()).isZero();
         assertThat(result.remainingStocks()).isZero();
         assertThat(result.remainingLabels().values()).containsOnly(0);
         assertThat(result.missingRegimes()).isEmpty();
+        assertThat(result.tradabilityCoverage()).isGreaterThanOrEqualTo(0.98d);
+        assertThat(result.universeCoverage()).isGreaterThanOrEqualTo(0.98d);
+        assertThat(result.sectorEvidenceCoverage()).isGreaterThanOrEqualTo(0.98d);
+    }
+
+    @Test
+    void blocksTrainingWhenHistoricalUniverseMembershipHasSurvivorshipGaps() {
+        AiTrainingReadinessGate.Readiness result = new AiTrainingReadinessGate().evaluate(
+                new AiTrainingReadinessGate.Evidence(
+                        120, 200,
+                        Map.of(1, 20_000, 2, 20_000, 3, 20_000, 5, 20_000),
+                        Map.of("UP", 20, "DOWN", 20, "SIDEWAYS", 20),
+                        80_000, 80_000, 80_000, 76_000));
+
+        assertThat(result.status()).isEqualTo("INSUFFICIENT_DATA");
+        assertThat(result.universeCoverage()).isEqualTo(0.95d);
+        assertThat(result.remainingUniverseCoverage()).isPositive();
+    }
+
+    @Test
+    void blocksNewTrainingWhenExecutableLabelsLackVerifiedEntryStates() {
+        AiTrainingReadinessGate.Readiness result = new AiTrainingReadinessGate().evaluate(
+                new AiTrainingReadinessGate.Evidence(
+                        120, 200,
+                        Map.of(1, 20_000, 2, 20_000, 3, 20_000, 5, 20_000),
+                        Map.of("UP", 20, "DOWN", 20, "SIDEWAYS", 20),
+                        80_000, 78_000));
+
+        assertThat(result.status()).isEqualTo("INSUFFICIENT_DATA");
+        assertThat(result.tradabilityCoverage()).isEqualTo(0.975d);
+        assertThat(result.remainingTradabilityCoverage()).isPositive();
+    }
+
+    @Test
+    void blocksTrainingWhenSectorRelativeLabelsLackMembershipLineage() {
+        AiTrainingReadinessGate.Readiness result = new AiTrainingReadinessGate().evaluate(
+                new AiTrainingReadinessGate.Evidence(
+                        120, 200,
+                        Map.of(1, 20_000, 2, 20_000, 3, 20_000, 5, 20_000),
+                        Map.of("UP", 20, "DOWN", 20, "SIDEWAYS", 20),
+                        80_000, 80_000, 80_000, 80_000, 80_000, 76_000));
+
+        assertThat(result.status()).isEqualTo("INSUFFICIENT_DATA");
+        assertThat(result.sectorEvidenceCoverage()).isEqualTo(0.95d);
+        assertThat(result.remainingSectorEvidenceCoverage()).isPositive();
     }
 
     @Test

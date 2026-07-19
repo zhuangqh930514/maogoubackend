@@ -39,8 +39,105 @@ public interface AiTrainingDatasetItemMapper extends BaseMapper<AiTrainingDatase
             WHERE l.label_version = #{labelVersion}
               AND l.label_status = 'MATURED'
               AND l.execution_status = 'EXECUTED'
+              AND l.fill_status = 'FILLED'
+              AND l.is_current = 1
               AND l.label_available_at <= #{asOfTime}
             GROUP BY l.horizon_trading_days
+            UNION ALL
+            SELECT CONVERT('TRADABILITY_STATE' USING utf8mb4) COLLATE utf8mb4_unicode_ci AS dimension_type,
+                   CONVERT('ELIGIBLE' USING utf8mb4) COLLATE utf8mb4_unicode_ci AS dimension_key,
+                   COUNT(*) AS metric_count
+            FROM ai_sample_label l
+            WHERE l.label_version = #{labelVersion}
+              AND l.label_status = 'MATURED'
+              AND l.execution_status = 'EXECUTED'
+              AND l.fill_status = 'FILLED'
+              AND l.is_current = 1
+              AND l.entry_trade_date IS NOT NULL
+              AND l.label_available_at <= #{asOfTime}
+            UNION ALL
+            SELECT CONVERT('TRADABILITY_STATE' USING utf8mb4) COLLATE utf8mb4_unicode_ci AS dimension_type,
+                   CONVERT('READY' USING utf8mb4) COLLATE utf8mb4_unicode_ci AS dimension_key,
+                   COUNT(*) AS metric_count
+            FROM ai_sample_label l
+            INNER JOIN ai_security_daily_state state FORCE INDEX (idx_security_daily_state_stock_date)
+              ON state.stock_code = l.stock_code
+             AND state.trade_date = l.entry_trade_date
+             AND state.is_current = 1
+             AND state.quality_status = 'READY'
+             AND state.buy_tradable = 1
+            WHERE l.label_version = #{labelVersion}
+              AND l.label_status = 'MATURED'
+              AND l.execution_status = 'EXECUTED'
+              AND l.fill_status = 'FILLED'
+              AND l.is_current = 1
+              AND l.entry_trade_date IS NOT NULL
+              AND l.label_available_at <= #{asOfTime}
+            UNION ALL
+            SELECT CONVERT('UNIVERSE_MEMBERSHIP' USING utf8mb4) COLLATE utf8mb4_unicode_ci AS dimension_type,
+                   CONVERT('ELIGIBLE' USING utf8mb4) COLLATE utf8mb4_unicode_ci AS dimension_key,
+                   COUNT(*) AS metric_count
+            FROM ai_sample_label l
+            INNER JOIN ai_sample s ON s.id = l.sample_id
+            WHERE l.label_version = #{labelVersion}
+              AND l.label_status = 'MATURED'
+              AND l.execution_status = 'EXECUTED'
+              AND l.fill_status = 'FILLED'
+              AND l.is_current = 1
+              AND l.label_available_at <= #{asOfTime}
+            UNION ALL
+            SELECT CONVERT('UNIVERSE_MEMBERSHIP' USING utf8mb4) COLLATE utf8mb4_unicode_ci AS dimension_type,
+                   CONVERT('READY' USING utf8mb4) COLLATE utf8mb4_unicode_ci AS dimension_key,
+                   COUNT(*) AS metric_count
+            FROM ai_sample_label l
+            INNER JOIN ai_sample s ON s.id = l.sample_id
+            WHERE l.label_version = #{labelVersion}
+              AND l.label_status = 'MATURED'
+              AND l.execution_status = 'EXECUTED'
+              AND l.fill_status = 'FILLED'
+              AND l.is_current = 1
+              AND l.label_available_at <= #{asOfTime}
+              AND EXISTS (
+                    SELECT 1
+                    FROM ai_research_universe_item universe_item
+                    INNER JOIN ai_research_universe_snapshot universe_snapshot
+                      ON universe_snapshot.id = universe_item.universe_snapshot_id
+                    WHERE universe_item.stock_code = s.stock_code
+                      AND universe_item.included = 1
+                      AND universe_item.listed_status = 'LISTED'
+                      AND universe_item.effective_from <= s.trade_date
+                      AND (universe_item.effective_to IS NULL OR universe_item.effective_to >= s.trade_date)
+                      AND universe_snapshot.trade_date = s.trade_date
+                      AND universe_snapshot.status = 'FINALIZED'
+                      AND universe_snapshot.quality_status = 'READY'
+                      AND universe_snapshot.point_in_time_status = 'READY'
+                      AND universe_snapshot.source_observed_at <= #{asOfTime}
+              )
+            UNION ALL
+            SELECT CONVERT('SECTOR_EVIDENCE' USING utf8mb4) COLLATE utf8mb4_unicode_ci AS dimension_type,
+                   CONVERT('ELIGIBLE' USING utf8mb4) COLLATE utf8mb4_unicode_ci AS dimension_key,
+                   COUNT(*) AS metric_count
+            FROM ai_sample_label l
+            WHERE l.label_version = #{labelVersion}
+              AND l.label_status = 'MATURED'
+              AND l.execution_status = 'EXECUTED'
+              AND l.fill_status = 'FILLED'
+              AND l.is_current = 1
+              AND l.label_available_at <= #{asOfTime}
+            UNION ALL
+            SELECT CONVERT('SECTOR_EVIDENCE' USING utf8mb4) COLLATE utf8mb4_unicode_ci AS dimension_type,
+                   CONVERT('READY' USING utf8mb4) COLLATE utf8mb4_unicode_ci AS dimension_key,
+                   COUNT(*) AS metric_count
+            FROM ai_sample_label l
+            WHERE l.label_version = #{labelVersion}
+              AND l.label_status = 'MATURED'
+              AND l.execution_status = 'EXECUTED'
+              AND l.fill_status = 'FILLED'
+              AND l.is_current = 1
+              AND l.sector_excess_return IS NOT NULL
+              AND l.sector_membership_fingerprint IS NOT NULL
+              AND l.sector_membership_fingerprint <> ''
+              AND l.label_available_at <= #{asOfTime}
             UNION ALL
             SELECT CONVERT('REGIME' USING utf8mb4) COLLATE utf8mb4_unicode_ci AS dimension_type,
                    CONVERT(s.market_regime USING utf8mb4) COLLATE utf8mb4_unicode_ci AS dimension_key,
@@ -67,12 +164,38 @@ public interface AiTrainingDatasetItemMapper extends BaseMapper<AiTrainingDatase
             FROM ai_sample s FORCE INDEX (idx_sample_training_source_summary)
             INNER JOIN ai_sample_label l FORCE INDEX (idx_label_training_source_summary)
               ON l.sample_id = s.id
+            INNER JOIN ai_security_daily_state entry_state FORCE INDEX (idx_security_daily_state_stock_date)
+              ON entry_state.stock_code = s.stock_code
+             AND entry_state.trade_date = l.entry_trade_date
+             AND entry_state.is_current = 1
+             AND entry_state.quality_status = 'READY'
+             AND entry_state.buy_tradable = 1
             WHERE l.label_version = #{labelVersion}
               AND l.horizon_trading_days = #{horizonDays}
               AND l.label_status = 'MATURED'
               AND l.execution_status = 'EXECUTED'
+              AND l.fill_status = 'FILLED'
+              AND l.is_current = 1
               AND s.as_of_time <= #{asOfTime}
               AND l.label_available_at <= #{asOfTime}
+              AND l.sector_excess_return IS NOT NULL
+              AND l.sector_membership_fingerprint IS NOT NULL
+              AND l.sector_membership_fingerprint <> ''
+              AND EXISTS (
+                    SELECT 1 FROM ai_research_universe_item universe_item
+                    INNER JOIN ai_research_universe_snapshot universe_snapshot
+                      ON universe_snapshot.id = universe_item.universe_snapshot_id
+                    WHERE universe_item.stock_code = s.stock_code
+                      AND universe_item.included = 1
+                      AND universe_item.listed_status = 'LISTED'
+                      AND universe_item.effective_from <= s.trade_date
+                      AND (universe_item.effective_to IS NULL OR universe_item.effective_to >= s.trade_date)
+                      AND universe_snapshot.trade_date = s.trade_date
+                      AND universe_snapshot.status = 'FINALIZED'
+                      AND universe_snapshot.quality_status = 'READY'
+                      AND universe_snapshot.point_in_time_status = 'READY'
+                      AND universe_snapshot.source_observed_at <= #{asOfTime}
+              )
             GROUP BY s.feature_version, l.label_version, l.calendar_version
             ORDER BY row_count DESC, last_trade_date DESC
             LIMIT 1
@@ -88,14 +211,40 @@ public interface AiTrainingDatasetItemMapper extends BaseMapper<AiTrainingDatase
             FROM ai_sample s FORCE INDEX (idx_sample_training_source_summary)
             INNER JOIN ai_sample_label l FORCE INDEX (idx_label_training_source_summary)
               ON l.sample_id = s.id
+            INNER JOIN ai_security_daily_state entry_state FORCE INDEX (idx_security_daily_state_stock_date)
+              ON entry_state.stock_code = s.stock_code
+             AND entry_state.trade_date = l.entry_trade_date
+             AND entry_state.is_current = 1
+             AND entry_state.quality_status = 'READY'
+             AND entry_state.buy_tradable = 1
             WHERE s.feature_version = #{featureVersion}
               AND l.label_version = #{labelVersion}
               AND l.calendar_version = #{calendarVersion}
               AND l.horizon_trading_days = #{horizonDays}
               AND l.label_status = 'MATURED'
               AND l.execution_status = 'EXECUTED'
+              AND l.fill_status = 'FILLED'
+              AND l.is_current = 1
               AND s.as_of_time <= #{asOfTime}
               AND l.label_available_at <= #{asOfTime}
+              AND l.sector_excess_return IS NOT NULL
+              AND l.sector_membership_fingerprint IS NOT NULL
+              AND l.sector_membership_fingerprint <> ''
+              AND EXISTS (
+                    SELECT 1 FROM ai_research_universe_item universe_item
+                    INNER JOIN ai_research_universe_snapshot universe_snapshot
+                      ON universe_snapshot.id = universe_item.universe_snapshot_id
+                    WHERE universe_item.stock_code = s.stock_code
+                      AND universe_item.included = 1
+                      AND universe_item.listed_status = 'LISTED'
+                      AND universe_item.effective_from <= s.trade_date
+                      AND (universe_item.effective_to IS NULL OR universe_item.effective_to >= s.trade_date)
+                      AND universe_snapshot.trade_date = s.trade_date
+                      AND universe_snapshot.status = 'FINALIZED'
+                      AND universe_snapshot.quality_status = 'READY'
+                      AND universe_snapshot.point_in_time_status = 'READY'
+                      AND universe_snapshot.source_observed_at <= #{asOfTime}
+              )
             ORDER BY s.trade_date
             """)
     List<LocalDate> selectEligibleTradeDates(
@@ -111,6 +260,9 @@ public interface AiTrainingDatasetItemMapper extends BaseMapper<AiTrainingDatase
                 s.id AS sample_id,
                 l.id AS sample_label_id,
                 s.stock_code,
+                s.market_regime,
+                s.sector_code,
+                s.sector_name,
                 s.trade_date,
                 s.as_of_time AS sample_as_of_time,
                 l.label_available_at,
@@ -121,22 +273,70 @@ public interface AiTrainingDatasetItemMapper extends BaseMapper<AiTrainingDatase
                 s.feature_snapshot,
                 l.net_return,
                 l.excess_return,
+                l.sector_excess_return,
                 l.actual_direction,
                 l.execution_status,
                 s.source_fingerprint AS feature_fingerprint,
-                l.input_fingerprint AS label_fingerprint
+                l.input_fingerprint AS label_fingerprint,
+                entry_state.source_fingerprint AS trading_state_fingerprint,
+                l.sector_membership_fingerprint,
+                (
+                    SELECT SHA2(CONCAT(universe_snapshot.source_fingerprint, ':',
+                                       universe_item.source_fingerprint), 256)
+                    FROM ai_research_universe_item universe_item
+                    INNER JOIN ai_research_universe_snapshot universe_snapshot
+                      ON universe_snapshot.id = universe_item.universe_snapshot_id
+                    WHERE universe_item.stock_code = s.stock_code
+                      AND universe_item.included = 1
+                      AND universe_item.listed_status = 'LISTED'
+                      AND universe_item.effective_from <= s.trade_date
+                      AND (universe_item.effective_to IS NULL OR universe_item.effective_to >= s.trade_date)
+                      AND universe_snapshot.trade_date = s.trade_date
+                      AND universe_snapshot.status = 'FINALIZED'
+                      AND universe_snapshot.quality_status = 'READY'
+                      AND universe_snapshot.point_in_time_status = 'READY'
+                      AND universe_snapshot.source_observed_at <= #{query.asOfTime}
+                    ORDER BY universe_snapshot.source_observed_at DESC, universe_snapshot.id DESC
+                    LIMIT 1
+                ) AS universe_fingerprint
             FROM ai_sample s FORCE INDEX (idx_sample_training_source_page)
             STRAIGHT_JOIN ai_sample_label l FORCE INDEX (uk_sample_label_version)
               ON l.sample_id = s.id
+            INNER JOIN ai_security_daily_state entry_state FORCE INDEX (idx_security_daily_state_stock_date)
+              ON entry_state.stock_code = s.stock_code
+             AND entry_state.trade_date = l.entry_trade_date
+             AND entry_state.is_current = 1
+             AND entry_state.quality_status = 'READY'
+             AND entry_state.buy_tradable = 1
             WHERE s.feature_version = #{query.featureVersion}
               AND l.label_version = #{query.labelVersion}
               AND l.calendar_version = #{query.calendarVersion}
               AND l.label_status = 'MATURED'
               AND l.execution_status = 'EXECUTED'
+              AND l.fill_status = 'FILLED'
+              AND l.is_current = 1
               AND l.horizon_trading_days = #{query.horizonTradingDays}
               AND s.trade_date BETWEEN #{query.startDate} AND #{query.endDate}
               AND s.as_of_time <= #{query.asOfTime}
               AND l.label_available_at <= #{query.asOfTime}
+              AND l.sector_excess_return IS NOT NULL
+              AND l.sector_membership_fingerprint IS NOT NULL
+              AND l.sector_membership_fingerprint <> ''
+              AND EXISTS (
+                    SELECT 1 FROM ai_research_universe_item universe_item
+                    INNER JOIN ai_research_universe_snapshot universe_snapshot
+                      ON universe_snapshot.id = universe_item.universe_snapshot_id
+                    WHERE universe_item.stock_code = s.stock_code
+                      AND universe_item.included = 1
+                      AND universe_item.listed_status = 'LISTED'
+                      AND universe_item.effective_from <= s.trade_date
+                      AND (universe_item.effective_to IS NULL OR universe_item.effective_to >= s.trade_date)
+                      AND universe_snapshot.trade_date = s.trade_date
+                      AND universe_snapshot.status = 'FINALIZED'
+                      AND universe_snapshot.quality_status = 'READY'
+                      AND universe_snapshot.point_in_time_status = 'READY'
+                      AND universe_snapshot.source_observed_at <= #{query.asOfTime}
+              )
             ORDER BY s.trade_date, s.stock_code, s.id, l.horizon_trading_days, l.id
             FOR SHARE
             """)
@@ -150,6 +350,9 @@ public interface AiTrainingDatasetItemMapper extends BaseMapper<AiTrainingDatase
                 s.id AS sample_id,
                 l.id AS sample_label_id,
                 s.stock_code,
+                s.market_regime,
+                s.sector_code,
+                s.sector_name,
                 s.trade_date,
                 s.as_of_time AS sample_as_of_time,
                 l.label_available_at,
@@ -160,22 +363,70 @@ public interface AiTrainingDatasetItemMapper extends BaseMapper<AiTrainingDatase
                 s.feature_snapshot,
                 l.net_return,
                 l.excess_return,
+                l.sector_excess_return,
                 l.actual_direction,
                 l.execution_status,
                 s.source_fingerprint AS feature_fingerprint,
-                l.input_fingerprint AS label_fingerprint
+                l.input_fingerprint AS label_fingerprint,
+                entry_state.source_fingerprint AS trading_state_fingerprint,
+                l.sector_membership_fingerprint,
+                (
+                    SELECT SHA2(CONCAT(universe_snapshot.source_fingerprint, ':',
+                                       universe_item.source_fingerprint), 256)
+                    FROM ai_research_universe_item universe_item
+                    INNER JOIN ai_research_universe_snapshot universe_snapshot
+                      ON universe_snapshot.id = universe_item.universe_snapshot_id
+                    WHERE universe_item.stock_code = s.stock_code
+                      AND universe_item.included = 1
+                      AND universe_item.listed_status = 'LISTED'
+                      AND universe_item.effective_from &lt;= s.trade_date
+                      AND (universe_item.effective_to IS NULL OR universe_item.effective_to &gt;= s.trade_date)
+                      AND universe_snapshot.trade_date = s.trade_date
+                      AND universe_snapshot.status = 'FINALIZED'
+                      AND universe_snapshot.quality_status = 'READY'
+                      AND universe_snapshot.point_in_time_status = 'READY'
+                      AND universe_snapshot.source_observed_at &lt;= #{query.asOfTime}
+                    ORDER BY universe_snapshot.source_observed_at DESC, universe_snapshot.id DESC
+                    LIMIT 1
+                ) AS universe_fingerprint
             FROM ai_sample s FORCE INDEX (idx_sample_training_source_page)
             STRAIGHT_JOIN ai_sample_label l FORCE INDEX (uk_sample_label_version)
               ON l.sample_id = s.id
+            INNER JOIN ai_security_daily_state entry_state FORCE INDEX (idx_security_daily_state_stock_date)
+              ON entry_state.stock_code = s.stock_code
+             AND entry_state.trade_date = l.entry_trade_date
+             AND entry_state.is_current = 1
+             AND entry_state.quality_status = 'READY'
+             AND entry_state.buy_tradable = 1
             WHERE s.feature_version = #{query.featureVersion}
               AND l.label_version = #{query.labelVersion}
               AND l.calendar_version = #{query.calendarVersion}
               AND l.label_status = 'MATURED'
               AND l.execution_status = 'EXECUTED'
+              AND l.fill_status = 'FILLED'
+              AND l.is_current = 1
               AND l.horizon_trading_days = #{query.horizonTradingDays}
               AND s.trade_date BETWEEN #{query.startDate} AND #{query.endDate}
               AND s.as_of_time &lt;= #{query.asOfTime}
               AND l.label_available_at &lt;= #{query.asOfTime}
+              AND l.sector_excess_return IS NOT NULL
+              AND l.sector_membership_fingerprint IS NOT NULL
+              AND l.sector_membership_fingerprint &lt;&gt; ''
+              AND EXISTS (
+                    SELECT 1 FROM ai_research_universe_item universe_item
+                    INNER JOIN ai_research_universe_snapshot universe_snapshot
+                      ON universe_snapshot.id = universe_item.universe_snapshot_id
+                    WHERE universe_item.stock_code = s.stock_code
+                      AND universe_item.included = 1
+                      AND universe_item.listed_status = 'LISTED'
+                      AND universe_item.effective_from &lt;= s.trade_date
+                      AND (universe_item.effective_to IS NULL OR universe_item.effective_to &gt;= s.trade_date)
+                      AND universe_snapshot.trade_date = s.trade_date
+                      AND universe_snapshot.status = 'FINALIZED'
+                      AND universe_snapshot.quality_status = 'READY'
+                      AND universe_snapshot.point_in_time_status = 'READY'
+                      AND universe_snapshot.source_observed_at &lt;= #{query.asOfTime}
+              )
             <if test="afterTradeDate != null">
               AND (
                     s.trade_date &gt; #{afterTradeDate}
@@ -201,14 +452,18 @@ public interface AiTrainingDatasetItemMapper extends BaseMapper<AiTrainingDatase
             INSERT INTO ai_training_dataset_item (
                 training_dataset_id, sample_id, sample_label_id, split_type, sequence_no,
                 sample_as_of_time, label_available_at, feature_fingerprint,
-                label_fingerprint, included_at, created_at
+                label_fingerprint, universe_fingerprint, trading_state_fingerprint,
+                sector_membership_fingerprint,
+                included_at, created_at
             ) VALUES
             <foreach collection="items" item="item" separator=",">
                 (
                     #{item.trainingDatasetId}, #{item.sampleId}, #{item.sampleLabelId},
                     #{item.splitType}, #{item.sequenceNo}, #{item.sampleAsOfTime},
                     #{item.labelAvailableAt}, #{item.featureFingerprint},
-                    #{item.labelFingerprint}, #{item.includedAt}, #{item.createdAt}
+                    #{item.labelFingerprint}, #{item.universeFingerprint},
+                    #{item.tradingStateFingerprint}, #{item.sectorMembershipFingerprint},
+                    #{item.includedAt}, #{item.createdAt}
                 )
             </foreach>
             ON DUPLICATE KEY UPDATE id = id

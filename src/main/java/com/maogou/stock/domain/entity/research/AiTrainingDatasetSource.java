@@ -8,6 +8,9 @@ public class AiTrainingDatasetSource {
     public Long sampleId;
     public Long sampleLabelId;
     public String stockCode;
+    public String marketRegime;
+    public String sectorCode;
+    public String sectorName;
     public LocalDate tradeDate;
     public LocalDateTime sampleAsOfTime;
     public LocalDateTime labelAvailableAt;
@@ -18,8 +21,12 @@ public class AiTrainingDatasetSource {
     public String featureSnapshot;
     public BigDecimal netReturn;
     public BigDecimal excessReturn;
+    public BigDecimal sectorExcessReturn;
     public String actualDirection;
     public String executionStatus;
     public String featureFingerprint;
     public String labelFingerprint;
+    public String universeFingerprint;
+    public String tradingStateFingerprint;
+    public String sectorMembershipFingerprint;
 }

@@ -258,9 +258,12 @@ public class AppProperties {
         private int weeklyLookbackDays = 180;
         private int monthlyMinimumSamples = 1000;
         private String trainingArtifactRoot = "./data/ai-training";
+        private long modelPackageMaxBytes = 536870912L;
+        private long historicalStateImportMaxBytes = 134217728L;
         private String trainerPythonExecutable = "python3";
         private String trainerScript = "ml/train_ranker.py";
         private long trainerTimeoutSeconds = 1800;
+        private String trainingExecutionMode = "MODEL_PACKAGE_ONLY";
         private double modelMinimumTestRocAuc = 0.52d;
         private String tradingHolidays = "2026-01-01,2026-01-02,2026-02-16,2026-02-17,2026-02-18,2026-02-19,2026-02-20,2026-02-23,2026-04-06,2026-05-01,2026-05-04,2026-05-05,2026-06-19,2026-09-25,2026-10-01,2026-10-02,2026-10-05,2026-10-06,2026-10-07";
         private String tradingWorkdays = "";
@@ -353,6 +356,22 @@ public class AppProperties {
             this.trainingArtifactRoot = trainingArtifactRoot;
         }
 
+        public long getModelPackageMaxBytes() {
+            return modelPackageMaxBytes;
+        }
+
+        public void setModelPackageMaxBytes(long modelPackageMaxBytes) {
+            this.modelPackageMaxBytes = modelPackageMaxBytes;
+        }
+
+        public long getHistoricalStateImportMaxBytes() {
+            return historicalStateImportMaxBytes;
+        }
+
+        public void setHistoricalStateImportMaxBytes(long historicalStateImportMaxBytes) {
+            this.historicalStateImportMaxBytes = historicalStateImportMaxBytes;
+        }
+
         public String getTrainerPythonExecutable() {
             return trainerPythonExecutable;
         }
@@ -375,6 +394,14 @@ public class AppProperties {
 
         public void setTrainerTimeoutSeconds(long trainerTimeoutSeconds) {
             this.trainerTimeoutSeconds = trainerTimeoutSeconds;
+        }
+
+        public String getTrainingExecutionMode() {
+            return trainingExecutionMode;
+        }
+
+        public void setTrainingExecutionMode(String trainingExecutionMode) {
+            this.trainingExecutionMode = trainingExecutionMode;
         }
 
         public double getModelMinimumTestRocAuc() {

@@ -42,6 +42,36 @@ public interface AiSourceObservationMapper extends BaseMapper<AiSourceObservatio
     @Select("""
             SELECT * FROM ai_source_observation
             WHERE stock_code = #{stockCode}
+              AND data_batch_id = #{dataBatchId}
+              AND source_type = 'INDUSTRY_MEMBERSHIP'
+              AND quality_status = 'READY'
+            ORDER BY id DESC
+            LIMIT 1
+            """)
+    AiSourceObservation selectReadyIndustryMembershipByBatch(
+            @Param("dataBatchId") Long dataBatchId,
+            @Param("stockCode") String stockCode
+    );
+
+    @Select("""
+            SELECT * FROM ai_source_observation
+            WHERE stock_code = #{stockCode}
+              AND data_batch_id = #{dataBatchId}
+              AND source_type = 'INDUSTRY_BENCHMARK'
+              AND quality_status = 'READY'
+              AND payload_json IS NOT NULL
+              AND payload_json <> ''
+            ORDER BY id DESC
+            LIMIT 1
+            """)
+    AiSourceObservation selectReadyIndustryBenchmarkByBatch(
+            @Param("dataBatchId") Long dataBatchId,
+            @Param("stockCode") String stockCode
+    );
+
+    @Select("""
+            SELECT * FROM ai_source_observation
+            WHERE stock_code = #{stockCode}
               AND source_type = 'STOCK_DAILY_SNAPSHOT'
               AND quality_status = 'READY'
               AND event_time > #{afterEventTime}
@@ -53,6 +83,25 @@ public interface AiSourceObservationMapper extends BaseMapper<AiSourceObservatio
     List<AiSourceObservation> selectReadyDailySnapshotsBetween(
             @Param("stockCode") String stockCode,
             @Param("afterEventTime") LocalDateTime afterEventTime,
+            @Param("asOfTime") LocalDateTime asOfTime
+    );
+
+    @Select("""
+            SELECT * FROM ai_source_observation
+            WHERE stock_code = #{stockCode}
+              AND source_type = 'INDUSTRY_BENCHMARK'
+              AND quality_status = 'READY'
+              AND as_of_time > #{afterAsOfTime}
+              AND as_of_time <= #{asOfTime}
+              AND available_at <= #{asOfTime}
+              AND payload_json IS NOT NULL
+              AND payload_json <> ''
+            ORDER BY as_of_time DESC, id DESC
+            LIMIT 32
+            """)
+    List<AiSourceObservation> selectRecentReadyIndustryBenchmarksBetween(
+            @Param("stockCode") String stockCode,
+            @Param("afterAsOfTime") LocalDateTime afterAsOfTime,
             @Param("asOfTime") LocalDateTime asOfTime
     );
 }

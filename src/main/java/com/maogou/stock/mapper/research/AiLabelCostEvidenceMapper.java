@@ -15,9 +15,9 @@ public interface AiLabelCostEvidenceMapper extends BaseMapper<AiLabelCostEvidenc
             INSERT INTO ai_label_cost_evidence (
                 sample_label_id, cost_model_version, currency, quantity,
                 entry_notional, exit_notional, buy_commission_rate, sell_commission_rate,
-                stamp_duty_rate, transfer_fee_rate, slippage_bps,
+                stamp_duty_rate, transfer_fee_rate, slippage_bps, impact_cost_bps,
                 buy_commission_amount, sell_commission_amount, stamp_duty_amount,
-                transfer_fee_amount, slippage_amount, total_cost_amount,
+                transfer_fee_amount, slippage_amount, impact_cost_amount, total_cost_amount,
                 evidence_json, source_fingerprint, created_at
             ) VALUES
             <foreach collection="items" item="item" separator=",">
@@ -26,8 +26,10 @@ public interface AiLabelCostEvidenceMapper extends BaseMapper<AiLabelCostEvidenc
                     #{item.quantity}, #{item.entryNotional}, #{item.exitNotional},
                     #{item.buyCommissionRate}, #{item.sellCommissionRate},
                     #{item.stampDutyRate}, #{item.transferFeeRate}, #{item.slippageBps},
+                    #{item.impactCostBps},
                     #{item.buyCommissionAmount}, #{item.sellCommissionAmount},
                     #{item.stampDutyAmount}, #{item.transferFeeAmount}, #{item.slippageAmount},
+                    #{item.impactCostAmount},
                     #{item.totalCostAmount}, #{item.evidenceJson}, #{item.sourceFingerprint},
                     #{item.createdAt}
                 )

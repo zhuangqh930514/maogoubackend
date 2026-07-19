@@ -109,11 +109,12 @@ public class AiWeeklyResearchServiceImpl implements AiWeeklyEvolutionRunner {
         List<String> errors = new ArrayList<>();
         List<String> skipped = new ArrayList<>();
         try {
-            int factorCount = evaluateFactorPerformance(triggeredAt);
-            processed += factorCount;
-            success += factorCount;
-            if (factorCount > 0) {
-                skipped.add("已更新 " + factorCount + " 条滚动因子表现与漂移证据");
+            FactorEvaluationSummary factorSummary = evaluateFactorPerformance(triggeredAt);
+            processed += factorSummary.processed();
+            success += factorSummary.success();
+            errors.addAll(factorSummary.errors());
+            if (factorSummary.performanceCount() > 0) {
+                skipped.add("已更新 " + factorSummary.performanceCount() + " 条滚动因子表现与漂移证据");
             } else {
                 skipped.add("成熟因子样本不足，暂未生成新的因子表现窗口");
             }
@@ -151,13 +152,13 @@ public class AiWeeklyResearchServiceImpl implements AiWeeklyEvolutionRunner {
         return cycleResult(processed, success, errors, skipped);
     }
 
-    private int evaluateFactorPerformance(LocalDateTime now) {
+    private FactorEvaluationSummary evaluateFactorPerformance(LocalDateTime now) {
         LocalDate historyStart = now.toLocalDate().minusDays(
                 Math.max(180, properties.getScheduler().getWeeklyLookbackDays()));
         LocalDate windowEnd = sampleMapper.selectLatestResearchTradeDate(
                 historyStart, now.toLocalDate(), now);
         if (windowEnd == null) {
-            return 0;
+            return FactorEvaluationSummary.empty();
         }
         LocalDate windowStart = windowEnd.minusDays(59);
         LocalDate baselineStart = windowStart.minusDays(60);
@@ -166,21 +167,32 @@ public class AiWeeklyResearchServiceImpl implements AiWeeklyEvolutionRunner {
         List<AiFactorDefinition> definitions = factorMapper.selectEnabledDefinitions(
                 AiResearchContract.FACTOR_VERSION);
         if (regimes == null || regimes.isEmpty() || definitions == null || definitions.isEmpty()) {
-            return 0;
+            return FactorEvaluationSummary.empty();
         }
-        int count = 0;
+        int processed = 0;
+        int success = 0;
+        int performanceCount = 0;
+        List<String> errors = new ArrayList<>();
         for (String regime : regimes) {
             for (AiFactorDefinition definition : definitions) {
                 if (definition == null || definition.id == null) {
                     continue;
                 }
-                List<AiFactorPerformanceSource> sources = factorMapper.selectPerformanceSources(
-                        definition.id, AiResearchContract.FACTOR_VERSION,
-                        AiResearchContract.LABEL_VERSION, HORIZON_DAYS, regime,
-                        baselineStart, windowEnd, now);
+                List<AiFactorPerformanceSource> sources;
+                try {
+                    sources = factorMapper.selectPerformanceSources(
+                            definition.id, AiResearchContract.FACTOR_VERSION,
+                            AiResearchContract.LABEL_VERSION, HORIZON_DAYS, regime,
+                            baselineStart, windowEnd, now);
+                } catch (RuntimeException exception) {
+                    processed++;
+                    errors.add(factorFailure(definition, regime, exception));
+                    continue;
+                }
                 if (sources == null || sources.isEmpty()) {
                     continue;
                 }
+                processed++;
                 List<AiFactorPerformanceService.Observation> current = new ArrayList<>();
                 List<AiFactorPerformanceService.Observation> baseline = new ArrayList<>();
                 for (AiFactorPerformanceSource source : sources) {
@@ -197,21 +209,35 @@ public class AiWeeklyResearchServiceImpl implements AiWeeklyEvolutionRunner {
                 if (current.isEmpty()) {
                     continue;
                 }
-                AiFactorPerformanceService.EvaluationResult result = factorPerformanceService.evaluateAndStore(
-                        new AiFactorPerformanceService.PerformanceBatch(
-                                AiResearchContract.FACTOR_VERSION, HORIZON_DAYS,
-                                regime, "ROLLING_60D", windowStart, windowEnd,
-                                current, baseline, "FACTOR_DRIFT_V2_1",
-                                new AiFactorPerformanceService.DriftThresholds(
-                                        new BigDecimal("0.10"), new BigDecimal("0.25"),
-                                        new BigDecimal("15"), new BigDecimal("25")),
-                                now));
-                if (result != null && result.performances() != null) {
-                    count += result.performances().size();
+                try {
+                    AiFactorPerformanceService.EvaluationResult result = factorPerformanceService.evaluateAndStore(
+                            new AiFactorPerformanceService.PerformanceBatch(
+                                    AiResearchContract.FACTOR_VERSION, HORIZON_DAYS,
+                                    regime, "ROLLING_60D", windowStart, windowEnd,
+                                    current, baseline, "FACTOR_DRIFT_V2_1",
+                                    new AiFactorPerformanceService.DriftThresholds(
+                                            new BigDecimal("0.10"), new BigDecimal("0.25"),
+                                            new BigDecimal("15"), new BigDecimal("25")),
+                                    now));
+                    success++;
+                    if (result != null && result.performances() != null) {
+                        performanceCount += result.performances().size();
+                    }
+                } catch (RuntimeException exception) {
+                    errors.add(factorFailure(definition, regime, exception));
                 }
             }
         }
-        return count;
+        return new FactorEvaluationSummary(processed, success, performanceCount, List.copyOf(errors));
+    }
+
+    private static String factorFailure(
+            AiFactorDefinition definition,
+            String regime,
+            RuntimeException exception
+    ) {
+        String factorCode = definition.factorCode == null ? "#" + definition.id : definition.factorCode;
+        return "因子 " + factorCode + " / " + regime + "：" + rootMessage(exception);
     }
 
     private static AiFactorPerformanceService.Observation observation(
@@ -477,6 +503,7 @@ public class AiWeeklyResearchServiceImpl implements AiWeeklyEvolutionRunner {
         }
         return labelMapper.selectList(new QueryWrapper<AiSampleLabel>()
                         .eq("label_status", "MATURED")
+                        .eq("is_current", 1)
                         .eq("label_version", AiResearchContract.LABEL_VERSION)
                         .eq("horizon_trading_days", HORIZON_DAYS)
                         .in("sample_id", sampleIds).orderByDesc("verified_at"))
@@ -725,6 +752,17 @@ public class AiWeeklyResearchServiceImpl implements AiWeeklyEvolutionRunner {
     ) {
         private static ResearchEvidence empty() {
             return new ResearchEvidence(null, null);
+        }
+    }
+
+    private record FactorEvaluationSummary(
+            int processed,
+            int success,
+            int performanceCount,
+            List<String> errors
+    ) {
+        private static FactorEvaluationSummary empty() {
+            return new FactorEvaluationSummary(0, 0, 0, List.of());
         }
     }
 

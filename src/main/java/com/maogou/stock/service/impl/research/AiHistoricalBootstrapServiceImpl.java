@@ -124,6 +124,7 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
             run.status = "RUNNING";
             run.currentStep = "VALIDATE_HISTORICAL_EVIDENCE";
             run.errorMessage = null;
+            run.errorDetail = null;
             run.finishedAt = null;
             run.startedAt = run.startedAt == null ? request.requestedAt() : run.startedAt;
             run.updatedAt = now;
@@ -152,6 +153,7 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
                     run.successCount = run.processedCount;
                     run.failedCount = 0;
                     run.errorMessage = summarizeMessages(imported.warnings());
+                    run.errorDetail = PipelineMessageFormatter.detail(imported.warnings());
                     run.updatedAt = LocalDateTime.now();
                     updateRun(run, owner);
                     if (reusable != null && !reusable.missingDates().isEmpty()) {
@@ -218,6 +220,7 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
             run.successCount = evidenceLoad.evidence().size();
             run.failedCount = completionWarnings.size();
             run.errorMessage = summarizeMessages(completionWarnings);
+            run.errorDetail = PipelineMessageFormatter.detail(completionWarnings);
             run.finishedAt = LocalDateTime.now();
             run.updatedAt = run.finishedAt;
             updateRun(run, owner);
@@ -257,6 +260,7 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
                 run.successCount = evidence.size();
                 run.failedCount = 0;
                 run.errorMessage = null;
+                run.errorDetail = null;
                 run.updatedAt = LocalDateTime.now();
                 updateRun(run, owner);
             }
@@ -579,6 +583,7 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
         }
         step.status = "RUNNING";
         step.errorMessage = null;
+        step.errorDetail = null;
         step.startedAt = step.startedAt == null ? now : step.startedAt;
         step.finishedAt = null;
         step.updatedAt = now;
@@ -594,6 +599,7 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
         step.checkpointJson = json(checkpoint);
         step.outputFingerprint = fingerprint(checkpoint);
         step.errorMessage = null;
+        step.errorDetail = null;
         step.finishedAt = LocalDateTime.now();
         step.updatedAt = step.finishedAt;
         updateStep(step, owner);
@@ -611,7 +617,9 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
         step.outputCount = checkpoint.completedDates().size();
         step.checkpointJson = json(checkpoint);
         step.outputFingerprint = fingerprint(checkpoint);
-        step.errorMessage = summarizeMessage(rootMessage(exception));
+        String detail = rootMessage(exception);
+        step.errorMessage = summarizeMessage(detail);
+        step.errorDetail = PipelineMessageFormatter.detail(detail);
         step.finishedAt = now;
         step.updatedAt = now;
         updateStep(step, owner);
@@ -620,6 +628,7 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
         run.processedCount = completedTradingDays(orderedSteps(run.id)) + 1;
         run.successCount = completedTradingDays(orderedSteps(run.id));
         run.errorMessage = summarizeMessage(step.stepKey + "：" + step.errorMessage);
+        run.errorDetail = PipelineMessageFormatter.detail(step.stepKey + "：" + detail);
         run.finishedAt = now;
         run.updatedAt = now;
         updateRun(run, owner);
@@ -630,6 +639,7 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
         run.status = status;
         run.failedCount = 1;
         run.errorMessage = summarizeMessages(errors);
+        run.errorDetail = PipelineMessageFormatter.detail(errors);
         run.finishedAt = now;
         run.updatedAt = now;
         updateRun(run, owner);

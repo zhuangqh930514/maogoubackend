@@ -46,6 +46,9 @@ public class SecurityConfig {
                                 "/api/ai/research-lab/actions/verify-labels",
                                 "/api/ai/research-lab/actions/run-weekly",
                                 "/api/ai/research-lab/actions/run-training",
+                                "/api/ai/research-lab/actions/import-model-package",
+                                "/api/ai/research-lab/actions/import-historical-trading-state",
+                                "/api/ai/research-lab/actions/import-historical-industry-bars",
                                 "/api/ai/research-lab/strategies/*/promote",
                                 "/api/ai/research-lab/strategies/*/reject",
                                 "/api/ai/research-lab/strategies/*/rollback")

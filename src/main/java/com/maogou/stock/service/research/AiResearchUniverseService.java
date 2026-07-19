@@ -19,8 +19,46 @@ public interface AiResearchUniverseService {
             String sourceType,
             boolean included,
             String excludeReason,
-            LocalDate effectiveFrom
+            LocalDate effectiveFrom,
+            LocalDate effectiveTo,
+            String listedStatus,
+            String sourceReference,
+            String sourceEvidenceFingerprint,
+            String industryCode,
+            String industryName,
+            String industryStandard,
+            String industryEvidenceFingerprint
     ) {
+        public UniverseCandidate(
+                String stockCode,
+                String stockName,
+                String market,
+                String sourceType,
+                boolean included,
+                String excludeReason,
+                LocalDate effectiveFrom,
+                LocalDate effectiveTo,
+                String listedStatus,
+                String sourceReference,
+                String sourceEvidenceFingerprint
+        ) {
+            this(stockCode, stockName, market, sourceType, included, excludeReason,
+                    effectiveFrom, effectiveTo, listedStatus, sourceReference,
+                    sourceEvidenceFingerprint, null, null, null, null);
+        }
+
+        public UniverseCandidate(
+                String stockCode,
+                String stockName,
+                String market,
+                String sourceType,
+                boolean included,
+                String excludeReason,
+                LocalDate effectiveFrom
+        ) {
+            this(stockCode, stockName, market, sourceType, included, excludeReason,
+                    effectiveFrom, null, "LISTED", null, null, null, null, null, null);
+        }
     }
 
     record SnapshotRequest(
@@ -28,10 +66,26 @@ public interface AiResearchUniverseService {
             LocalDateTime asOfTime,
             String calendarVersion,
             List<UniverseCandidate> configuredComponents,
-            boolean includeUserInterests
+            boolean includeUserInterests,
+            String membershipSourceName,
+            String membershipSourceRevision,
+            LocalDateTime sourceObservedAt,
+            String pointInTimeStatus,
+            String pointInTimeReason
     ) {
         public SnapshotRequest {
             configuredComponents = configuredComponents == null ? List.of() : List.copyOf(configuredComponents);
+        }
+
+        public SnapshotRequest(
+                LocalDate tradeDate,
+                LocalDateTime asOfTime,
+                String calendarVersion,
+                List<UniverseCandidate> configuredComponents,
+                boolean includeUserInterests
+        ) {
+            this(tradeDate, asOfTime, calendarVersion, configuredComponents, includeUserInterests,
+                    null, null, null, "UNAVAILABLE", "未声明股票池的时点来源");
         }
 
         public SnapshotRequest(

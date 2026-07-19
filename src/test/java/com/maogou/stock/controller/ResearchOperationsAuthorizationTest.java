@@ -7,7 +7,10 @@ import com.maogou.stock.dto.research.ResearchLabPayloads;
 import com.maogou.stock.mapper.UserAccountMapper;
 import com.maogou.stock.security.AuthPrincipal;
 import com.maogou.stock.security.ResearchOperatorAuthorizer;
+import com.maogou.stock.service.research.AiHistoricalIndustryBarImportService;
 import com.maogou.stock.service.research.AiResearchOperationsService;
+import com.maogou.stock.service.research.AiModelPackageImportService;
+import com.maogou.stock.service.research.AiHistoricalTradingStateImportService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -18,6 +21,7 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.mock.web.MockMultipartFile;
 
 import java.time.LocalDate;
 import java.util.List;
@@ -30,6 +34,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -100,6 +105,22 @@ class ResearchOperationsAuthorizationTest {
         org.assertj.core.api.Assertions.assertThat(userCaptor.getValue()).isEqualTo(5L);
     }
 
+    @Test
+    void operatorCanImportModelPackageOnlyAsCandidate() throws Exception {
+        Fixture fixture = fixture("OPERATOR");
+        authenticate(5L, "OPERATOR");
+        when(fixture.modelPackageImporter.importCandidate(any(), anyLong())).thenReturn(
+                new AiModelPackageImportService.ImportResult(
+                        55L, 44L, "A_SHARE_MULTI_HORIZON", "MAOGOU_RANKER",
+                        "20260719003353", "CANDIDATE", "a".repeat(64)));
+
+        fixture.mvc.perform(multipart("/api/ai/research-lab/actions/import-model-package")
+                        .file(new MockMultipartFile("package", "candidate.tar.gz", "application/gzip", new byte[]{1})))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("CANDIDATE"));
+        verify(fixture.modelPackageImporter).importCandidate(any(), anyLong());
+    }
+
     private static Fixture fixture(String databaseRole) {
         UserAccountMapper mapper = mock(UserAccountMapper.class);
         UserAccount user = new UserAccount();
@@ -110,11 +131,17 @@ class ResearchOperationsAuthorizationTest {
         when(mapper.selectById(5L)).thenReturn(user);
         ResearchOperatorAuthorizer authorizer = new ResearchOperatorAuthorizer(mapper);
         AiResearchOperationsService operations = mock(AiResearchOperationsService.class);
-        ResearchOperationsController controller = new ResearchOperationsController(operations, authorizer);
+        AiModelPackageImportService modelPackageImporter = mock(AiModelPackageImportService.class);
+        AiHistoricalTradingStateImportService historicalStateImporter = mock(AiHistoricalTradingStateImportService.class);
+        AiHistoricalIndustryBarImportService historicalIndustryBarImporter =
+                mock(AiHistoricalIndustryBarImportService.class);
+        ResearchOperationsController controller = new ResearchOperationsController(
+                operations, modelPackageImporter, historicalStateImporter, historicalIndustryBarImporter, authorizer);
         MockMvc mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
-        return new Fixture(mapper, operations, authorizer, mvc);
+        return new Fixture(mapper, operations, modelPackageImporter, historicalStateImporter,
+                historicalIndustryBarImporter, authorizer, mvc);
     }
 
     private static void authenticate(Long userId, String role) {
@@ -126,6 +153,9 @@ class ResearchOperationsAuthorizationTest {
     private record Fixture(
             UserAccountMapper mapper,
             AiResearchOperationsService operations,
+            AiModelPackageImportService modelPackageImporter,
+            AiHistoricalTradingStateImportService historicalStateImporter,
+            AiHistoricalIndustryBarImportService historicalIndustryBarImporter,
             ResearchOperatorAuthorizer authorizer,
             MockMvc mvc
     ) {

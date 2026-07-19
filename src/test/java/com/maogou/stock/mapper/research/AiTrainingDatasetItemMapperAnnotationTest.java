@@ -21,14 +21,20 @@ class AiTrainingDatasetItemMapperAnnotationTest {
         assertThat(sql)
                 .contains("COLLATE utf8mb4_unicode_ci")
                 .contains("l.label_available_at <= #{asOfTime}")
-                .doesNotContain("INNER JOIN ai_sample s ON s.id = l.sample_id");
+                .contains("UNIVERSE_MEMBERSHIP")
+                .contains("SECTOR_EVIDENCE")
+                .contains("l.sector_excess_return IS NOT NULL")
+                .contains("l.sector_membership_fingerprint IS NOT NULL")
+                .contains("universe_snapshot.point_in_time_status = 'READY'")
+                .contains("universe_snapshot.source_observed_at <= #{asOfTime}");
         Method summaryMethod = AiTrainingDatasetItemMapper.class.getMethod(
                 "selectDominantSourceSummary", String.class, Integer.class,
                 java.time.LocalDateTime.class);
         String summarySql = String.join("\n", summaryMethod.getAnnotation(Select.class).value());
         assertThat(summarySql)
                 .contains("FORCE INDEX (idx_sample_training_source_summary)")
-                .contains("FORCE INDEX (idx_label_training_source_summary)");
+                .contains("FORCE INDEX (idx_label_training_source_summary)")
+                .contains("universe_snapshot.point_in_time_status = 'READY'");
         Method pageMethod = AiTrainingDatasetItemMapper.class.getMethod(
                 "selectEligibleSourcesPage", AiTrainingDatasetSourceQuery.class,
                 java.time.LocalDate.class, String.class, Long.class, int.class);
@@ -39,6 +45,11 @@ class AiTrainingDatasetItemMapperAnnotationTest {
                 .contains("s.trade_date &gt; #{afterTradeDate}")
                 .contains("s.stock_code &gt; #{afterStockCode}")
                 .contains("s.id &gt; #{afterSampleId}")
+                .contains("universe_snapshot.point_in_time_status = 'READY'")
+                .contains("AS universe_fingerprint")
+                .contains("entry_state.source_fingerprint AS trading_state_fingerprint")
+                .contains("l.sector_membership_fingerprint")
+                .contains("l.sector_excess_return IS NOT NULL")
                 .doesNotContain("(s.trade_date, s.stock_code, s.id) &gt;");
         assertThatCode(() -> new MybatisConfiguration().addMapper(AiTrainingDatasetItemMapper.class))
                 .doesNotThrowAnyException();

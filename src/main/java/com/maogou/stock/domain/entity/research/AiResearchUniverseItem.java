@@ -19,12 +19,16 @@ public class AiResearchUniverseItem {
     public String sectorName;
     public String industryCode;
     public String industryName;
+    public String industryStandard;
+    @com.baomidou.mybatisplus.annotation.TableField(exist = false)
+    public Long sampleId;
     public String listedStatus;
     public String sourceType;
     public Integer included;
     public String inclusionReason;
     public String excludeReason;
     public LocalDate effectiveFrom;
+    public LocalDate effectiveTo;
     public String evidenceJson;
     public String sourceFingerprint;
     public LocalDateTime createdAt;

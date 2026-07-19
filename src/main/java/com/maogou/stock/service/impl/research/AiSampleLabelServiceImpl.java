@@ -69,17 +69,29 @@ public class AiSampleLabelServiceImpl implements AiSampleLabelService {
         List<Long> sampleIds = built.stream().map(result -> result.label().sampleId)
                 .filter(Objects::nonNull).distinct().toList();
         Map<String, AiSampleLabel> existingByKey = labelIndex(
-                labelMapper.selectForSamplesAndVersion(sampleIds, batch.labelVersion()));
+                labelMapper.selectCurrentForSamplesAndVersionForUpdate(sampleIds, batch.labelVersion()));
         List<AiSampleLabel> pending = new ArrayList<>();
+        List<Long> supersededIds = new ArrayList<>();
         for (DefaultLabelPolicy.BuildResult result : built) {
             AiSampleLabel candidate = result.label();
             AiSampleLabel existing = existingByKey.get(labelKey(candidate));
             if (existing == null) {
+                candidate.revisionNo = 1;
+                candidate.isCurrent = 1;
                 candidate.createdAt = candidate.createdAt == null ? LocalDateTime.now() : candidate.createdAt;
                 pending.add(candidate);
-            } else {
-                requireSameFingerprint("sample label", existing.inputFingerprint, candidate.inputFingerprint);
+            } else if (!Objects.equals(existing.inputFingerprint, candidate.inputFingerprint)) {
+                candidate.revisionNo = value(existing.revisionNo, 1) + 1;
+                candidate.isCurrent = 1;
+                candidate.supersedesLabelId = existing.id;
+                candidate.revisionReason = "SOURCE_EVIDENCE_CHANGED";
+                candidate.createdAt = candidate.createdAt == null ? LocalDateTime.now() : candidate.createdAt;
+                pending.add(candidate);
+                supersededIds.add(existing.id);
             }
+        }
+        if (!supersededIds.isEmpty()) {
+            labelMapper.markSuperseded(supersededIds.stream().distinct().toList());
         }
         for (List<AiSampleLabel> chunk : chunks(pending, WRITE_BATCH_SIZE)) {
             labelMapper.insertBatchImmutable(chunk);
@@ -156,7 +168,12 @@ public class AiSampleLabelServiceImpl implements AiSampleLabelService {
     private static Map<String, AiSampleLabel> labelIndex(List<AiSampleLabel> labels) {
         Map<String, AiSampleLabel> result = new LinkedHashMap<>();
         if (labels != null) {
-            labels.forEach(label -> result.put(labelKey(label), label));
+            labels.forEach(label -> {
+                AiSampleLabel previous = result.putIfAbsent(labelKey(label), label);
+                if (previous != null) {
+                    throw new IllegalStateException("同一标签业务键存在多个当前版本：" + labelKey(label));
+                }
+            });
         }
         return result;
     }
@@ -171,6 +188,10 @@ public class AiSampleLabelServiceImpl implements AiSampleLabelService {
 
     private static String labelKey(AiSampleLabel label) {
         return label.sampleId + "|" + label.horizonTradingDays + "|" + label.labelVersion;
+    }
+
+    private static int value(Integer value, int fallback) {
+        return value == null ? fallback : value;
     }
 
     private static <T> List<List<T>> chunks(List<T> values, int size) {
