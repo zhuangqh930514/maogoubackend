@@ -2,6 +2,7 @@ package com.maogou.stock.mapper.research;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.maogou.stock.domain.entity.research.AiTrainingDatasetSourceQuery;
+import com.maogou.stock.domain.entity.research.AiTrainingDatasetImportLineage;
 import org.apache.ibatis.annotations.Select;
 import org.junit.jupiter.api.Test;
 
@@ -51,6 +52,15 @@ class AiTrainingDatasetItemMapperAnnotationTest {
                 .contains("l.sector_membership_fingerprint")
                 .contains("l.sector_excess_return IS NOT NULL")
                 .doesNotContain("(s.trade_date, s.stock_code, s.id) &gt;");
+        Method importMethod = AiTrainingDatasetItemMapper.class.getMethod(
+                "selectByImportLineage", AiTrainingDatasetImportLineage.class);
+        String importSql = String.join("\n", importMethod.getAnnotation(Select.class).value());
+        assertThat(importSql)
+                .contains("s.source_fingerprint = #{lineage.featureFingerprint}")
+                .contains("l.input_fingerprint = #{lineage.labelFingerprint}")
+                .contains("entry_state.source_fingerprint = #{lineage.tradingStateFingerprint}")
+                .contains("universe_snapshot.point_in_time_status = 'READY'")
+                .contains("#{lineage.universeFingerprint}");
         assertThatCode(() -> new MybatisConfiguration().addMapper(AiTrainingDatasetItemMapper.class))
                 .doesNotThrowAnyException();
     }

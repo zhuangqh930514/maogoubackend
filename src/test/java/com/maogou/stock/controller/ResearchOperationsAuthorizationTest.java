@@ -10,6 +10,7 @@ import com.maogou.stock.security.ResearchOperatorAuthorizer;
 import com.maogou.stock.service.research.AiHistoricalIndustryBarImportService;
 import com.maogou.stock.service.research.AiResearchOperationsService;
 import com.maogou.stock.service.research.AiModelPackageImportService;
+import com.maogou.stock.service.research.AiTrainingDatasetPackageImportService;
 import com.maogou.stock.service.research.AiHistoricalTradingStateImportService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -121,6 +122,29 @@ class ResearchOperationsAuthorizationTest {
         verify(fixture.modelPackageImporter).importCandidate(any(), anyLong());
     }
 
+    @Test
+    void operatorCanPreviewAndImportTrainingDatasetOnlyWithResearchPermission() throws Exception {
+        Fixture fixture = fixture("OPERATOR");
+        authenticate(5L, "OPERATOR");
+        when(fixture.trainingDatasetImporter.preview(any(), anyLong())).thenReturn(
+                new AiTrainingDatasetPackageImportService.PreviewResult("MAOGOU_RANKER_T3", "20260720", "a".repeat(64),
+                        "b".repeat(64), 1, 1, 0, true, false, List.of()));
+        when(fixture.trainingDatasetImporter.importPackage(any(), anyLong())).thenReturn(
+                new AiTrainingDatasetPackageImportService.ImportResult(77L, "MAOGOU_RANKER_T3", "20260720",
+                        "a".repeat(64), "READY", "b".repeat(64), 1, false));
+
+        fixture.mvc.perform(multipart("/api/ai/research-lab/actions/preview-training-dataset-import")
+                        .file(new MockMultipartFile("package", "dataset.tar.gz", "application/gzip", new byte[]{1})))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.compatible").value(true));
+        fixture.mvc.perform(multipart("/api/ai/research-lab/actions/import-training-dataset")
+                        .file(new MockMultipartFile("package", "dataset.tar.gz", "application/gzip", new byte[]{1})))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("READY"));
+        verify(fixture.trainingDatasetImporter).preview(any(), anyLong());
+        verify(fixture.trainingDatasetImporter).importPackage(any(), anyLong());
+    }
+
     private static Fixture fixture(String databaseRole) {
         UserAccountMapper mapper = mock(UserAccountMapper.class);
         UserAccount user = new UserAccount();
@@ -132,15 +156,17 @@ class ResearchOperationsAuthorizationTest {
         ResearchOperatorAuthorizer authorizer = new ResearchOperatorAuthorizer(mapper);
         AiResearchOperationsService operations = mock(AiResearchOperationsService.class);
         AiModelPackageImportService modelPackageImporter = mock(AiModelPackageImportService.class);
+        AiTrainingDatasetPackageImportService trainingDatasetImporter = mock(AiTrainingDatasetPackageImportService.class);
         AiHistoricalTradingStateImportService historicalStateImporter = mock(AiHistoricalTradingStateImportService.class);
         AiHistoricalIndustryBarImportService historicalIndustryBarImporter =
                 mock(AiHistoricalIndustryBarImportService.class);
         ResearchOperationsController controller = new ResearchOperationsController(
-                operations, modelPackageImporter, historicalStateImporter, historicalIndustryBarImporter, authorizer);
+                operations, modelPackageImporter, trainingDatasetImporter, historicalStateImporter,
+                historicalIndustryBarImporter, authorizer);
         MockMvc mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
-        return new Fixture(mapper, operations, modelPackageImporter, historicalStateImporter,
+        return new Fixture(mapper, operations, modelPackageImporter, trainingDatasetImporter, historicalStateImporter,
                 historicalIndustryBarImporter, authorizer, mvc);
     }
 
@@ -154,6 +180,7 @@ class ResearchOperationsAuthorizationTest {
             UserAccountMapper mapper,
             AiResearchOperationsService operations,
             AiModelPackageImportService modelPackageImporter,
+            AiTrainingDatasetPackageImportService trainingDatasetImporter,
             AiHistoricalTradingStateImportService historicalStateImporter,
             AiHistoricalIndustryBarImportService historicalIndustryBarImporter,
             ResearchOperatorAuthorizer authorizer,

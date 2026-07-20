@@ -5,6 +5,7 @@ import com.maogou.stock.dto.research.ResearchLabPayloads;
 import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.security.ResearchOperatorAuthorizer;
 import com.maogou.stock.service.research.AiModelPackageImportService;
+import com.maogou.stock.service.research.AiTrainingDatasetPackageImportService;
 import com.maogou.stock.service.research.AiHistoricalIndustryBarImportService;
 import com.maogou.stock.service.research.AiHistoricalTradingStateImportService;
 import com.maogou.stock.service.research.AiResearchOperationsService;
@@ -23,6 +24,7 @@ public class ResearchOperationsController {
 
     private final AiResearchOperationsService operationsService;
     private final AiModelPackageImportService modelPackageImportService;
+    private final AiTrainingDatasetPackageImportService trainingDatasetPackageImportService;
     private final AiHistoricalTradingStateImportService historicalTradingStateImportService;
     private final AiHistoricalIndustryBarImportService historicalIndustryBarImportService;
     private final ResearchOperatorAuthorizer authorizer;
@@ -30,12 +32,14 @@ public class ResearchOperationsController {
     public ResearchOperationsController(
             AiResearchOperationsService operationsService,
             AiModelPackageImportService modelPackageImportService,
+            AiTrainingDatasetPackageImportService trainingDatasetPackageImportService,
             AiHistoricalTradingStateImportService historicalTradingStateImportService,
             AiHistoricalIndustryBarImportService historicalIndustryBarImportService,
             ResearchOperatorAuthorizer authorizer
     ) {
         this.operationsService = operationsService;
         this.modelPackageImportService = modelPackageImportService;
+        this.trainingDatasetPackageImportService = trainingDatasetPackageImportService;
         this.historicalTradingStateImportService = historicalTradingStateImportService;
         this.historicalIndustryBarImportService = historicalIndustryBarImportService;
         this.authorizer = authorizer;
@@ -81,6 +85,20 @@ public class ResearchOperationsController {
             @RequestParam("package") MultipartFile packageFile) {
         authorizer.requireOperator();
         return ApiResponse.ok(modelPackageImportService.importCandidate(packageFile, currentUserId()));
+    }
+
+    @PostMapping(value = "/actions/preview-training-dataset-import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ApiResponse<AiTrainingDatasetPackageImportService.PreviewResult> previewTrainingDatasetImport(
+            @RequestParam("package") MultipartFile packageFile) {
+        authorizer.requireOperator();
+        return ApiResponse.ok(trainingDatasetPackageImportService.preview(packageFile, currentUserId()));
+    }
+
+    @PostMapping(value = "/actions/import-training-dataset", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ApiResponse<AiTrainingDatasetPackageImportService.ImportResult> importTrainingDataset(
+            @RequestParam("package") MultipartFile packageFile) {
+        authorizer.requireOperator();
+        return ApiResponse.ok(trainingDatasetPackageImportService.importPackage(packageFile, currentUserId()));
     }
 
     @PostMapping(value = "/actions/import-historical-trading-state", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)

@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.maogou.stock.domain.entity.research.AiTrainingDatasetItem;
 import com.maogou.stock.domain.entity.research.AiTrainingDatasetSource;
 import com.maogou.stock.domain.entity.research.AiTrainingDatasetSourceQuery;
+import com.maogou.stock.domain.entity.research.AiTrainingDatasetImportLineage;
 import com.maogou.stock.domain.entity.research.AiTrainingReadinessMetric;
 import com.maogou.stock.domain.entity.research.AiTrainingSourceSummary;
 import org.apache.ibatis.annotations.Insert;
@@ -479,4 +480,83 @@ public interface AiTrainingDatasetItemMapper extends BaseMapper<AiTrainingDatase
             FOR SHARE
             """)
     List<AiTrainingDatasetItem> selectByDatasetForShare(@Param("datasetId") Long datasetId);
+
+    /**
+     * Resolves an imported item solely by immutable source facts.  This deliberately
+     * does not accept the source database's sample_id or label_id.
+     */
+    @Select("""
+            SELECT s.id AS sample_id,
+                   l.id AS sample_label_id,
+                   s.as_of_time AS sample_as_of_time,
+                   l.label_available_at,
+                   s.source_fingerprint AS feature_fingerprint,
+                   l.input_fingerprint AS label_fingerprint,
+                   entry_state.source_fingerprint AS trading_state_fingerprint,
+                   l.sector_membership_fingerprint,
+                   (
+                     SELECT SHA2(CONCAT(universe_snapshot.source_fingerprint, ':',
+                                        universe_item.source_fingerprint), 256)
+                     FROM ai_research_universe_item universe_item
+                     INNER JOIN ai_research_universe_snapshot universe_snapshot
+                       ON universe_snapshot.id = universe_item.universe_snapshot_id
+                     WHERE universe_item.stock_code = s.stock_code
+                       AND universe_item.included = 1
+                       AND universe_item.listed_status = 'LISTED'
+                       AND universe_item.effective_from <= s.trade_date
+                       AND (universe_item.effective_to IS NULL OR universe_item.effective_to >= s.trade_date)
+                       AND universe_snapshot.trade_date = s.trade_date
+                       AND universe_snapshot.status = 'FINALIZED'
+                       AND universe_snapshot.quality_status = 'READY'
+                       AND universe_snapshot.point_in_time_status = 'READY'
+                       AND universe_snapshot.source_observed_at <= #{lineage.sampleAsOfTime}
+                     ORDER BY universe_snapshot.source_observed_at DESC, universe_snapshot.id DESC
+                     LIMIT 1
+                   ) AS universe_fingerprint
+            FROM ai_sample s
+            INNER JOIN ai_sample_label l ON l.sample_id = s.id
+            INNER JOIN ai_security_daily_state entry_state
+              ON entry_state.stock_code = s.stock_code
+             AND entry_state.trade_date = l.entry_trade_date
+             AND entry_state.is_current = 1
+             AND entry_state.quality_status = 'READY'
+             AND entry_state.buy_tradable = 1
+            WHERE s.source_fingerprint = #{lineage.featureFingerprint}
+              AND l.input_fingerprint = #{lineage.labelFingerprint}
+              AND entry_state.source_fingerprint = #{lineage.tradingStateFingerprint}
+              AND l.sector_membership_fingerprint = #{lineage.sectorMembershipFingerprint}
+              AND s.as_of_time = #{lineage.sampleAsOfTime}
+              AND l.label_available_at = #{lineage.labelAvailableAt}
+              AND s.feature_version = #{lineage.featureVersion}
+              AND l.label_version = #{lineage.labelVersion}
+              AND l.calendar_version = #{lineage.calendarVersion}
+              AND l.horizon_trading_days = #{lineage.horizonTradingDays}
+              AND l.label_status = 'MATURED'
+              AND l.execution_status = 'EXECUTED'
+              AND l.fill_status = 'FILLED'
+              AND l.is_current = 1
+              AND EXISTS (
+                    SELECT 1
+                    FROM ai_research_universe_item universe_item
+                    INNER JOIN ai_research_universe_snapshot universe_snapshot
+                      ON universe_snapshot.id = universe_item.universe_snapshot_id
+                    WHERE universe_item.stock_code = s.stock_code
+                      AND universe_item.included = 1
+                      AND universe_item.listed_status = 'LISTED'
+                      AND universe_item.effective_from <= s.trade_date
+                      AND (universe_item.effective_to IS NULL OR universe_item.effective_to >= s.trade_date)
+                      AND universe_snapshot.trade_date = s.trade_date
+                      AND universe_snapshot.status = 'FINALIZED'
+                      AND universe_snapshot.quality_status = 'READY'
+                      AND universe_snapshot.point_in_time_status = 'READY'
+                      AND universe_snapshot.source_observed_at <= #{lineage.sampleAsOfTime}
+                      AND SHA2(CONCAT(universe_snapshot.source_fingerprint, ':',
+                                      universe_item.source_fingerprint), 256) = #{lineage.universeFingerprint}
+              )
+            ORDER BY s.id, l.id
+            LIMIT 2
+            """)
+    List<AiTrainingDatasetSource> selectByImportLineage(
+            @Param("lineage") AiTrainingDatasetImportLineage lineage
+    );
 }

@@ -47,6 +47,8 @@ public class SecurityConfig {
                                 "/api/ai/research-lab/actions/run-weekly",
                                 "/api/ai/research-lab/actions/run-training",
                                 "/api/ai/research-lab/actions/import-model-package",
+                                "/api/ai/research-lab/actions/preview-training-dataset-import",
+                                "/api/ai/research-lab/actions/import-training-dataset",
                                 "/api/ai/research-lab/actions/import-historical-trading-state",
                                 "/api/ai/research-lab/actions/import-historical-industry-bars",
                                 "/api/ai/research-lab/strategies/*/promote",
