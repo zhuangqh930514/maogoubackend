@@ -3,6 +3,7 @@ package com.maogou.stock.service;
 import com.maogou.stock.dto.ai.AiAnalysisReportResponse;
 import com.maogou.stock.dto.ai.AiAnalysisReportPageResponse;
 import com.maogou.stock.dto.ai.AiAnalysisReportSummaryResponse;
+import com.maogou.stock.dto.ai.WatchlistAnalysisResult;
 
 import java.time.LocalDate;
 import java.util.List;
@@ -30,5 +31,5 @@ public interface AiAnalysisService {
         return analyzeStock(code, forceRefresh, promptTemplateId, targetReportId);
     }
 
-    void analyzeWatchlist(Long promptTemplateId);
+    WatchlistAnalysisResult analyzeWatchlist(Long promptTemplateId);
 }

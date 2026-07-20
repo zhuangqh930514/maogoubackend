@@ -13,6 +13,7 @@ import com.maogou.stock.domain.enums.AnalysisStatus;
 import com.maogou.stock.dto.ai.AiAnalysisReportResponse;
 import com.maogou.stock.dto.ai.AiAnalysisReportPageResponse;
 import com.maogou.stock.dto.ai.AiAnalysisReportSummaryResponse;
+import com.maogou.stock.dto.ai.WatchlistAnalysisResult;
 import com.maogou.stock.dto.ai.AiAnalysisResultPayload;
 import com.maogou.stock.dto.ai.AiConditionalStrategyPayload;
 import com.maogou.stock.dto.ai.AiLearningPayloads;
@@ -411,10 +412,20 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
     }
 
     @Override
-    public void analyzeWatchlist(Long promptTemplateId) {
-        for (WatchStockResponse stock : watchlistService.list("全部")) {
-            analyzeStock(stock.code(), false, promptTemplateId, null);
+    public WatchlistAnalysisResult analyzeWatchlist(Long promptTemplateId) {
+        List<WatchStockResponse> watchlist = watchlistService.list("全部");
+        List<WatchlistAnalysisResult.SkippedStock> skipped = new ArrayList<>();
+        int analyzed = 0;
+        for (WatchStockResponse stock : watchlist) {
+            try {
+                analyzeStock(stock.code(), false, promptTemplateId, null);
+                analyzed++;
+            } catch (FormalResearchSampleUnavailableException exception) {
+                skipped.add(new WatchlistAnalysisResult.SkippedStock(
+                        stock.code(), stock.name(), "尚未形成正式收盘研究样本，等待下一交易日收盘流水线"));
+            }
         }
+        return new WatchlistAnalysisResult(watchlist.size(), analyzed, skipped);
     }
 
     private Long normalizePromptTemplateId(Long promptTemplateId) {
@@ -438,7 +449,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
     private FormalAnalysisContext loadFormalContext(String stockCode, LocalDate tradeDate) {
         AiSample sample = sampleMapper.selectLatestForAnalysis(stockCode, tradeDate);
         if (sample == null || sample.id == null) {
-            throw new IllegalStateException("该股票尚无正式收盘研究样本，请先完成全局研究流水线");
+            throw new FormalResearchSampleUnavailableException("该股票尚无正式收盘研究样本，请等待收盘研究流水线完成");
         }
         AiStrategyRelease release = strategyReleaseMapper.selectGlobalActiveChampion(
                 AiResearchContract.SYSTEM_UNIVERSE_CODE, AiResearchContract.MODEL_FAMILY);
@@ -461,6 +472,12 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 List.copyOf(byHorizon.values()),
                 decision,
                 promptContext);
+    }
+
+    private static final class FormalResearchSampleUnavailableException extends IllegalStateException {
+        private FormalResearchSampleUnavailableException(String message) {
+            super(message);
+        }
     }
 
     static List<AiPrediction> selectCurrentReleasePredictions(

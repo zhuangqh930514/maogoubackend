@@ -7,6 +7,7 @@ import com.maogou.stock.dto.ai.AiAnalysisReportSummaryResponse;
 import com.maogou.stock.dto.ai.BatchAiAnalysisReportDeleteRequest;
 import com.maogou.stock.dto.ai.RunAnalysisRequest;
 import com.maogou.stock.dto.ai.RunWatchlistAnalysisRequest;
+import com.maogou.stock.dto.ai.WatchlistAnalysisResult;
 import com.maogou.stock.service.AiAnalysisService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -69,8 +70,7 @@ public class AiAnalysisController {
     }
 
     @PostMapping("/analyze-watchlist")
-    public ApiResponse<Void> analyzeWatchlist(@RequestBody(required = false) RunWatchlistAnalysisRequest request) {
-        aiAnalysisService.analyzeWatchlist(request == null ? null : request.promptTemplateId());
-        return ApiResponse.ok(null);
+    public ApiResponse<WatchlistAnalysisResult> analyzeWatchlist(@RequestBody(required = false) RunWatchlistAnalysisRequest request) {
+        return ApiResponse.ok(aiAnalysisService.analyzeWatchlist(request == null ? null : request.promptTemplateId()));
     }
 }
