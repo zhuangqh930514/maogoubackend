@@ -160,10 +160,38 @@ class GlobalDailyResearchExecutorTest {
     }
 
     @Test
+    void exhaustedSourceRetriesReleaseOnlyTheReadySubsetWithConcreteReasons() {
+        Fixture fixture = fixture();
+        AiDataBatch batch = batch();
+        when(fixture.dataBatchMapper.selectById(55L)).thenReturn(batch);
+        when(fixture.itemMapper.selectList(any())).thenReturn(List.of(
+                item(1L, "600519", "SYSTEM_BASELINE"),
+                item(2L, "600001", "SYSTEM_BASELINE")));
+        AiSourceObservation unavailable = observation("600001", "UNAVAILABLE");
+        unavailable.providerCode = "SINA";
+        unavailable.missingReason = "所有研究行情来源均不可用";
+        when(fixture.observationMapper.selectList(any())).thenReturn(List.of(
+                observation("600519", "READY"), unavailable, benchmarkObservation()));
+
+        AiGlobalDailyResearchExecutor.StepOutcome outcome = fixture.executor.execute(
+                "WAIT_DATA_READY", context(5, Map.of(
+                        "FETCH_SOURCE_DATA", "{\"universeSnapshotId\":91,\"dataBatchId\":55}")));
+
+        assertThat(outcome.status()).isEqualTo("SUCCESS_WITH_WARNINGS");
+        assertThat(outcome.processedCount()).isEqualTo(2);
+        assertThat(outcome.successCount()).isEqualTo(1);
+        assertThat(outcome.failedCount()).isEqualTo(1);
+        assertThat(outcome.errors()).singleElement().asString()
+                .contains("600001", "SINA", "所有研究行情来源均不可用");
+        assertThat(batch.status).isEqualTo("PARTIAL_READY");
+        assertThat(batch.qualityStatus).isEqualTo("PARTIAL");
+    }
+
+    @Test
     void rebuildsSamplesFromDatabaseCheckpointsWithoutJvmBusinessState() throws Exception {
         Fixture fixture = fixture();
         AiDataBatch batch = batch();
-        batch.qualityStatus = "READY";
+        batch.qualityStatus = "PARTIAL";
         when(fixture.dataBatchMapper.selectById(55L)).thenReturn(batch);
         AiResearchUniverseItem item = item(1L, "600519", "WATCHLIST:USER:5");
         when(fixture.itemMapper.selectList(any())).thenReturn(List.of(item));

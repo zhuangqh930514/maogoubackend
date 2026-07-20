@@ -31,6 +31,7 @@ class AiSystemCoreUniverseProviderImplTest {
             assertThat(candidate.sourceType()).isEqualTo("SYSTEM_BASELINE");
             assertThat(candidate.included()).isTrue();
             assertThat(candidate.stockName()).doesNotContain("ST");
+            assertThat(candidate.stockName()).doesNotStartWith("PT");
         });
         assertThat(result).anySatisfy(candidate -> assertThat(candidate.stockCode()).startsWith("600"));
         assertThat(result).anySatisfy(candidate -> assertThat(candidate.stockCode()).startsWith("000"));
@@ -75,6 +76,7 @@ class AiSystemCoreUniverseProviderImplTest {
         securities.addAll(createBoard("688", "科创板", size - perBoard * 3, tradeDate.minusDays(120)));
         if (noisy) {
             securities.add(new HistoricalMarketDataProvider.Security("600999", "*ST示例", "SH", tradeDate.minusDays(300)));
+            securities.add(new HistoricalMarketDataProvider.Security("000999", "PT示例", "SZ", tradeDate.minusDays(300)));
             securities.add(new HistoricalMarketDataProvider.Security("301999", "新股示例", "SZ", tradeDate.minusDays(10)));
         }
         return new HistoricalMarketDataProvider.UniverseCatalog(

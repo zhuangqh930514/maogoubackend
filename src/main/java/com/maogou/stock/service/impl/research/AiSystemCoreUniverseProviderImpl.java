@@ -118,7 +118,8 @@ public class AiSystemCoreUniverseProviderImpl implements AiSystemCoreUniversePro
             return false;
         }
         String normalizedName = name.toUpperCase(Locale.ROOT);
-        if (normalizedName.contains("ST") || normalizedName.contains("退")) {
+        if (normalizedName.contains("ST") || normalizedName.startsWith("PT")
+                || normalizedName.contains("退")) {
             return false;
         }
         LocalDate listedOn = security.listedOn();

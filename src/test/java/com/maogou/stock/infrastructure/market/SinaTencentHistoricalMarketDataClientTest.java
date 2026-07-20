@@ -24,8 +24,9 @@ class SinaTencentHistoricalMarketDataClientTest {
                 })
                 .andRespond(withSuccess("""
                         [
-                          {"symbol":"sz000001","code":"000001","name":"平安银行"},
-                          {"symbol":"sh600519","code":"600519","name":"贵州茅台"}
+                          {"symbol":"sz000001","code":"000001","name":"平安银行","trade":"10.00","settlement":"9.90"},
+                          {"symbol":"sh600519","code":"600519","name":"贵州茅台","trade":"1400.00","settlement":"1390.00"},
+                          {"symbol":"sh600001","code":"600001","name":"邯郸钢铁","trade":"0.00","settlement":"0.00"}
                         ]
                         """, MediaType.APPLICATION_JSON));
         SinaTencentHistoricalMarketDataClient client = new SinaTencentHistoricalMarketDataClient(
@@ -38,6 +39,8 @@ class SinaTencentHistoricalMarketDataClientTest {
         assertThat(catalog.securities()).hasSize(2);
         assertThat(catalog.securities()).extracting(HistoricalMarketDataProvider.Security::stockName)
                 .containsExactlyInAnyOrder("平安银行", "贵州茅台");
+        assertThat(catalog.securities()).extracting(HistoricalMarketDataProvider.Security::stockCode)
+                .doesNotContain("600001");
         assertThat(catalog.securities()).allSatisfy(security -> assertThat(security.listedOn()).isNull());
         assertThat(catalog.sourceFingerprint()).hasSize(64);
         server.verify();

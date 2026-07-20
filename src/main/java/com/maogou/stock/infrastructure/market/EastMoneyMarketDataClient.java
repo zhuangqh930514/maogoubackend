@@ -213,7 +213,7 @@ public class EastMoneyMarketDataClient implements ResearchMarketDataProvider, Hi
                 .queryParam("invt", 2)
                 .queryParam("fid", "f12")
                 .queryParam("fs", bucket.filter())
-                .queryParam("fields", "f12,f14,f13,f26")
+                .queryParam("fields", "f2,f12,f14,f13,f18,f26")
                 .build(false)
                 .toUri();
         try {
@@ -228,7 +228,8 @@ public class EastMoneyMarketDataClient implements ResearchMarketDataProvider, Hi
                 String name = row.path("f14").asText("").trim();
                 LocalDate listedOn = compactDate(row.path("f26").asText(null));
                 if (!code.matches("[036]\\d{5}") || name.isBlank() || listedOn == null
-                        || listedOn.isAfter(requestedAt.toLocalDate())) {
+                        || listedOn.isAfter(requestedAt.toLocalDate())
+                        || !hasPositiveMarketPrice(row, "f2")) {
                     continue;
                 }
                 securities.add(new Security(
@@ -243,6 +244,20 @@ public class EastMoneyMarketDataClient implements ResearchMarketDataProvider, Hi
         } catch (Exception exception) {
             throw new IllegalStateException("获取东方财富历史股票目录失败：" + exception.getMessage(), exception);
         }
+    }
+
+    private static boolean hasPositiveMarketPrice(JsonNode row, String... fields) {
+        for (String field : fields) {
+            String value = row.path(field).asText("").trim();
+            try {
+                if (!value.isBlank() && !"-".equals(value) && new BigDecimal(value).signum() > 0) {
+                    return true;
+                }
+            } catch (NumberFormatException ignored) {
+                // A malformed quote is not evidence that the security is currently tradable.
+            }
+        }
+        return false;
     }
 
     @Override

@@ -67,6 +67,7 @@ import java.util.stream.Collectors;
 public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecutor {
 
     private static final List<Integer> PREDICTION_HORIZONS = List.of(1, 2, 3, 5);
+    private static final int MAX_SOURCE_RETRIES = 5;
 
     private final AiResearchUniverseService universeService;
     private final AiResearchUniverseSnapshotMapper universeSnapshotMapper;
@@ -523,6 +524,16 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
                 .distinct()
                 .sorted()
                 .toList();
+        List<String> missingDetails = missing.stream().map(code -> {
+            AiSourceObservation observation = latest.get(code);
+            String provider = observation == null ? "未生成来源记录" : normalize(observation.providerCode, "未知来源");
+            String reason = observation == null || observation.missingReason == null
+                    || observation.missingReason.isBlank() ? "未返回正式收盘行情" : observation.missingReason;
+            return code + "（" + provider + "）：" + reason;
+        }).toList();
+        String benchmarkReason = benchmark == null ? "未生成市场基准记录"
+                : benchmark.missingReason == null || benchmark.missingReason.isBlank()
+                ? "市场基准不是同交易日实时收盘数据" : benchmark.missingReason;
 
         Map<String, Object> checkpoint = new LinkedHashMap<>();
         checkpoint.put("universeSnapshotId", batch.universeSnapshotId);
@@ -531,7 +542,36 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         checkpoint.put("readyCount", ready);
         checkpoint.put("benchmarkReady", benchmarkReady);
         checkpoint.put("missingStockCodes", missing);
+        checkpoint.put("missingStockDetails", missingDetails);
+        checkpoint.put("sourceRetryExhausted", context.attemptNo() >= MAX_SOURCE_RETRIES);
         if (expected == 0 || ready < expected || !benchmarkReady) {
+            if (context.attemptNo() >= MAX_SOURCE_RETRIES) {
+                if (expected == 0) {
+                    throw new IllegalStateException("数据源重试已达 " + MAX_SOURCE_RETRIES + " 次：研究股票池为空");
+                }
+                if (!benchmarkReady) {
+                    throw new IllegalStateException("数据源重试已达 " + MAX_SOURCE_RETRIES
+                            + " 次，市场基准仍不可用：" + benchmarkReason);
+                }
+                if (ready == 0) {
+                    throw new IllegalStateException("数据源重试已达 " + MAX_SOURCE_RETRIES
+                            + " 次，全部 " + expected + " 只股票均无正式收盘行情："
+                            + String.join("；", missingDetails));
+                }
+                batch.status = "PARTIAL_READY";
+                batch.sourceStatus = "PARTIAL";
+                batch.qualityStatus = "PARTIAL";
+                batch.klineAsOf = context.tradeDate();
+                batch.successCount = ready;
+                batch.failedCount = Math.max(0, expected - ready);
+                batch.completedAt = LocalDateTime.now().truncatedTo(ChronoUnit.MILLIS);
+                batch.errorMessage = "数据源重试已达 " + MAX_SOURCE_RETRIES + " 次，使用 " + ready
+                        + "/" + expected + " 只真实完整股票继续研究；未纳入："
+                        + String.join("；", missingDetails);
+                dataBatchMapper.updateById(batch);
+                return success("WAIT_DATA_READY", expected, ready, expected - ready,
+                        checkpoint, batchId, List.of(batch.errorMessage));
+            }
             LocalDateTime retryAt = LocalDateTime.now().plusMinutes(10);
             batch.status = "WAITING_SOURCE";
             batch.sourceStatus = ready == 0 ? "UNAVAILABLE" : "PARTIAL";
@@ -539,8 +579,8 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
             batch.successCount = ready;
             batch.failedCount = Math.max(0, expected - ready);
             batch.errorMessage = expected == 0 ? "研究股票池为空"
-                    : !benchmarkReady ? "等待同期市场基准完整收盘数据"
-                    : "等待完整收盘数据：" + missing;
+                    : !benchmarkReady ? "等待同期市场基准完整收盘数据：" + benchmarkReason
+                    : "等待完整收盘数据：" + String.join("；", missingDetails);
             dataBatchMapper.updateById(batch);
             return new StepOutcome(
                     "WAITING_SOURCE", expected, ready, 0, json(checkpoint),
@@ -568,7 +608,7 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
     private StepOutcome buildSamples(PipelineContext context) {
         Long batchId = requiredCheckpointId(context, "FETCH_SOURCE_DATA", "dataBatchId");
         AiDataBatch batch = requiredBatch(batchId);
-        if (!"READY".equals(batch.qualityStatus)) {
+        if (!List.of("READY", "PARTIAL").contains(batch.qualityStatus)) {
             throw new IllegalStateException("数据批次未通过完整收盘数据门");
         }
         Map<String, AiSourceObservation> observations = latestObservations(batchId);

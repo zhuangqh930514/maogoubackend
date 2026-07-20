@@ -37,6 +37,25 @@ class EastMoneyMarketDataClientTest {
     }
 
     @Test
+    void excludesCatalogRowsWithoutCurrentOrPreviousPriceEvidence() {
+        RestTemplate restTemplate = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
+        expectCatalogWithUnavailable(server, "m:0+t:6", "000001", "平安银行", "000003", "PT金田A");
+        expectCatalogWithUnavailable(server, "m:0+t:80", "300750", "宁德时代", "000024", "招商地产");
+        expectCatalogWithUnavailable(server, "m:1+t:2", "600519", "贵州茅台", "600001", "邯郸钢铁");
+        expectCatalogWithUnavailable(server, "m:1+t:23", "688981", "中芯国际", "600068", "葛洲坝");
+        EastMoneyMarketDataClient client = new EastMoneyMarketDataClient(
+                restTemplate, new ObjectMapper().findAndRegisterModules());
+
+        HistoricalMarketDataProvider.UniverseCatalog catalog = client.fetchCurrentListedUniverse(
+                8, LocalDateTime.of(2026, 7, 20, 18, 0));
+
+        assertThat(catalog.securities()).extracting(HistoricalMarketDataProvider.Security::stockCode)
+                .containsExactlyInAnyOrder("000001", "300750", "600519", "688981");
+        server.verify();
+    }
+
+    @Test
     void fetchesPointInTimeForwardAdjustedDailyKline() {
         RestTemplate restTemplate = new RestTemplate();
         MockRestServiceServer server = MockRestServiceServer.bindTo(restTemplate).build();
@@ -97,7 +116,25 @@ class EastMoneyMarketDataClientTest {
     ) {
         server.expect(request -> assertThat(request.getURI().getQuery()).contains("fs=" + filter))
                 .andRespond(withSuccess("""
-                        {"data":{"diff":[{"f12":"%s","f14":"%s","f13":0,"f26":"%s"}]}}
+                        {"data":{"diff":[{"f2":"10.00","f12":"%s","f14":"%s","f13":0,"f18":"9.90","f26":"%s"}]}}
                         """.formatted(code, name, listedOn), MediaType.APPLICATION_JSON));
+    }
+
+    private static void expectCatalogWithUnavailable(
+            MockRestServiceServer server,
+            String filter,
+            String activeCode,
+            String activeName,
+            String unavailableCode,
+            String unavailableName
+    ) {
+        server.expect(request -> assertThat(request.getURI().getQuery()).contains("fs=" + filter))
+                .andRespond(withSuccess("""
+                        {"data":{"diff":[
+                          {"f2":"10.00","f12":"%s","f14":"%s","f13":0,"f18":"9.90","f26":"20200101"},
+                          {"f2":"-","f12":"%s","f14":"%s","f13":0,"f18":"-","f26":"19910101"}
+                        ]}}
+                        """.formatted(activeCode, activeName, unavailableCode, unavailableName),
+                        MediaType.APPLICATION_JSON));
     }
 }

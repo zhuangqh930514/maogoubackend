@@ -74,7 +74,8 @@ public class SinaTencentHistoricalMarketDataClient implements HistoricalMarketDa
                     String name = row.path("name").asText("").trim();
                     String symbol = row.path("symbol").asText("").trim().toLowerCase(Locale.ROOT);
                     if (!code.matches("[036]\\d{5}") || name.isBlank()
-                            || !(symbol.startsWith("sh") || symbol.startsWith("sz"))) {
+                            || !(symbol.startsWith("sh") || symbol.startsWith("sz"))
+                            || !hasPositiveMarketPrice(row, "trade")) {
                         continue;
                     }
                     String market = symbol.startsWith("sh") ? "SH" : "SZ";
@@ -93,6 +94,20 @@ public class SinaTencentHistoricalMarketDataClient implements HistoricalMarketDa
                 providerCode(), LocalDateTime.now(),
                 "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData",
                 sha256(sourcePages + "|" + securities), securities);
+    }
+
+    private static boolean hasPositiveMarketPrice(JsonNode row, String... fields) {
+        for (String field : fields) {
+            String value = row.path(field).asText("").trim();
+            try {
+                if (!value.isBlank() && !"-".equals(value) && new BigDecimal(value).signum() > 0) {
+                    return true;
+                }
+            } catch (NumberFormatException ignored) {
+                // Current-listing evidence must come from a valid market price field.
+            }
+        }
+        return false;
     }
 
     @Override
