@@ -7,6 +7,7 @@ import com.maogou.stock.config.AppProperties;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
@@ -36,6 +37,7 @@ public class QqOrderDocumentSyncService {
     private final ObjectMapper objectMapper;
     private final Clock clock;
 
+    @Autowired
     public QqOrderDocumentSyncService(
             AppProperties properties,
             RestTemplate restTemplate,
