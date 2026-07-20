@@ -89,9 +89,15 @@ export MAOGOU_AI_MODEL_NAME='qwen3.6'
 export MAOGOU_AI_API_KEY='sk-local-dev-key'
 export MAOGOU_JWT_SECRET='replace-with-a-long-random-secret'
 export MAOGOU_SCHEDULER_ENABLED='true'
+export MAOGOU_QQ_ORDER_SYNC_ENABLED='true'
+export MAOGOU_QQ_ORDER_SYNC_CRON='0 0 0 * * *'
+export MAOGOU_QQ_ORDER_SYNC_OUTPUT_FILE='./data/external-orders/tencent-doc-orders.json'
 ```
 
 `MAOGOU_SCHEDULER_ENABLED=true` 是服务端总开关；用户还需要在“自动化任务”页面开启自己的每日流水线，系统才会在 A 股交易日 16:00 执行。
+订单文档同步独立运行于每日 00:00（Asia/Shanghai），从 `MAOGOU_QQ_ORDER_SYNC_SOURCE_URL`
+指定的公开腾讯表格拉取数据并原子写入 JSON 快照。默认源为当前“溯博订单”表格；若文档地址或工作表
+变更，必须同时更新该环境变量（URL 需带 `tab` 参数）。
 
 ### 4. 启动后端
 

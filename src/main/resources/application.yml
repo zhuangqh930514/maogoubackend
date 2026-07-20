@@ -89,6 +89,10 @@ maogou:
     auto-close-pipeline-cron: "${MAOGOU_AUTO_CLOSE_PIPELINE_CRON:0 0 16 * * MON-FRI}"
     weekly-evolution-cron: "${MAOGOU_WEEKLY_EVOLUTION_CRON:0 0 18 * * FRI}"
     monthly-training-cron: "${MAOGOU_MONTHLY_TRAINING_CRON:0 0 19 1 * *}"
+    qq-order-sync-enabled: ${MAOGOU_QQ_ORDER_SYNC_ENABLED:true}
+    qq-order-sync-cron: "${MAOGOU_QQ_ORDER_SYNC_CRON:0 0 0 * * *}"
+    qq-order-sync-source-url: "${MAOGOU_QQ_ORDER_SYNC_SOURCE_URL:https://docs.qq.com/sheet/DRExLaU9LY0hKckN5?tab=BB08J2}"
+    qq-order-sync-output-file: "${MAOGOU_QQ_ORDER_SYNC_OUTPUT_FILE:./data/external-orders/tencent-doc-orders.json}"
     weekly-lookback-days: ${MAOGOU_WEEKLY_LOOKBACK_DAYS:180}
     monthly-minimum-samples: ${MAOGOU_MONTHLY_MINIMUM_SAMPLES:1000}
     training-artifact-root: "${MAOGOU_TRAINING_ARTIFACT_ROOT:./data/ai-training}"

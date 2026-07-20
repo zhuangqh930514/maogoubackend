@@ -255,6 +255,10 @@ public class AppProperties {
         private String autoClosePipelineCron = "0 0 16 * * MON-FRI";
         private String weeklyEvolutionCron = "0 0 18 * * FRI";
         private String monthlyTrainingCron = "0 0 19 1 * *";
+        private boolean qqOrderSyncEnabled = true;
+        private String qqOrderSyncCron = "0 0 0 * * *";
+        private String qqOrderSyncSourceUrl = "https://docs.qq.com/sheet/DRExLaU9LY0hKckN5?tab=BB08J2";
+        private String qqOrderSyncOutputFile = "./data/external-orders/tencent-doc-orders.json";
         private int weeklyLookbackDays = 180;
         private int monthlyMinimumSamples = 1000;
         private String trainingArtifactRoot = "./data/ai-training";
@@ -330,6 +334,38 @@ public class AppProperties {
 
         public void setMonthlyTrainingCron(String monthlyTrainingCron) {
             this.monthlyTrainingCron = monthlyTrainingCron;
+        }
+
+        public boolean isQqOrderSyncEnabled() {
+            return qqOrderSyncEnabled;
+        }
+
+        public void setQqOrderSyncEnabled(boolean qqOrderSyncEnabled) {
+            this.qqOrderSyncEnabled = qqOrderSyncEnabled;
+        }
+
+        public String getQqOrderSyncCron() {
+            return qqOrderSyncCron;
+        }
+
+        public void setQqOrderSyncCron(String qqOrderSyncCron) {
+            this.qqOrderSyncCron = qqOrderSyncCron;
+        }
+
+        public String getQqOrderSyncSourceUrl() {
+            return qqOrderSyncSourceUrl;
+        }
+
+        public void setQqOrderSyncSourceUrl(String qqOrderSyncSourceUrl) {
+            this.qqOrderSyncSourceUrl = qqOrderSyncSourceUrl;
+        }
+
+        public String getQqOrderSyncOutputFile() {
+            return qqOrderSyncOutputFile;
+        }
+
+        public void setQqOrderSyncOutputFile(String qqOrderSyncOutputFile) {
+            this.qqOrderSyncOutputFile = qqOrderSyncOutputFile;
         }
 
         public int getWeeklyLookbackDays() {
