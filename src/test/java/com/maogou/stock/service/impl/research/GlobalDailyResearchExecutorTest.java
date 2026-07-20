@@ -28,6 +28,7 @@ import com.maogou.stock.service.research.AiLabelVerificationCoordinator;
 import com.maogou.stock.service.research.AiPredictionEngine;
 import com.maogou.stock.service.research.AiResearchUniverseService;
 import com.maogou.stock.service.research.AiSampleSnapshotService;
+import com.maogou.stock.service.research.AiSecurityDailyStateService;
 import com.maogou.stock.service.research.BenchmarkSeriesService;
 import com.maogou.stock.service.research.IndustryMembershipService;
 import com.maogou.stock.service.research.NewsSentimentFeatureService;
@@ -287,6 +288,33 @@ class GlobalDailyResearchExecutorTest {
                 org.mockito.ArgumentMatchers.eq(80), any());
     }
 
+    @Test
+    void persistsCurrentTradingStateFromObservedCloseWithoutInferringHistoricalState() {
+        Fixture fixture = fixture();
+        when(fixture.snapshotMapper.selectById(91L)).thenReturn(snapshot());
+        AiResearchUniverseItem item = item(1L, "600519", "WATCHLIST:USER:5");
+        item.stockName = "贵州茅台";
+        when(fixture.itemMapper.selectList(any())).thenReturn(List.of(item));
+        when(fixture.snapshotService.startOrGetBatch(any(), any(), anyString(), any(), anyString()))
+                .thenReturn(batch());
+        when(fixture.marketDataService.stockDetailAt(anyString(), any()))
+                .thenAnswer(invocation -> detail(invocation.getArgument(0), invocation.getArgument(1)));
+
+        fixture.executor.execute("FETCH_SOURCE_DATA", context(Map.of(
+                "SNAPSHOT_UNIVERSE", "{\"universeSnapshotId\":91}")));
+
+        ArgumentCaptor<AiSecurityDailyStateService.StateCommand> state = ArgumentCaptor.forClass(
+                AiSecurityDailyStateService.StateCommand.class);
+        verify(fixture.securityDailyStateService).store(state.capture());
+        assertThat(state.getValue().stockCode()).isEqualTo("600519");
+        assertThat(state.getValue().tradeDate()).isEqualTo(TRADE_DATE);
+        assertThat(state.getValue().stStatus()).isEqualTo("NAME_OBSERVED");
+        assertThat(state.getValue().isSt()).isZero();
+        assertThat(state.getValue().qualityStatus()).isEqualTo("READY");
+        assertThat(state.getValue().buyTradable()).isEqualTo(1);
+        assertThat(state.getValue().sourceFingerprint()).hasSize(64);
+    }
+
     private static Fixture fixture() {
         AiResearchUniverseItemMapper itemMapper = mock(AiResearchUniverseItemMapper.class);
         ResearchMarketDataClient researchMarketDataClient = mock(ResearchMarketDataClient.class);
@@ -316,6 +344,7 @@ class GlobalDailyResearchExecutorTest {
                 new IndustryMembershipService(itemMapper, researchMarketDataClient,
                         Clock.fixed(Instant.parse("2026-07-14T08:00:00Z"), ZoneId.of("Asia/Shanghai"))),
                 mock(AiIndustryDailyBarService.class),
+                mock(AiSecurityDailyStateService.class),
                 new NewsSentimentFeatureService(researchMarketDataClient, properties),
                 new ObjectMapper().findAndRegisterModules());
     }
@@ -393,7 +422,11 @@ class GlobalDailyResearchExecutorTest {
         KlinePointResponse kline = new KlinePointResponse(
                 TRADE_DATE, BigDecimal.TEN, BigDecimal.TEN, BigDecimal.TEN,
                 BigDecimal.TEN, 1000L, new BigDecimal("10000"));
-        return new StockDetailResponse(quote, FinanceSnapshotResponse.empty(), List.of(), List.of(kline), null, null);
+        KlinePointResponse previous = new KlinePointResponse(
+                TRADE_DATE.minusDays(1), new BigDecimal("9.50"), new BigDecimal("9.50"),
+                new BigDecimal("9.40"), new BigDecimal("9.60"), 900L, new BigDecimal("8550"));
+        return new StockDetailResponse(quote, FinanceSnapshotResponse.empty(), List.of(),
+                List.of(previous, kline), null, null);
     }
 
     private record Fixture(
@@ -412,6 +445,7 @@ class GlobalDailyResearchExecutorTest {
             BenchmarkSeriesService benchmarkSeriesService,
             IndustryMembershipService industryMembershipService,
             AiIndustryDailyBarService industryDailyBarService,
+            AiSecurityDailyStateService securityDailyStateService,
             NewsSentimentFeatureService newsSentimentFeatureService,
             ObjectMapper objectMapper,
             GlobalDailyResearchExecutor executor
@@ -432,18 +466,20 @@ class GlobalDailyResearchExecutorTest {
                 BenchmarkSeriesService benchmarkSeriesService,
                 IndustryMembershipService industryMembershipService,
                 AiIndustryDailyBarService industryDailyBarService,
+                AiSecurityDailyStateService securityDailyStateService,
                 NewsSentimentFeatureService newsSentimentFeatureService,
                 ObjectMapper objectMapper
         ) {
             this(universeService, snapshotMapper, itemMapper, dataBatchMapper, observationMapper,
                     sampleMapper, snapshotService, marketDataService, factorEngine, predictionEngine,
                     labelCoordinator, resilientMarketDataClient, benchmarkSeriesService,
-                    industryMembershipService, industryDailyBarService, newsSentimentFeatureService, objectMapper,
+                    industryMembershipService, industryDailyBarService, securityDailyStateService,
+                    newsSentimentFeatureService, objectMapper,
                     new GlobalDailyResearchExecutor(
                             universeService, snapshotMapper, itemMapper, dataBatchMapper, observationMapper,
                             sampleMapper, snapshotService, marketDataService, factorEngine, predictionEngine,
                             labelCoordinator, resilientMarketDataClient, benchmarkSeriesService,
-                            industryMembershipService, industryDailyBarService,
+                            industryMembershipService, industryDailyBarService, securityDailyStateService,
                             newsSentimentFeatureService, objectMapper));
         }
 
@@ -452,7 +488,7 @@ class GlobalDailyResearchExecutorTest {
                     universeService, snapshotMapper, itemMapper, dataBatchMapper, observationMapper,
                     sampleMapper, snapshotService, marketDataService, factorEngine, predictionEngine,
                     labelCoordinator, resilientMarketDataClient, benchmarkSeriesService,
-                    industryMembershipService, industryDailyBarService,
+                    industryMembershipService, industryDailyBarService, securityDailyStateService,
                     newsSentimentFeatureService, objectMapper);
         }
     }

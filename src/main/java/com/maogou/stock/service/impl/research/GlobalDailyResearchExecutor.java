@@ -32,6 +32,7 @@ import com.maogou.stock.service.research.AiPredictionEngine;
 import com.maogou.stock.service.research.AiResearchUniverseService;
 import com.maogou.stock.service.research.AiResearchContract;
 import com.maogou.stock.service.research.AiSampleSnapshotService;
+import com.maogou.stock.service.research.AiSecurityDailyStateService;
 import com.maogou.stock.service.research.BenchmarkSeriesService;
 import com.maogou.stock.service.research.ExternalIoTransactionGuard;
 import com.maogou.stock.service.research.IndustryMembershipService;
@@ -40,6 +41,7 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -81,6 +83,7 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
     private final BenchmarkSeriesService benchmarkSeriesService;
     private final IndustryMembershipService industryMembershipService;
     private final AiIndustryDailyBarService industryDailyBarService;
+    private final AiSecurityDailyStateService securityDailyStateService;
     private final NewsSentimentFeatureService newsSentimentFeatureService;
     private final ObjectMapper objectMapper;
 
@@ -100,6 +103,7 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
             BenchmarkSeriesService benchmarkSeriesService,
             IndustryMembershipService industryMembershipService,
             AiIndustryDailyBarService industryDailyBarService,
+            AiSecurityDailyStateService securityDailyStateService,
             NewsSentimentFeatureService newsSentimentFeatureService,
             ObjectMapper objectMapper
     ) {
@@ -118,6 +122,7 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         this.benchmarkSeriesService = benchmarkSeriesService;
         this.industryMembershipService = industryMembershipService;
         this.industryDailyBarService = industryDailyBarService;
+        this.securityDailyStateService = securityDailyStateService;
         this.newsSentimentFeatureService = newsSentimentFeatureService;
         this.objectMapper = objectMapper;
     }
@@ -264,6 +269,7 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
                         batch, item.stockCode, detail, context.tradeDate(), fetchStartedAt, null);
                 storeObservation(observation);
                 if ("READY".equals(observation.qualityStatus)) {
+                    persistLiveTradingState(batch, item, detail, context.tradeDate(), fetchStartedAt);
                     success++;
                 } else {
                     errors.add(item.stockCode + ": " + observation.missingReason);
@@ -343,6 +349,108 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
                     result.providerCode(), sourceRevision, "READY", sourceRef, json(evidence),
                     fingerprint, observedAt));
         }
+    }
+
+    /**
+     * A live close may establish today's state, but never repairs a previous day.
+     * Missing current-name evidence is explicitly retained as PARTIAL rather than
+     * inferring that a security was not ST.
+     */
+    private void persistLiveTradingState(
+            AiDataBatch batch,
+            AiResearchUniverseItem item,
+            StockDetailResponse detail,
+            LocalDate tradeDate,
+            LocalDateTime observedAt
+    ) {
+        if (securityDailyStateService == null || detail == null || detail.kline() == null) {
+            return;
+        }
+        KlinePointResponse current = detail.kline().stream()
+                .filter(point -> point != null && tradeDate.equals(point.tradeDate()))
+                .findFirst().orElseThrow(() -> new IllegalStateException("当日 K 线缺失，不能固化交易状态"));
+        KlinePointResponse previous = detail.kline().stream()
+                .filter(point -> point != null && point.tradeDate() != null && point.tradeDate().isBefore(tradeDate))
+                .max(Comparator.comparing(KlinePointResponse::tradeDate)).orElse(null);
+        String observedName = item == null ? null : item.stockName;
+        boolean nameObserved = observedName != null && !observedName.isBlank()
+                && !observedName.trim().equals(item.stockCode);
+        boolean st = nameObserved && observedName.toUpperCase(Locale.ROOT).contains("ST");
+        BigDecimal limitRatio = nameObserved ? liveLimitRatio(item.stockCode, st) : null;
+        BigDecimal limitUp = limitPrice(previous, limitRatio, true);
+        BigDecimal limitDown = limitPrice(previous, limitRatio, false);
+        Integer isLimitUp = limitFlag(current, limitUp);
+        Integer isLimitDown = limitFlag(current, limitDown);
+        boolean suspended = current.volume() == null || current.volume() <= 0
+                || current.open() == null || current.close() == null
+                || current.open().signum() <= 0 || current.close().signum() <= 0;
+        String stStatus = nameObserved ? "NAME_OBSERVED" : "UNKNOWN";
+        String qualityStatus = nameObserved && previous != null && previous.close() != null
+                && previous.close().signum() > 0 ? "READY" : "PARTIAL";
+        String missingReason = "READY".equals(qualityStatus) ? null
+                : "当日名称或前收盘证据不足，禁止推断 ST 与可交易状态";
+        Integer buyTradable = "READY".equals(qualityStatus)
+                ? (suspended || Integer.valueOf(1).equals(isLimitUp) ? 0 : 1) : null;
+        Integer sellTradable = "READY".equals(qualityStatus)
+                ? (suspended || Integer.valueOf(1).equals(isLimitDown) ? 0 : 1) : null;
+        StockQuoteResponse quote = detail.quote();
+        Map<String, Object> evidence = new LinkedHashMap<>();
+        evidence.put("format", "MAOGOU_LIVE_SECURITY_STATE_V1");
+        evidence.put("stockCode", item.stockCode);
+        evidence.put("tradeDate", tradeDate);
+        evidence.put("stockNameObserved", observedName);
+        evidence.put("quoteSource", quote == null ? null : quote.source());
+        evidence.put("previousClose", previous == null ? null : previous.close());
+        evidence.put("open", current.open());
+        evidence.put("high", current.high());
+        evidence.put("low", current.low());
+        evidence.put("close", current.close());
+        evidence.put("volume", current.volume());
+        evidence.put("limitRatio", limitRatio);
+        evidence.put("observedAt", observedAt);
+        String evidenceJson = json(evidence);
+        String source = quote == null || quote.source() == null || quote.source().isBlank()
+                ? "LIVE_PROVIDER" : quote.source();
+        String fingerprint = fingerprint("LIVE_SECURITY_STATE/1.0.0", item.stockCode, tradeDate,
+                source, evidenceJson);
+        securityDailyStateService.store(new AiSecurityDailyStateService.StateCommand(
+                item.stockCode, tradeDate, batch.id, "LIVE-" + source, null, null,
+                suspended ? "SUSPENDED" : "LISTED", stStatus, nameObserved ? (st ? 1 : 0) : null,
+                suspended ? 1 : 0, limitRatio, limitUp, limitDown, isLimitUp, isLimitDown,
+                buyTradable, sellTradable, qualityStatus, missingReason, evidenceJson, fingerprint, observedAt));
+    }
+
+    private static BigDecimal liveLimitRatio(String stockCode, boolean st) {
+        if (st) {
+            return new BigDecimal("0.050000");
+        }
+        String code = stockCode == null ? "" : stockCode.trim();
+        if (code.startsWith("300") || code.startsWith("301") || code.startsWith("688")) {
+            return new BigDecimal("0.200000");
+        }
+        if (code.startsWith("4") || code.startsWith("8")) {
+            return new BigDecimal("0.300000");
+        }
+        return new BigDecimal("0.100000");
+    }
+
+    private static BigDecimal limitPrice(KlinePointResponse previous, BigDecimal ratio, boolean upper) {
+        if (previous == null || previous.close() == null || previous.close().signum() <= 0 || ratio == null) {
+            return null;
+        }
+        BigDecimal multiplier = upper ? BigDecimal.ONE.add(ratio) : BigDecimal.ONE.subtract(ratio);
+        return previous.close().multiply(multiplier).setScale(2, RoundingMode.HALF_UP);
+    }
+
+    private static Integer limitFlag(KlinePointResponse current, BigDecimal limit) {
+        if (limit == null) {
+            return null;
+        }
+        boolean sealed = current != null && current.open() != null && current.high() != null
+                && current.low() != null && current.close() != null
+                && current.open().compareTo(limit) == 0 && current.high().compareTo(limit) == 0
+                && current.low().compareTo(limit) == 0 && current.close().compareTo(limit) == 0;
+        return sealed ? 1 : 0;
     }
 
     private StepOutcome resumeExistingSourceData(
