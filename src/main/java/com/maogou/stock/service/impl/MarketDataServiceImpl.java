@@ -34,6 +34,7 @@ public class MarketDataServiceImpl implements MarketDataService {
     private static final Logger log = LoggerFactory.getLogger(MarketDataServiceImpl.class);
     private static final long QUOTE_SOURCE_FAILURE_COOLDOWN_MILLIS = Duration.ofSeconds(60).toMillis();
     private static final long SECTOR_SOURCE_FAILURE_COOLDOWN_MILLIS = Duration.ofMinutes(3).toMillis();
+    private static final long BREADTH_SOURCE_FAILURE_COOLDOWN_MILLIS = Duration.ofMinutes(2).toMillis();
 
     private final MarketDataClient marketDataClient;
     private final MarketDataClient fallbackMarketDataClient = new MockMarketDataClient();
@@ -57,6 +58,7 @@ public class MarketDataServiceImpl implements MarketDataService {
     });
     private volatile long batchQuoteSourceUnavailableUntilMillis = 0;
     private volatile long sectorSourceUnavailableUntilMillis = 0;
+    private volatile long breadthSourceUnavailableUntilMillis = 0;
 
     public MarketDataServiceImpl(MarketDataClient marketDataClient, AppProperties properties) {
         this(marketDataClient, properties, null);
@@ -105,14 +107,30 @@ public class MarketDataServiceImpl implements MarketDataService {
     }
 
     @Override
-    public MarketBreadthResponse marketBreadth() {
-        return cachedWithFallback(
-                breadthCache,
-                "market-breadth",
-                Duration.ofSeconds(30),
-                marketDataClient::fetchMarketBreadth,
-                fallbackMarketDataClient::fetchMarketBreadth
-        );
+    public synchronized MarketBreadthResponse marketBreadth() {
+        String key = "market-breadth";
+        Duration ttl = Duration.ofSeconds(30);
+        CacheEntry<MarketBreadthResponse> existing = breadthCache.get(key);
+        if (isFresh(existing)) {
+            return MarketBreadthResponse.realtime(existing.value, breadthSourceUpdatedAt(existing));
+        }
+        if (System.currentTimeMillis() < breadthSourceUnavailableUntilMillis) {
+            return staleOrUnavailableBreadth(existing, "东方财富涨跌分布数据源暂时不可用，系统将在稍后自动重试。");
+        }
+        try {
+            MarketBreadthResponse loaded = marketDataClient.fetchMarketBreadth();
+            if (loaded == null || loaded.buckets() == null || loaded.buckets().isEmpty()) {
+                throw new IllegalStateException("东方财富涨跌分布返回为空");
+            }
+            LocalDateTime sourceUpdatedAt = breadthSourceUpdatedAt(loaded, LocalDateTime.now());
+            breadthCache.put(key, new CacheEntry<>(loaded, expiresAtMillis(ttl), sourceUpdatedAt));
+            breadthSourceUnavailableUntilMillis = 0;
+            return MarketBreadthResponse.realtime(loaded, sourceUpdatedAt);
+        } catch (RuntimeException ex) {
+            breadthSourceUnavailableUntilMillis = System.currentTimeMillis() + BREADTH_SOURCE_FAILURE_COOLDOWN_MILLIS;
+            log.warn("market breadth source failed, return stale or unavailable data, error={}", ex.getMessage(), ex);
+            return staleOrUnavailableBreadth(existing, "东方财富涨跌分布获取失败：" + readableMessage(ex));
+        }
     }
 
     @Override
@@ -608,6 +626,48 @@ public class MarketDataServiceImpl implements MarketDataService {
             return response.updatedAt();
         }
         return fallbackUpdatedAt == null ? LocalDateTime.now() : fallbackUpdatedAt;
+    }
+
+    private static LocalDateTime breadthSourceUpdatedAt(CacheEntry<MarketBreadthResponse> entry) {
+        if (entry == null) {
+            return null;
+        }
+        return breadthSourceUpdatedAt(entry.value, entry.loadedAt);
+    }
+
+    private static LocalDateTime breadthSourceUpdatedAt(MarketBreadthResponse response, LocalDateTime fallbackUpdatedAt) {
+        if (response == null) {
+            return fallbackUpdatedAt == null ? LocalDateTime.now() : fallbackUpdatedAt;
+        }
+        if (response.sourceUpdatedAt() != null) {
+            return response.sourceUpdatedAt();
+        }
+        if (response.updatedAt() != null) {
+            return response.updatedAt();
+        }
+        return fallbackUpdatedAt == null ? LocalDateTime.now() : fallbackUpdatedAt;
+    }
+
+    private static MarketBreadthResponse staleOrUnavailableBreadth(
+            CacheEntry<MarketBreadthResponse> existing,
+            String message
+    ) {
+        if (existing == null || existing.value == null || existing.value.buckets() == null
+                || existing.value.buckets().isEmpty()) {
+            return MarketBreadthResponse.unavailable(message);
+        }
+        return MarketBreadthResponse.stale(
+                existing.value,
+                breadthSourceUpdatedAt(existing),
+                message);
+    }
+
+    private static String readableMessage(RuntimeException exception) {
+        String message = exception.getMessage();
+        if (message == null || message.isBlank()) {
+            return exception.getClass().getSimpleName();
+        }
+        return message.length() > 240 ? message.substring(0, 240) : message;
     }
 
     private static <T> List<T> safeList(List<T> value) {

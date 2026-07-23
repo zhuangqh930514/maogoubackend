@@ -16,6 +16,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
+import jakarta.annotation.PreDestroy;
 
 import java.math.BigDecimal;
 import java.net.URI;
@@ -27,6 +28,11 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -50,6 +56,8 @@ public class SinaMarketDataClient implements MarketDataClient, ResearchMarketDat
     private static final Pattern EASTMONEY_NEWS_PATTERN = Pattern.compile("var ajaxResult=(\\{.*});?", Pattern.DOTALL);
     private static final Pattern SUGGEST_PATTERN = Pattern.compile("var suggestvalue=\\\"(.*?)\\\";", Pattern.DOTALL);
     private static final int QUOTE_BATCH_SIZE = 80;
+    private static final int BREADTH_PAGE_SIZE = 100;
+    private static final int BREADTH_PAGE_WORKERS = 20;
     private static final List<IndexSymbol> CORE_INDEXES = List.of(
             new IndexSymbol("上证指数", "000001.SH", "sh000001"),
             new IndexSymbol("深证成指", "399001.SZ", "sz399001"),
@@ -60,6 +68,13 @@ public class SinaMarketDataClient implements MarketDataClient, ResearchMarketDat
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
     private final AppProperties properties;
+    private final ExecutorService breadthPageExecutor = Executors.newFixedThreadPool(
+            BREADTH_PAGE_WORKERS,
+            runnable -> {
+                Thread thread = new Thread(runnable, "market-breadth-page");
+                thread.setDaemon(true);
+                return thread;
+            });
 
     public SinaMarketDataClient(@Qualifier("marketRestTemplate") RestTemplate restTemplate, ObjectMapper objectMapper, AppProperties properties) {
         this.restTemplate = restTemplate;
@@ -491,32 +506,40 @@ public class SinaMarketDataClient implements MarketDataClient, ResearchMarketDat
             int fundIn = 0;
             int fundOut = 0;
             int fundFlat = 0;
-            int processed = 0;
-            int total = Integer.MAX_VALUE;
+            JsonNode firstPage = fetchBreadthPage(1);
+            JsonNode firstRows = firstPage.path("diff");
+            int total = firstPage.path("total").asInt(0);
+            if (total <= 0 || !firstRows.isArray() || firstRows.isEmpty()) {
+                throw new IllegalStateException("东方财富涨跌分布首屏返回为空");
+            }
 
-            for (int page = 1; processed < total; page++) {
-                URI uri = UriComponentsBuilder
-                        .fromHttpUrl("https://push2delay.eastmoney.com/api/qt/clist/get")
-                        .queryParam("pn", page)
-                        .queryParam("pz", "100")
-                        .queryParam("po", "1")
-                        .queryParam("np", "1")
-                        .queryParam("fltt", "2")
-                        .queryParam("invt", "2")
-                        .queryParam("fid", "f3")
-                        .queryParam("fs", "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23")
-                        .queryParam("fields", "f3,f62")
-                        .build(false)
-                        .toUri();
-                JsonNode data = objectMapper.readTree(getTextWithRetry(uri, StandardCharsets.UTF_8, "https://quote.eastmoney.com/"))
-                        .path("data");
-                JsonNode rows = data.path("diff");
-                if (!rows.isArray() || rows.isEmpty()) {
-                    break;
+            List<JsonNode> pages = new ArrayList<>();
+            pages.add(firstRows);
+            int totalPages = (total + BREADTH_PAGE_SIZE - 1) / BREADTH_PAGE_SIZE;
+            if (totalPages > 1) {
+                List<Callable<JsonNode>> requests = new ArrayList<>(totalPages - 1);
+                for (int page = 2; page <= totalPages; page++) {
+                    int pageNumber = page;
+                    requests.add(() -> fetchBreadthPage(pageNumber).path("diff"));
                 }
-                total = data.path("total").asInt(total);
-                processed += rows.size();
+                List<Future<JsonNode>> futures = breadthPageExecutor.invokeAll(requests);
+                for (int index = 0; index < futures.size(); index++) {
+                    try {
+                        JsonNode rows = futures.get(index).get();
+                        if (!rows.isArray() || rows.isEmpty()) {
+                            throw new IllegalStateException("东方财富涨跌分布第" + (index + 2) + "页返回为空");
+                        }
+                        pages.add(rows);
+                    } catch (ExecutionException ex) {
+                        Throwable cause = ex.getCause();
+                        throw cause instanceof RuntimeException runtime
+                                ? runtime
+                                : new IllegalStateException("东方财富涨跌分布分页请求失败", cause);
+                    }
+                }
+            }
 
+            for (JsonNode rows : pages) {
                 for (JsonNode row : rows) {
                     JsonNode percentNode = row.path("f3");
                     if (percentNode.isMissingNode() || percentNode.isNull() || "-".equals(percentNode.asText())) {
@@ -563,7 +586,7 @@ public class SinaMarketDataClient implements MarketDataClient, ResearchMarketDat
                     } else {
                         fundFlat++;
                     }
-                }
+                    }
             }
 
             List<MarketBreadthBucketResponse> buckets = List.of(
@@ -585,6 +608,29 @@ public class SinaMarketDataClient implements MarketDataClient, ResearchMarketDat
         } catch (Exception ex) {
             throw new IllegalStateException("获取东方财富涨跌分布失败：" + ex.getMessage(), ex);
         }
+    }
+
+    private JsonNode fetchBreadthPage(int page) throws Exception {
+        URI uri = UriComponentsBuilder
+                .fromHttpUrl("https://push2delay.eastmoney.com/api/qt/clist/get")
+                .queryParam("pn", page)
+                .queryParam("pz", BREADTH_PAGE_SIZE)
+                .queryParam("po", "1")
+                .queryParam("np", "1")
+                .queryParam("fltt", "2")
+                .queryParam("invt", "2")
+                .queryParam("fid", "f3")
+                .queryParam("fs", "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23")
+                .queryParam("fields", "f3,f62")
+                .build(false)
+                .toUri();
+        return objectMapper.readTree(getTextWithRetry(uri, StandardCharsets.UTF_8, "https://quote.eastmoney.com/") )
+                .path("data");
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        breadthPageExecutor.shutdownNow();
     }
 
     @Override

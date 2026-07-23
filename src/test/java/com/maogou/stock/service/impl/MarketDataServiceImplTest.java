@@ -44,6 +44,17 @@ class MarketDataServiceImplTest {
     }
 
     @Test
+    void marketBreadthReturnsUnavailableInsteadOfMockFallbackWhenRealtimeSourceFailsWithoutCache() {
+        MarketDataServiceImpl service = new MarketDataServiceImpl(new FailingSectorMarketClient(), new AppProperties());
+
+        var response = service.marketBreadth();
+
+        assertThat(response.sourceStatus()).isEqualTo("UNAVAILABLE");
+        assertThat(response.buckets()).isEmpty();
+        assertThat(response.message()).contains("涨跌分布");
+    }
+
+    @Test
     void sectorHeatmapReturnsStaleRealCacheWhenRealtimeSourceFailsAfterSuccess() throws Exception {
         AppProperties properties = new AppProperties();
         properties.getMarket().setSectorHeatmapCacheTtlSeconds(1);
@@ -109,6 +120,11 @@ class MarketDataServiceImplTest {
 
         @Override
         public List<com.maogou.stock.dto.market.SectorHotStockResponse> fetchMarketHotStocks(int limit) {
+            throw new IllegalStateException("source down");
+        }
+
+        @Override
+        public com.maogou.stock.dto.market.MarketBreadthResponse fetchMarketBreadth() {
             throw new IllegalStateException("source down");
         }
 

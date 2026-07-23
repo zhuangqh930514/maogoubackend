@@ -115,4 +115,23 @@ public interface AiPipelineRunMapper extends BaseMapper<AiPipelineRun> {
             @Param("owner") String owner,
             @Param("now") LocalDateTime now
     );
+
+    @Update("""
+            UPDATE ai_pipeline_run
+            SET status = 'FAILED', execution_owner = NULL, lease_until = NULL,
+                error_message = #{message}, error_detail = #{detail},
+                finished_at = #{now}, updated_at = #{now}
+            WHERE id = #{id}
+              AND status = 'RUNNING'
+              AND finished_at IS NULL
+              AND (lease_until IS NULL OR lease_until < #{now})
+              AND updated_at <= #{staleBefore}
+            """)
+    int recoverStaleRunning(
+            @Param("id") Long id,
+            @Param("staleBefore") LocalDateTime staleBefore,
+            @Param("now") LocalDateTime now,
+            @Param("message") String message,
+            @Param("detail") String detail
+    );
 }

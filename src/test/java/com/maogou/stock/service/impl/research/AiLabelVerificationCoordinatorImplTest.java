@@ -100,6 +100,39 @@ class AiLabelVerificationCoordinatorImplTest {
     }
 
     @Test
+    void countsAllStoredLabelsAsProcessedWork() {
+        Fixture fixture = fixture();
+        LocalDate tradeDate = LocalDate.of(2026, 7, 10);
+        LocalDateTime verifiedAt = tradeDate.atTime(16, 0);
+        when(fixture.sampleMapper.selectLabelCandidateScanPage(
+                eq(tradeDate), anyString(), isNull(), isNull(), isNull(), eq(2000)))
+                .thenReturn(List.of(sample(21L, "600519")));
+        when(fixture.marketDataService.klineAt("000300.SH", "day", 320, verifiedAt))
+                .thenReturn(series("000300.SH", verifiedAt));
+        when(fixture.marketDataService.klineAt("600519", "day", 320, verifiedAt))
+                .thenReturn(series("600519", verifiedAt));
+        when(fixture.calendarMapper.selectByDates(anyString(), anyString(), anyList()))
+                .thenReturn(List.of(calendar(91L, LocalDate.of(2026, 7, 8))));
+        AiSampleLabel label1 = new AiSampleLabel();
+        label1.id = 81L;
+        label1.sampleId = 21L;
+        label1.labelStatus = "MATURED";
+        AiSampleLabel label2 = new AiSampleLabel();
+        label2.id = 82L;
+        label2.sampleId = 21L;
+        label2.labelStatus = "MATURED";
+        when(fixture.labelService.matureAndStore(any())).thenReturn(List.of(label1, label2));
+
+        AiLabelVerificationCoordinator.VerificationResult result = fixture.service.matureSampleLabels(
+                tradeDate, verifiedAt);
+
+        assertThat(result.processedCount()).isEqualTo(2);
+        assertThat(result.successCount()).isEqualTo(2);
+        assertThat(result.failedCount()).isZero();
+        assertThat(result.errors()).isEmpty();
+    }
+
+    @Test
     void fallsBackToHistoricalKlineWhenRealtimeResearchSeriesUnavailable() {
         Fixture fixture = fixture();
         LocalDate tradeDate = LocalDate.of(2026, 7, 10);
@@ -462,7 +495,7 @@ class AiLabelVerificationCoordinatorImplTest {
         AiLabelVerificationCoordinator.VerificationResult result =
                 fixture.service.matureSampleLabels(tradeDate, verifiedAt, 2);
 
-        assertThat(result.processedCount()).isEqualTo(2);
+        assertThat(result.processedCount()).isEqualTo(3);
         assertThat(result.successCount()).isEqualTo(2);
         assertThat(result.failedCount()).isEqualTo(1);
         assertThat(result.errors()).singleElement().asString()

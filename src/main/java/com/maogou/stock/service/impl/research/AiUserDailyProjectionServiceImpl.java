@@ -12,7 +12,6 @@ import com.maogou.stock.domain.entity.research.AiFactorPerformance;
 import com.maogou.stock.domain.entity.research.AiFactorValue;
 import com.maogou.stock.domain.entity.research.AiPipelineRun;
 import com.maogou.stock.domain.entity.research.AiPrediction;
-import com.maogou.stock.domain.entity.research.AiPredictionEvaluation;
 import com.maogou.stock.domain.entity.research.AiSample;
 import com.maogou.stock.domain.enums.TradeSide;
 import com.maogou.stock.mapper.TradeRecordMapper;
@@ -156,9 +155,7 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
                                 AiUserDailyProjectionServiceImpl::latestPrediction,
                                 LinkedHashMap::new)));
 
-        List<AiPredictionEvaluation> evaluations = safeList(evaluationMapper.selectForDecisionEvidence(
-                globalRun.strategyReleaseId, request.tradeDate()));
-        EvaluationEvidence evidence = evaluationEvidence(evaluations);
+        EvaluationEvidence evidence = loadEvaluationEvidence(globalRun.strategyReleaseId, request.tradeDate());
         List<AiFactorValue> factorValues = sampleIds.isEmpty()
                 ? List.of() : safeList(factorValueMapper.selectBySamples(sampleIds, FACTOR_VERSION));
         Map<Long, List<AiFactorValue>> factorsBySample = factorValues.stream()
@@ -455,17 +452,25 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
         return new ProjectionResult(snapshot, items, links, PROJECTION_STEPS);
     }
 
-    private static EvaluationEvidence evaluationEvidence(List<AiPredictionEvaluation> evaluations) {
-        int total = evaluations.size();
-        long correct = evaluations.stream().filter(value -> value.directionCorrect != null)
-                .filter(value -> value.directionCorrect == 1).count();
-        long assessed = evaluations.stream().filter(value -> value.directionCorrect != null).count();
+    private EvaluationEvidence loadEvaluationEvidence(Long strategyReleaseId, LocalDate tradeDate) {
+        AiPredictionEvaluationMapper.StrategyEvaluationSummary summary =
+                evaluationMapper.selectDecisionEvidenceSummary(strategyReleaseId, tradeDate);
+        List<AiPredictionEvaluationMapper.StockEvaluationSummary> stockSummaries =
+                safeList(evaluationMapper.selectDecisionEvidenceByStock(strategyReleaseId, tradeDate));
+        int total = summary == null || summary.totalCount == null ? 0 : Math.toIntExact(summary.totalCount);
+        long assessed = summary == null || summary.assessedCount == null ? 0L : summary.assessedCount;
+        long correct = summary == null || summary.correctCount == null ? 0L : summary.correctCount;
         BigDecimal overall = assessed == 0 ? null : percentage(correct, assessed);
-        Map<String, BigDecimal> byStock = evaluations.stream()
-                .filter(value -> value.stockCode != null && value.directionCorrect != null)
-                .collect(Collectors.groupingBy(value -> value.stockCode, LinkedHashMap::new,
-                        Collectors.collectingAndThen(Collectors.toList(), values -> percentage(
-                                values.stream().filter(value -> value.directionCorrect == 1).count(), values.size()))));
+        Map<String, BigDecimal> byStock = stockSummaries.stream()
+                .filter(value -> value != null && value.stockCode != null
+                        && value.totalCount != null && value.totalCount > 0)
+                .collect(Collectors.toMap(
+                        value -> value.stockCode,
+                        value -> percentage(
+                                value.correctCount == null ? 0L : value.correctCount,
+                                value.totalCount),
+                        (left, right) -> right,
+                        LinkedHashMap::new));
         BigDecimal strategy = overall == null ? new BigDecimal("0.50")
                 : overall.divide(new BigDecimal("100"), 8, RoundingMode.HALF_UP);
         return new EvaluationEvidence(total, overall, byStock, strategy);

@@ -244,7 +244,7 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
         }
         if (inputs.isEmpty()) {
             errors.addAll(sectorEvidenceWarnings);
-            return new VerificationResult(0, 0, unavailableStocks.size(), errors,
+            return new VerificationResult(unavailableStocks.size(), 0, unavailableStocks.size(), errors,
                     sha256("MATURE_EMPTY|" + tradeDate + "|" + errors));
         }
 
@@ -284,9 +284,10 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
                         evidenceVerifiedAt)));
             }
         }
+        int processed = labels.size() + unavailableStocks.size();
         int matured = (int) labels.stream().filter(label -> "MATURED".equals(label.labelStatus)).count();
-        int failed = unavailableStocks.size();
-        return new VerificationResult(inputs.size(), matured, failed, errors,
+        int failed = Math.max(0, labels.size() - matured) + unavailableStocks.size();
+        return new VerificationResult(processed, matured, failed, errors,
                 sha256("MATURE|" + tradeDate + "|" + labels.stream().map(label -> String.valueOf(label.id)).toList()
                         + "|" + errors));
     }

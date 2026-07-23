@@ -44,6 +44,7 @@ import java.util.UUID;
 public class AiResearchOperationsServiceImpl implements AiResearchOperationsService {
 
     private static final Duration OPERATION_LEASE = Duration.ofHours(12);
+    private static final Duration STALE_RUN_GRACE = Duration.ofMinutes(30);
 
     private final AiPipelineRunMapper runMapper;
     private final AiPipelineStepMapper stepMapper;
@@ -351,8 +352,25 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
                 || !Objects.equals(stored.inputFingerprint, inputFingerprint)) {
             throw new IllegalStateException("幂等键已绑定不同研究任务输入");
         }
+        recoverStaleRun(stored, now);
         recordRequest(stored.id, actorUserId, pipelineType, reason, idempotencyKey, now);
-        return stored;
+        AiPipelineRun current = runMapper.selectById(stored.id);
+        return current == null ? stored : current;
+    }
+
+    private void recoverStaleRun(AiPipelineRun run, LocalDateTime now) {
+        if (run == null || !"RUNNING".equals(run.status) || run.finishedAt != null
+                || (run.leaseUntil != null && !run.leaseUntil.isBefore(now))
+                || run.updatedAt == null
+                || run.updatedAt.isAfter(now.minus(STALE_RUN_GRACE))) {
+            return;
+        }
+        String message = "上次异步任务未正常收尾，已自动回收并允许重试";
+        String detail = message + "；任务类型=" + run.pipelineType
+                + "；运行ID=" + run.id
+                + "；最后更新时间=" + run.updatedAt;
+        runMapper.recoverStaleRunning(
+                run.id, now.minus(STALE_RUN_GRACE), now, message, detail);
     }
 
     private void recordRequest(

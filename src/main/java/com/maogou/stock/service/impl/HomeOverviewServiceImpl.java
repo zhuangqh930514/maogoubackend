@@ -33,6 +33,7 @@ public class HomeOverviewServiceImpl implements HomeOverviewService {
     private static final Logger log = LoggerFactory.getLogger(HomeOverviewServiceImpl.class);
     private static final AtomicInteger THREAD_SEQUENCE = new AtomicInteger();
     private static final long SECTION_TIMEOUT_MS = 1500;
+    private static final long BREADTH_TIMEOUT_MS = 10000;
 
     private final MarketDataService marketDataService;
     private final WatchlistService watchlistService;
@@ -66,7 +67,7 @@ public class HomeOverviewServiceImpl implements HomeOverviewService {
         CompletableFuture<List<MarketIndexResponse>> indexes = async(
                 "indexes", marketDataService::coreIndexes, List.of(), warnings);
         CompletableFuture<MarketBreadthResponse> breadth = async(
-                "breadth", marketDataService::marketBreadth, null, warnings);
+                "breadth", marketDataService::marketBreadth, null, warnings, BREADTH_TIMEOUT_MS);
         CompletableFuture<SectorHotStocksResponse> hotStocks = async(
                 "hotStocks", () -> marketDataService.marketHotStocks(10),
                 SectorHotStocksResponse.unavailable("市场热度数据暂不可用"), warnings);
@@ -93,9 +94,19 @@ public class HomeOverviewServiceImpl implements HomeOverviewService {
             T fallback,
             Map<String, String> warnings
     ) {
+        return async(section, supplier, fallback, warnings, SECTION_TIMEOUT_MS);
+    }
+
+    private <T> CompletableFuture<T> async(
+            String section,
+            Supplier<T> supplier,
+            T fallback,
+            Map<String, String> warnings,
+            long timeoutMs
+    ) {
         return CompletableFuture.supplyAsync(
                         () -> safe(section, supplier, fallback, warnings), overviewExecutor)
-                .orTimeout(SECTION_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                .orTimeout(timeoutMs, TimeUnit.MILLISECONDS)
                 .exceptionally(exception -> {
                     warnings.putIfAbsent(section, "首页数据源响应超时");
                     log.warn("home overview section timed out, section={}", section);
