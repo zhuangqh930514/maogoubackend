@@ -22,6 +22,7 @@ import com.maogou.stock.dto.market.KlinePointResponse;
 import com.maogou.stock.dto.market.NewsFlashResponse;
 import com.maogou.stock.dto.market.StockDetailResponse;
 import com.maogou.stock.dto.watchlist.WatchStockResponse;
+import com.maogou.stock.exception.FormalResearchSampleUnavailableException;
 import com.maogou.stock.infrastructure.ai.LocalAiClient;
 import com.maogou.stock.mapper.AiAnalysisReportMapper;
 import com.maogou.stock.mapper.WatchStockMapper;
@@ -472,12 +473,6 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 List.copyOf(byHorizon.values()),
                 decision,
                 promptContext);
-    }
-
-    private static final class FormalResearchSampleUnavailableException extends IllegalStateException {
-        private FormalResearchSampleUnavailableException(String message) {
-            super(message);
-        }
     }
 
     static List<AiPrediction> selectCurrentReleasePredictions(

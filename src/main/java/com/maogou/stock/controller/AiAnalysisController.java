@@ -7,8 +7,9 @@ import com.maogou.stock.dto.ai.AiAnalysisReportSummaryResponse;
 import com.maogou.stock.dto.ai.BatchAiAnalysisReportDeleteRequest;
 import com.maogou.stock.dto.ai.RunAnalysisRequest;
 import com.maogou.stock.dto.ai.RunWatchlistAnalysisRequest;
-import com.maogou.stock.dto.ai.WatchlistAnalysisResult;
+import com.maogou.stock.dto.ai.WatchlistAnalysisJobResponse;
 import com.maogou.stock.service.AiAnalysisService;
+import com.maogou.stock.service.WatchlistAnalysisJobService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -27,9 +28,14 @@ import java.util.List;
 public class AiAnalysisController {
 
     private final AiAnalysisService aiAnalysisService;
+    private final WatchlistAnalysisJobService watchlistAnalysisJobService;
 
-    public AiAnalysisController(AiAnalysisService aiAnalysisService) {
+    public AiAnalysisController(
+            AiAnalysisService aiAnalysisService,
+            WatchlistAnalysisJobService watchlistAnalysisJobService
+    ) {
         this.aiAnalysisService = aiAnalysisService;
+        this.watchlistAnalysisJobService = watchlistAnalysisJobService;
     }
 
     @GetMapping("/reports")
@@ -70,7 +76,20 @@ public class AiAnalysisController {
     }
 
     @PostMapping("/analyze-watchlist")
-    public ApiResponse<WatchlistAnalysisResult> analyzeWatchlist(@RequestBody(required = false) RunWatchlistAnalysisRequest request) {
-        return ApiResponse.ok(aiAnalysisService.analyzeWatchlist(request == null ? null : request.promptTemplateId()));
+    public ApiResponse<WatchlistAnalysisJobResponse> analyzeWatchlist(
+            @RequestBody(required = false) RunWatchlistAnalysisRequest request
+    ) {
+        return ApiResponse.ok(watchlistAnalysisJobService.submit(
+                request == null ? null : request.promptTemplateId()));
+    }
+
+    @GetMapping("/analyze-watchlist/jobs/current")
+    public ApiResponse<WatchlistAnalysisJobResponse> currentWatchlistAnalysisJob() {
+        return ApiResponse.ok(watchlistAnalysisJobService.current());
+    }
+
+    @GetMapping("/analyze-watchlist/jobs/{jobId}")
+    public ApiResponse<WatchlistAnalysisJobResponse> watchlistAnalysisJob(@PathVariable Long jobId) {
+        return ApiResponse.ok(watchlistAnalysisJobService.detail(jobId));
     }
 }

@@ -20,4 +20,18 @@ class ResearchTaskExecutorConfigTest {
             executor.shutdown();
         }
     }
+
+    @Test
+    void serializesWatchlistModelCallsAndBoundsTheQueue() {
+        ThreadPoolTaskExecutor executor = new ResearchTaskExecutorConfig().watchlistAnalysisTaskExecutor();
+        try {
+            executor.initialize();
+
+            assertThat(executor.getCorePoolSize()).isEqualTo(1);
+            assertThat(executor.getMaxPoolSize()).isEqualTo(1);
+            assertThat(executor.getThreadPoolExecutor().getQueue().remainingCapacity()).isEqualTo(20);
+        } finally {
+            executor.shutdown();
+        }
+    }
 }
