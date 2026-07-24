@@ -243,13 +243,11 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
             page = pendingLabelCandidatesPage(tradeDate, page.get(page.size() - 1), candidateLimit);
         }
         if (inputs.isEmpty()) {
-            errors.addAll(sectorEvidenceWarnings);
             return new VerificationResult(unavailableStocks.size(), 0, unavailableStocks.size(), errors,
                     sha256("MATURE_EMPTY|" + tradeDate + "|" + errors));
         }
 
         inputs = attachSectorSeries(inputs, samplesById, verifiedAt, sectorEvidenceWarnings);
-        errors.addAll(sectorEvidenceWarnings);
 
         inputs = attachTradingStates(inputs, calendars);
 
@@ -287,9 +285,9 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
         int processed = labels.size() + unavailableStocks.size();
         int matured = (int) labels.stream().filter(label -> "MATURED".equals(label.labelStatus)).count();
         int failed = Math.max(0, labels.size() - matured) + unavailableStocks.size();
-        return new VerificationResult(processed, matured, failed, errors,
+        return new VerificationResult(processed, matured, failed, errors, List.copyOf(sectorEvidenceWarnings),
                 sha256("MATURE|" + tradeDate + "|" + labels.stream().map(label -> String.valueOf(label.id)).toList()
-                        + "|" + errors));
+                        + "|" + errors + "|" + sectorEvidenceWarnings));
     }
 
     private List<AiSampleLabelService.SampleInput> attachTradingStates(

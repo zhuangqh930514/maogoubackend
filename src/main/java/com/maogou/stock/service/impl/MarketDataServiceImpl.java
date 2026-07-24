@@ -221,9 +221,21 @@ public class MarketDataServiceImpl implements MarketDataService {
         ResearchSourceResult<KlineSeriesSnapshot> result = researchMarketDataClient.fetchKlineAt(
                 normalizedCode, normalizedPeriod, size, asOfTime);
         if (!result.formalReady()) {
-            throw new IllegalStateException("正式研究 K 线不可用：" + result.qualityStatus() + "，" + result.message());
+            throw new IllegalStateException("正式研究 K 线不可用：" + result.qualityStatus()
+                    + "，" + result.message() + "；" + providerAttemptSummary(result));
         }
         return result.data();
+    }
+
+    private static String providerAttemptSummary(ResearchSourceResult<?> result) {
+        if (result == null || result.attempts() == null || result.attempts().isEmpty()) {
+            return "来源尝试：无可用来源，可能仍处于熔断冷却期";
+        }
+        return "来源尝试：" + result.attempts().stream().map(attempt -> {
+            String reason = attempt.errorMessage() == null || attempt.errorMessage().isBlank()
+                    ? attempt.status().name() : attempt.errorMessage();
+            return attempt.providerCode() + "/" + attempt.endpointType() + "：" + reason;
+        }).reduce((left, right) -> left + "；" + right).orElse("无");
     }
 
     @Override

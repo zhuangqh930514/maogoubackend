@@ -80,6 +80,7 @@ public class ResilientMarketDataClient implements ResearchMarketDataClient {
         String key = "KLINE|" + normalize(symbol) + "|" + normalize(period) + "|" + limit
                 + "|" + asOfTime.toLocalDate() + "|" + phase;
         LocalDateTime now = LocalDateTime.now(clock);
+        String healthEndpoint = klineHealthEndpoint(symbol);
         List<ResearchSourceResult.ProviderAttempt> attempts = new ArrayList<>();
         List<KlineSeriesSnapshot> successes = new ArrayList<>();
         for (ResearchMarketDataProvider provider : availableProviders(
@@ -88,16 +89,16 @@ public class ResilientMarketDataClient implements ResearchMarketDataClient {
                 KlineSeriesSnapshot series = provider.fetchKlineAt(symbol, period, limit, asOfTime);
                 validateSeries(series, symbol, asOfTime);
                 String fingerprint = series.sourceFingerprint();
-                healthRegistry.recordSuccess(provider.providerCode(), ResearchMarketDataProvider.ENDPOINT_KLINE,
+                healthRegistry.recordSuccess(provider.providerCode(), healthEndpoint,
                         fingerprint, now);
-                attempts.add(attempt(provider, ResearchMarketDataProvider.ENDPOINT_KLINE,
+                attempts.add(attempt(provider, healthEndpoint,
                         ResearchSourceStatus.REALTIME, now, fingerprint, null));
                 successes.add(series);
             } catch (RuntimeException exception) {
                 String message = rootMessage(exception);
-                healthRegistry.recordFailure(provider.providerCode(), ResearchMarketDataProvider.ENDPOINT_KLINE,
+                healthRegistry.recordFailure(provider.providerCode(), healthEndpoint,
                         message, now);
-                attempts.add(attempt(provider, ResearchMarketDataProvider.ENDPOINT_KLINE,
+                attempts.add(attempt(provider, healthEndpoint,
                         ResearchSourceStatus.UNAVAILABLE, now, null, message));
             }
         }
@@ -177,10 +178,35 @@ public class ResilientMarketDataClient implements ResearchMarketDataClient {
             String symbol,
             LocalDateTime now
     ) {
-        return providers.stream()
+        List<ResearchMarketDataProvider> supported = providers.stream()
                 .filter(provider -> provider.supports(endpointType, symbol))
-                .filter(provider -> !healthRegistry.isCoolingDown(provider.providerCode(), endpointType, now))
                 .toList();
+        String healthEndpoint = ResearchMarketDataProvider.ENDPOINT_KLINE.equals(endpointType)
+                ? klineHealthEndpoint(symbol) : endpointType;
+        List<ResearchMarketDataProvider> available = supported.stream()
+                .filter(provider -> !healthRegistry.isCoolingDown(
+                        provider.providerCode(), healthEndpoint, now))
+                .toList();
+        if (!available.isEmpty() || supported.isEmpty() || industrySymbol(symbol)) {
+            return available;
+        }
+        // A formal stock snapshot must make at least one real request. Otherwise two
+        // cooling providers can turn healthy securities into synthetic failures.
+        return supported.stream()
+                .filter(provider -> "SINA".equalsIgnoreCase(provider.providerCode()))
+                .findFirst()
+                .map(List::of)
+                .orElseGet(() -> List.of(supported.get(supported.size() - 1)));
+    }
+
+    private static String klineHealthEndpoint(String symbol) {
+        return industrySymbol(symbol)
+                ? ResearchMarketDataProvider.ENDPOINT_INDUSTRY_KLINE
+                : ResearchMarketDataProvider.ENDPOINT_KLINE;
+    }
+
+    private static boolean industrySymbol(String symbol) {
+        return normalize(symbol).startsWith("BK");
     }
 
     @SuppressWarnings("unchecked")

@@ -219,6 +219,57 @@ class GlobalDailyResearchExecutorTest {
     }
 
     @Test
+    void excludesSourceGateFailuresFromSampleStepCounts() throws Exception {
+        Fixture fixture = fixture();
+        AiDataBatch batch = batch();
+        batch.qualityStatus = "PARTIAL";
+        when(fixture.dataBatchMapper.selectById(55L)).thenReturn(batch);
+        AiResearchUniverseItem readyItem = item(1L, "600519", "WATCHLIST:USER:5");
+        AiResearchUniverseItem unavailableItem = item(2L, "688059", "SYSTEM_BASELINE");
+        when(fixture.itemMapper.selectList(any())).thenReturn(List.of(readyItem, unavailableItem));
+        AiSourceObservation ready = observation("600519", "READY");
+        ready.payloadJson = fixture.objectMapper.writeValueAsString(detail("600519", STARTED_AT));
+        when(fixture.observationMapper.selectList(any())).thenReturn(List.of(
+                ready, observation("688059", "UNAVAILABLE")));
+        AiSample sample = new AiSample();
+        sample.id = 801L;
+        sample.stockCode = "600519";
+        when(fixture.snapshotService.createOrGetSnapshot(any())).thenReturn(sample);
+
+        AiGlobalDailyResearchExecutor.StepOutcome outcome = fixture.executor.execute(
+                "BUILD_SAMPLES", context(Map.of(
+                        "FETCH_SOURCE_DATA", "{\"universeSnapshotId\":91,\"dataBatchId\":55}")));
+
+        assertThat(outcome.status()).isEqualTo("SUCCESS");
+        assertThat(outcome.processedCount()).isEqualTo(1);
+        assertThat(outcome.successCount()).isEqualTo(1);
+        assertThat(outcome.failedCount()).isZero();
+        assertThat(outcome.checkpointJson())
+                .contains("\"sourceExcludedCount\":1")
+                .contains("\"sourceExcludedStockCodes\":[\"688059\"]");
+    }
+
+    @Test
+    void retainsSectorEvidenceWarningsWithoutMarkingLabelStepPartial() {
+        Fixture fixture = fixture();
+        when(fixture.labelCoordinator.matureSampleLabels(TRADE_DATE, STARTED_AT))
+                .thenReturn(new AiLabelVerificationCoordinator.VerificationResult(
+                        12, 12, 0, List.of(),
+                        List.of("600519 [2026-07-10]: 行业基准行情不可用"),
+                        "label-fingerprint"));
+
+        AiGlobalDailyResearchExecutor.StepOutcome outcome =
+                fixture.executor.execute("MATURE_SAMPLE_LABELS", context(Map.of()));
+
+        assertThat(outcome.status()).isEqualTo("SUCCESS");
+        assertThat(outcome.failedCount()).isZero();
+        assertThat(outcome.errors()).isEmpty();
+        assertThat(outcome.checkpointJson())
+                .contains("\"dataWarningCount\":1")
+                .contains("行业基准行情不可用");
+    }
+
+    @Test
     void retryOfAnExistingBatchReusesPersistedEvidenceWithoutRefetchingLateData() {
         Fixture fixture = fixture();
         when(fixture.snapshotMapper.selectById(91L)).thenReturn(snapshot());

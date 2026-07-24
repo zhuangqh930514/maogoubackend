@@ -280,7 +280,8 @@ class AiLabelVerificationCoordinatorImplTest {
                 AiSampleLabelService.LabelBatch.class);
         verify(fixture.labelService).matureAndStore(captor.capture());
         assertThat(captor.getValue().samples().get(0).sectorSeries()).isNull();
-        assertThat(result.errors()).anySatisfy(message -> assertThat(message)
+        assertThat(result.errors()).isEmpty();
+        assertThat(result.warnings()).anySatisfy(message -> assertThat(message)
                 .contains("600519")
                 .contains("已有行业归属")
                 .contains("行业基准行情不可用"));
@@ -318,7 +319,8 @@ class AiLabelVerificationCoordinatorImplTest {
                 AiSampleLabelService.LabelBatch.class);
         verify(fixture.labelService).matureAndStore(captor.capture());
         assertThat(captor.getValue().samples().get(0).sectorSeries()).isNull();
-        assertThat(result.errors()).anySatisfy(message -> assertThat(message)
+        assertThat(result.errors()).isEmpty();
+        assertThat(result.warnings()).anySatisfy(message -> assertThat(message)
                 .contains("行业基准证据来源、指纹或时点不可验证"));
     }
 
@@ -394,7 +396,8 @@ class AiLabelVerificationCoordinatorImplTest {
         AiSampleLabelService.SampleInput input = captor.getValue().samples().get(0);
         assertThat(input.sectorSeries()).isNull();
         assertThat(input.sectorMembershipFingerprint()).isEqualTo("membership-archive-v1");
-        assertThat(result.errors()).anySatisfy(message -> assertThat(message)
+        assertThat(result.errors()).isEmpty();
+        assertThat(result.warnings()).anySatisfy(message -> assertThat(message)
                 .contains("历史行业日线不可用"));
     }
 

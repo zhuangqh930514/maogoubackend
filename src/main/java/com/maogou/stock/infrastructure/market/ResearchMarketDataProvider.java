@@ -10,6 +10,7 @@ import java.util.List;
 public interface ResearchMarketDataProvider {
 
     String ENDPOINT_KLINE = "KLINE";
+    String ENDPOINT_INDUSTRY_KLINE = "INDUSTRY_KLINE";
     String ENDPOINT_INDUSTRY = "INDUSTRY_MEMBERSHIP";
     String ENDPOINT_NEWS = "NEWS";
 

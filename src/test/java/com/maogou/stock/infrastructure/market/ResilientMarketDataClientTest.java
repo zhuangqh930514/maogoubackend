@@ -107,6 +107,45 @@ class ResilientMarketDataClientTest {
                 "东方财富 K 线通道失败；根因：Unexpected end of file", AS_OF);
     }
 
+    @Test
+    void isolatesIndustryKlineCooldownFromStockKlineHealth() {
+        StubProvider primary = new StubProvider("EASTMONEY");
+        primary.series = series("BK1036", "EASTMONEY", "10");
+        MarketSourceHealthRegistry health = mock(MarketSourceHealthRegistry.class);
+        when(health.isCoolingDown("EASTMONEY", ResearchMarketDataProvider.ENDPOINT_KLINE, AS_OF))
+                .thenReturn(true);
+        ResilientMarketDataClient client = client(List.of(primary), health);
+
+        ResearchSourceResult<KlineSeriesSnapshot> result =
+                client.fetchKlineAt("BK1036", "day", 60, AS_OF);
+
+        assertThat(result.formalReady()).isTrue();
+        assertThat(primary.calls.get()).isEqualTo(1);
+        verify(health).isCoolingDown(
+                "EASTMONEY", ResearchMarketDataProvider.ENDPOINT_INDUSTRY_KLINE, AS_OF);
+        verify(health).recordSuccess(
+                "EASTMONEY", ResearchMarketDataProvider.ENDPOINT_INDUSTRY_KLINE,
+                result.responseFingerprint(), AS_OF);
+    }
+
+    @Test
+    void probesSinaWhenEveryStockProviderIsCoolingDown() {
+        StubProvider primary = new StubProvider("EASTMONEY");
+        primary.series = series("600519", "EASTMONEY", "10");
+        StubProvider backup = new StubProvider("SINA");
+        backup.series = series("600519", "SINA", "10");
+        MarketSourceHealthRegistry health = mock(MarketSourceHealthRegistry.class);
+        when(health.isCoolingDown(anyString(), anyString(), any())).thenReturn(true);
+        ResilientMarketDataClient client = client(List.of(primary, backup), health);
+
+        ResearchSourceResult<KlineSeriesSnapshot> result =
+                client.fetchKlineAt("600519", "day", 60, AS_OF);
+
+        assertThat(result.formalReady()).isTrue();
+        assertThat(primary.calls.get()).isZero();
+        assertThat(backup.calls.get()).isEqualTo(1);
+    }
+
     private static ResilientMarketDataClient client(
             List<ResearchMarketDataProvider> providers,
             MarketSourceHealthRegistry health

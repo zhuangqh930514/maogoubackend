@@ -246,7 +246,7 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
                         sectorSeries.providerCode(), sectorSeries.sourceUpdatedAt(), null,
                         fetchStartedAt, sectorSeries.data(),
                         sectorSeries.formalReady() ? "READY" : sectorSeries.qualityStatus(),
-                        sectorSeries.message(), sectorSeries.responseFingerprint()));
+                        sourceFailureMessage(sectorSeries), sectorSeries.responseFingerprint()));
             } else {
                 storeObservation(sourceObservation(
                         batch, item.stockCode, "INDUSTRY_BENCHMARK", "KLINE", "UNAVAILABLE",
@@ -305,8 +305,8 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         checkpoint.put("benchmarkReady", benchmarkReady);
         checkpoint.put("newsReady", newsBatch.available());
         checkpoint.put("fetchedAt", fetchStartedAt);
-        return success("FETCH_SOURCE_DATA", seenCodes.size(), success,
-                Math.max(0, seenCodes.size() - success), checkpoint, batch.id, errors);
+        return success("FETCH_SOURCE_DATA", seenCodes.size(), seenCodes.size(),
+                0, checkpoint, batch.id, errors);
     }
 
     private void persistIndustryBars(
@@ -503,8 +503,8 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         checkpoint.put("readyCount", ready);
         checkpoint.put("benchmarkReady", benchmarkReady);
         checkpoint.put("reusedPersistedEvidence", true);
-        return success("FETCH_SOURCE_DATA", expectedCodes.size(), Math.toIntExact(ready),
-                Math.max(0, expectedCodes.size() - Math.toIntExact(ready)),
+        return success("FETCH_SOURCE_DATA", expectedCodes.size(), expectedCodes.size(),
+                0,
                 checkpoint, batch.id, errors);
     }
 
@@ -617,14 +617,19 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
                 sourceIndex.get(observationKey("MARKET_BENCHMARK", null)), KlineSeriesSnapshot.class);
         String marketRegime = marketRegime(benchmarkSeries);
         List<AiResearchUniverseItem> items = includedItems(batch.universeSnapshotId);
+        List<AiResearchUniverseItem> readyItems = items.stream()
+                .filter(item -> {
+                    AiSourceObservation observation = observations.get(item.stockCode);
+                    return observation != null && "READY".equals(observation.qualityStatus);
+                })
+                .toList();
+        Set<String> readyStockCodes = readyItems.stream()
+                .map(item -> item.stockCode)
+                .collect(java.util.stream.Collectors.toSet());
         List<AiSample> samples = new ArrayList<>();
         List<String> errors = new ArrayList<>();
-        for (AiResearchUniverseItem item : items) {
+        for (AiResearchUniverseItem item : readyItems) {
             AiSourceObservation observation = observations.get(item.stockCode);
-            if (observation == null || !"READY".equals(observation.qualityStatus)) {
-                errors.add(item.stockCode + ": 缺少 READY 来源快照");
-                continue;
-            }
             try {
                 StockDetailResponse detail = objectMapper.readValue(
                         observation.payloadJson, StockDetailResponse.class);
@@ -647,8 +652,13 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         checkpoint.put("universeSnapshotId", batch.universeSnapshotId);
         checkpoint.put("dataBatchId", batchId);
         checkpoint.put("sampleIds", samples.stream().map(sample -> sample.id).toList());
-        return success("BUILD_SAMPLES", items.size(), samples.size(),
-                Math.max(0, items.size() - samples.size()), checkpoint, batchId, errors);
+        checkpoint.put("sourceExcludedCount", Math.max(0, items.size() - readyItems.size()));
+        checkpoint.put("sourceExcludedStockCodes", items.stream()
+                .filter(item -> !readyStockCodes.contains(item.stockCode))
+                .map(item -> item.stockCode)
+                .toList());
+        return success("BUILD_SAMPLES", readyItems.size(), samples.size(),
+                Math.max(0, readyItems.size() - samples.size()), checkpoint, batchId, errors);
     }
 
     private StepOutcome matureSampleLabels(PipelineContext context) {
@@ -661,10 +671,12 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
                         ? labelCoordinator.matureSampleLabels(context.tradeDate(), context.startedAt())
                         : labelCoordinator.matureSampleLabels(
                                 context.tradeDate(), context.startedAt(), candidateLimit);
-        Map<String, Object> checkpoint = Map.of(
-                "maturedCount", result.successCount(),
-                "failedCount", result.failedCount(),
-                "labelFingerprint", result.outputFingerprint());
+        Map<String, Object> checkpoint = new LinkedHashMap<>();
+        checkpoint.put("maturedCount", result.successCount());
+        checkpoint.put("failedCount", result.failedCount());
+        checkpoint.put("dataWarningCount", result.warnings().size());
+        checkpoint.put("dataWarningSummary", PipelineMessageFormatter.summary(result.warnings()));
+        checkpoint.put("labelFingerprint", result.outputFingerprint());
         return success(stepKey, result.processedCount(), result.successCount(),
                 result.failedCount(), checkpoint, null, result.errors());
     }
@@ -1026,6 +1038,20 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         return new StepOutcome(status, processed, succeeded, failed, checkpointJson,
                 fingerprint(stepKey, checkpointJson, processed, succeeded, failed),
                 errors, dataBatchId, null);
+    }
+
+    private static String sourceFailureMessage(ResearchSourceResult<?> result) {
+        if (result == null) {
+            return "研究行情结果为空";
+        }
+        List<String> attempts = result.attempts().stream().map(attempt -> {
+            String reason = attempt.errorMessage() == null || attempt.errorMessage().isBlank()
+                    ? attempt.status().name() : attempt.errorMessage();
+            return attempt.providerCode() + "/" + attempt.endpointType() + "：" + reason;
+        }).toList();
+        return result.message() + (attempts.isEmpty()
+                ? "；没有可执行的真实来源请求，来源可能处于熔断冷却期"
+                : "；" + String.join("；", attempts));
     }
 
     private String json(Object value) {

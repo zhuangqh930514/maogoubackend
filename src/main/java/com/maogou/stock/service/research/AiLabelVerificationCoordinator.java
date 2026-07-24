@@ -27,10 +27,22 @@ public interface AiLabelVerificationCoordinator {
             int successCount,
             int failedCount,
             List<String> errors,
+            List<String> warnings,
             String outputFingerprint
     ) {
         public VerificationResult {
             errors = errors == null ? List.of() : List.copyOf(errors);
+            warnings = warnings == null ? List.of() : List.copyOf(warnings);
+        }
+
+        public VerificationResult(
+                int processedCount,
+                int successCount,
+                int failedCount,
+                List<String> errors,
+                String outputFingerprint
+        ) {
+            this(processedCount, successCount, failedCount, errors, List.of(), outputFingerprint);
         }
     }
 }
