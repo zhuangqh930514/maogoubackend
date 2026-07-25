@@ -61,9 +61,11 @@ class AiDailyReportGenerationServiceImplTest {
         when(reportMapper.selectLatestSuccessfulForDailyDecision(USER_ID, TRADE_DATE, List.of(
                 "000006", "000007", "000001", "000002", "000003", "000004", "000005")))
                 .thenReturn(List.of(reusable));
-        when(analysisService.analyzeStockForTradeDate(anyString(), eq(false), eq(null), eq(null), eq(TRADE_DATE)))
+        when(analysisService.analyzeStockForFormalSample(anyString(), eq(false), eq(null), eq(null), eq(TRADE_DATE),
+                org.mockito.ArgumentMatchers.anyLong(), eq(RELEASE_ID)))
                 .thenReturn(response("SUCCESS", null));
-        when(analysisService.analyzeStockForTradeDate(eq("000007"), eq(false), eq(null), eq(null), eq(TRADE_DATE)))
+        when(analysisService.analyzeStockForFormalSample(eq("000007"), eq(false), eq(null), eq(null), eq(TRADE_DATE),
+                org.mockito.ArgumentMatchers.anyLong(), eq(RELEASE_ID)))
                 .thenReturn(response("FAILED", "模型接口触发限流，系统将在约 30 秒后自动重试。模型=qwen"));
 
         AiDailyReportGenerationService.GenerationResult result = service.generate(
@@ -78,8 +80,10 @@ class AiDailyReportGenerationServiceImplTest {
             assertThat(issue.reason()).contains("步骤=GENERATE_STOCK_REPORTS", "数据提供方=本地/第三方大模型", "限流");
         });
         assertThat(result.skipped()).isEmpty();
-        verify(analysisService, times(1)).analyzeStockForTradeDate(eq("000006"), eq(false), eq(null), eq(null), eq(TRADE_DATE));
-        verify(analysisService, times(1)).analyzeStockForTradeDate(eq("000002"), eq(false), eq(null), eq(null), eq(TRADE_DATE));
+        verify(analysisService, times(1)).analyzeStockForFormalSample(eq("000006"), eq(false), eq(null), eq(null),
+                eq(TRADE_DATE), eq(6L), eq(RELEASE_ID));
+        verify(analysisService, times(1)).analyzeStockForFormalSample(eq("000002"), eq(false), eq(null), eq(null),
+                eq(TRADE_DATE), eq(2L), eq(RELEASE_ID));
     }
 
     private static List<WatchStock> watches(List<String> codes) {

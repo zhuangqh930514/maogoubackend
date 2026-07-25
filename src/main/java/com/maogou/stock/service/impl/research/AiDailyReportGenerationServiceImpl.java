@@ -127,7 +127,8 @@ public class AiDailyReportGenerationServiceImpl implements AiDailyReportGenerati
             }
             try {
                 AiAnalysisReportResponse response = AuthContext.callAs(request.userId(), () ->
-                        analysisService.analyzeStockForTradeDate(stockCode, false, null, null, request.tradeDate()));
+                        analysisService.analyzeStockForFormalSample(stockCode, false, null, null,
+                                request.tradeDate(), candidate.sample().id, request.strategyReleaseId()));
                 if (response != null && "SUCCESS".equals(response.status())) {
                     generated++;
                 } else {

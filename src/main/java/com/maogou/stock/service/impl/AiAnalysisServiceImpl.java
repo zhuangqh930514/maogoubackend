@@ -351,7 +351,8 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
 
     @Override
     public AiAnalysisReportResponse analyzeStock(String code, boolean forceRefresh, Long promptTemplateId, Long targetReportId) {
-        return analyzeStockInternal(code, forceRefresh, promptTemplateId, targetReportId, LocalDate.now(), false);
+        return analyzeStockInternal(code, forceRefresh, promptTemplateId, targetReportId,
+                LocalDate.now(), false, null, null);
     }
 
     @Override
@@ -363,7 +364,23 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             LocalDate tradeDate
     ) {
         return analyzeStockInternal(code, forceRefresh, promptTemplateId, targetReportId,
-                Objects.requireNonNull(tradeDate, "tradeDate"), true);
+                Objects.requireNonNull(tradeDate, "tradeDate"), true, null, null);
+    }
+
+    @Override
+    public AiAnalysisReportResponse analyzeStockForFormalSample(
+            String code,
+            boolean forceRefresh,
+            Long promptTemplateId,
+            Long targetReportId,
+            LocalDate tradeDate,
+            Long sampleId,
+            Long strategyReleaseId
+    ) {
+        return analyzeStockInternal(code, forceRefresh, promptTemplateId, targetReportId,
+                Objects.requireNonNull(tradeDate, "tradeDate"), true,
+                Objects.requireNonNull(sampleId, "sampleId"),
+                Objects.requireNonNull(strategyReleaseId, "strategyReleaseId"));
     }
 
     private AiAnalysisReportResponse analyzeStockInternal(
@@ -372,12 +389,15 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             Long promptTemplateId,
             Long targetReportId,
             LocalDate tradeDate,
-            boolean pointInTime
+            boolean pointInTime,
+            Long requiredSampleId,
+            Long requiredStrategyReleaseId
     ) {
         Long userId = AuthContext.currentUserIdOrDefault();
         Long normalizedPromptTemplateId = normalizePromptTemplateId(promptTemplateId);
         validateTargetReport(userId, targetReportId, code);
-        FormalAnalysisContext formalContext = pointInTime ? loadFormalContext(code, tradeDate) : null;
+        FormalAnalysisContext formalContext = pointInTime
+                ? loadFormalContext(code, tradeDate, requiredSampleId, requiredStrategyReleaseId) : null;
         StockDetailResponse detail = pointInTime
                 ? formalSnapshotDetail(formalContext.sample(), objectMapper)
                 : ExternalIoTransactionGuard.call(
@@ -386,7 +406,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 ? validateFormalSnapshotFreshness(detail, formalContext.sample(), tradeDate)
                 : validateAnalysisFreshness(detail);
         if (formalContext == null) {
-            formalContext = loadFormalContext(detail.quote().code(), tradeDate);
+            formalContext = loadFormalContext(detail.quote().code(), tradeDate, null, null);
         }
         if (!forceRefresh) {
             AiAnalysisReport reusable = reusableReport(
@@ -522,13 +542,25 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         }
     }
 
-    private FormalAnalysisContext loadFormalContext(String stockCode, LocalDate tradeDate) {
-        AiSample sample = sampleMapper.selectLatestForAnalysis(stockCode, tradeDate);
+    private FormalAnalysisContext loadFormalContext(
+            String stockCode,
+            LocalDate tradeDate,
+            Long requiredSampleId,
+            Long requiredStrategyReleaseId
+    ) {
+        AiSample sample = requiredSampleId == null
+                ? sampleMapper.selectLatestForAnalysis(stockCode, tradeDate)
+                : sampleMapper.selectById(requiredSampleId);
         if (sample == null || sample.id == null) {
             throw new FormalResearchSampleUnavailableException("该股票尚无正式收盘研究样本，请等待收盘研究流水线完成");
         }
-        AiStrategyRelease release = strategyReleaseMapper.selectGlobalActiveChampion(
-                AiResearchContract.SYSTEM_UNIVERSE_CODE, AiResearchContract.MODEL_FAMILY);
+        if (!Objects.equals(sample.stockCode, stockCode) || !Objects.equals(sample.tradeDate, tradeDate)) {
+            throw new FormalResearchSampleUnavailableException("正式研究样本与股票或交易日不一致，拒绝生成不可追溯报告");
+        }
+        AiStrategyRelease release = requiredStrategyReleaseId == null
+                ? strategyReleaseMapper.selectGlobalActiveChampion(
+                        AiResearchContract.SYSTEM_UNIVERSE_CODE, AiResearchContract.MODEL_FAMILY)
+                : strategyReleaseMapper.selectById(requiredStrategyReleaseId);
         if (release == null || release.id == null) {
             throw new IllegalStateException("正式 Champion 策略不可用，无法生成可追溯报告");
         }
@@ -1031,8 +1063,9 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             throw new FormalResearchSampleUnavailableException("正式研究样本缺少报告交易日收盘 K 线：" + tradeDate);
         }
         LocalDateTime snapshotAt = sample.asOfTime == null ? detail.quote().fetchedAt() : sample.asOfTime;
-        if (snapshotAt == null || snapshotAt.isAfter(tradeDate.atTime(16, 0))) {
-            throw new FormalResearchSampleUnavailableException("正式研究样本时点不符合收盘报告要求");
+        if (snapshotAt == null || !tradeDate.equals(snapshotAt.toLocalDate())) {
+            throw new FormalResearchSampleUnavailableException("正式研究样本时点不符合收盘报告要求：sampleId="
+                    + sample.id + "，asOf=" + snapshotAt + "，tradeDate=" + tradeDate);
         }
         return new AnalysisFreshness(source, snapshotAt, latestKlineDate, "历史样本不提供盘中分时", "正式收盘样本");
     }

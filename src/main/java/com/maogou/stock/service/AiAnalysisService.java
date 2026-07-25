@@ -31,5 +31,17 @@ public interface AiAnalysisService {
         return analyzeStock(code, forceRefresh, promptTemplateId, targetReportId);
     }
 
+    default AiAnalysisReportResponse analyzeStockForFormalSample(
+            String code,
+            boolean forceRefresh,
+            Long promptTemplateId,
+            Long targetReportId,
+            LocalDate tradeDate,
+            Long sampleId,
+            Long strategyReleaseId
+    ) {
+        return analyzeStockForTradeDate(code, forceRefresh, promptTemplateId, targetReportId, tradeDate);
+    }
+
     WatchlistAnalysisResult analyzeWatchlist(Long promptTemplateId);
 }

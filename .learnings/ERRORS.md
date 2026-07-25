@@ -233,3 +233,27 @@ Run full Mockito class-mocking tests with the supported Java 17 toolchain or upg
 - Related Files: `src/test/java/com/maogou/stock/service/impl/AiAnalysisServiceImplHistoricalSnapshotTest.java`
 
 ---
+
+## [ERR-20260725-019] release-temp-artifact-content-mismatch
+
+**Logged**: 2026-07-25T20:05:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: infra
+
+### Summary
+A reused production temporary JAR path retained content from the previous release, so SHA-256 verification rejected the deployment.
+
+### Error
+```
+maogou-stock-backend-0.1.0.jar failed verification -- update retained
+```
+
+### Suggested Fix
+Upload each backend release to a commit-qualified temporary filename and compare hashes before replacing the live artifact.
+
+### Metadata
+- Reproducible: yes
+- Related Files: `target/maogou-stock-backend-0.1.0.jar`
+
+---
