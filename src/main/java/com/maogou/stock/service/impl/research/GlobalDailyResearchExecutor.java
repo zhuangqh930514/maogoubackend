@@ -182,7 +182,7 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
                 snapshotId, context.tradeDate(), "AFTER_CLOSE", fetchStartedAt,
                 batchIdempotencyKey(context));
         List<AiSourceObservation> existingObservations = observations(batch.id);
-        if (!existingObservations.isEmpty()) {
+        if (!existingObservations.isEmpty() && hasCompleteCoreEvidence(items, existingObservations)) {
             return resumeExistingSourceData(batch, items, existingObservations);
         }
 
@@ -508,6 +508,28 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         return success("FETCH_SOURCE_DATA", expectedCodes.size(), expectedCodes.size(),
                 0,
                 checkpoint, batch.id, errors);
+    }
+
+    private static boolean hasCompleteCoreEvidence(
+            List<AiResearchUniverseItem> items,
+            List<AiSourceObservation> observations
+    ) {
+        Map<String, AiSourceObservation> index = new LinkedHashMap<>();
+        (observations == null ? List.<AiSourceObservation>of() : observations).stream()
+                .sorted(Comparator.comparing((AiSourceObservation value) -> value.fetchedAt,
+                        Comparator.nullsLast(Comparator.reverseOrder())))
+                .forEach(observation -> index.putIfAbsent(
+                        observationKey(observation.sourceType, observation.stockCode), observation));
+        AiSourceObservation benchmark = index.get(observationKey("MARKET_BENCHMARK", null));
+        if (benchmark == null || !"READY".equals(benchmark.qualityStatus)) {
+            return false;
+        }
+        return (items == null ? List.<AiResearchUniverseItem>of() : items).stream()
+                .map(item -> item.stockCode).filter(Objects::nonNull).distinct()
+                .allMatch(code -> {
+                    AiSourceObservation observation = index.get(observationKey("STOCK_DAILY_SNAPSHOT", code));
+                    return observation != null && "READY".equals(observation.qualityStatus);
+                });
     }
 
     private StepOutcome waitDataReady(PipelineContext context) {
