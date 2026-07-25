@@ -191,7 +191,7 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         storeObservation(sourceObservation(
                 batch, null, "MARKET_BENCHMARK", "KLINE", benchmark.providerCode(),
                 benchmark.sourceUpdatedAt(), null, fetchStartedAt, benchmark.data(),
-                benchmark.formalReady() ? "READY" : benchmark.qualityStatus(), benchmark.message(),
+                benchmark.formalReady() ? "READY" : benchmark.qualityStatus(), sourceFailureMessage(benchmark),
                 benchmark.responseFingerprint()));
         boolean benchmarkReady = benchmark.formalReady()
                 && latestTradeDate(benchmark.data()).filter(context.tradeDate()::equals).isPresent();
@@ -208,7 +208,7 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         int success = 0;
         List<String> errors = new ArrayList<>();
         if (!benchmarkReady) {
-            errors.add("市场基准数据不可用：" + benchmark.message());
+            errors.add("市场基准数据不可用：" + sourceFailureMessage(benchmark));
         }
         Set<String> seenCodes = new LinkedHashSet<>();
         Map<String, ResearchSourceResult<KlineSeriesSnapshot>> sectorSeriesByIndustry = new LinkedHashMap<>();
