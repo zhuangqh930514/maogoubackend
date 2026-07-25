@@ -19,4 +19,14 @@ class AiDailyDecisionPlanSchemaContractTest {
             assertThat(schema).contains("uk_daily_decision_plan_item_horizon");
         }
     }
+
+    @Test
+    void evidenceScopeMigrationUsesMySqlCompatibleInformationSchemaGuard() throws Exception {
+        String migration = Files.readString(Path.of("src/main/resources/db/20260725_decision_evidence_scope.sql"));
+
+        assertThat(migration).contains("ensure_daily_decision_evidence_scope");
+        assertThat(migration).contains("information_schema.columns");
+        assertThat(migration).contains("ADD COLUMN evidence_scope");
+        assertThat(migration).doesNotContain("ADD COLUMN IF NOT EXISTS");
+    }
 }
