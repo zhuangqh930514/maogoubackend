@@ -568,7 +568,24 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         checkpoint.put("missingStockCodes", missing);
         checkpoint.put("missingStockDetails", missingDetails);
         checkpoint.put("sourceRetryExhausted", context.attemptNo() >= MAX_SOURCE_RETRIES);
+        boolean canReleasePartialEvidence = canReleasePartialEvidence(
+                expected, ready, benchmarkReady, missing, latest);
+        checkpoint.put("partialEvidenceReleased", canReleasePartialEvidence);
         if (expected == 0 || ready < expected || !benchmarkReady) {
+            if (canReleasePartialEvidence) {
+                batch.status = "PARTIAL_READY";
+                batch.sourceStatus = "PARTIAL";
+                batch.qualityStatus = "PARTIAL";
+                batch.klineAsOf = context.tradeDate();
+                batch.successCount = ready;
+                batch.failedCount = expected - ready;
+                batch.completedAt = LocalDateTime.now().truncatedTo(ChronoUnit.MILLIS);
+                batch.errorMessage = "使用 " + ready + "/" + expected
+                        + " 只真实完整股票继续研究；未纳入：" + String.join("；", missingDetails);
+                dataBatchMapper.updateById(batch);
+                return success("WAIT_DATA_READY", expected, ready, expected - ready,
+                        checkpoint, batchId, List.of(batch.errorMessage));
+            }
             if (context.attemptNo() >= MAX_SOURCE_RETRIES) {
                 if (expected == 0) {
                     throw new IllegalStateException("数据源重试已达 " + MAX_SOURCE_RETRIES + " 次：研究股票池为空");
@@ -627,6 +644,30 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         }
         dataBatchMapper.updateById(batch);
         return success("WAIT_DATA_READY", expected, ready, 0, checkpoint, batchId, List.of());
+    }
+
+    /**
+     * A partial daily result is only valid when the market benchmark and a non-empty stock subset
+     * are formal data. Each omitted stock must have a persisted source failure, so transient or
+     * unobserved gaps remain retryable instead of being silently discarded.
+     */
+    private static boolean canReleasePartialEvidence(
+            int expected,
+            int ready,
+            boolean benchmarkReady,
+            List<String> missing,
+            Map<String, AiSourceObservation> latest
+    ) {
+        if (expected <= 0 || ready <= 0 || ready >= expected || !benchmarkReady || missing.isEmpty()) {
+            return false;
+        }
+        return missing.stream().allMatch(code -> {
+            AiSourceObservation observation = latest.get(code);
+            return observation != null
+                    && "UNAVAILABLE".equals(observation.qualityStatus)
+                    && observation.providerCode != null && !observation.providerCode.isBlank()
+                    && observation.missingReason != null && !observation.missingReason.isBlank();
+        });
     }
 
     private StepOutcome buildSamples(PipelineContext context) {

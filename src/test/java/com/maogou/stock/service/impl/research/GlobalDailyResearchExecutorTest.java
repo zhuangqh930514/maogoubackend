@@ -180,7 +180,7 @@ class GlobalDailyResearchExecutorTest {
     }
 
     @Test
-    void exhaustedSourceRetriesReleaseOnlyTheReadySubsetWithConcreteReasons() {
+    void explicitUnavailableSourceEvidenceReleasesOnlyTheReadySubsetWithoutWaitingForMoreRetries() {
         Fixture fixture = fixture();
         AiDataBatch batch = batch();
         when(fixture.dataBatchMapper.selectById(55L)).thenReturn(batch);
@@ -194,7 +194,7 @@ class GlobalDailyResearchExecutorTest {
                 observation("600519", "READY"), unavailable, benchmarkObservation()));
 
         AiGlobalDailyResearchExecutor.StepOutcome outcome = fixture.executor.execute(
-                "WAIT_DATA_READY", context(5, Map.of(
+                "WAIT_DATA_READY", context(0, Map.of(
                         "FETCH_SOURCE_DATA", "{\"universeSnapshotId\":91,\"dataBatchId\":55}")));
 
         assertThat(outcome.status()).isEqualTo("SUCCESS_WITH_WARNINGS");
@@ -205,6 +205,28 @@ class GlobalDailyResearchExecutorTest {
                 .contains("600001", "SINA", "所有研究行情来源均不可用");
         assertThat(batch.status).isEqualTo("PARTIAL_READY");
         assertThat(batch.qualityStatus).isEqualTo("PARTIAL");
+    }
+
+    @Test
+    void sourceGapWithoutProviderFailureEvidenceRemainsRetryable() {
+        Fixture fixture = fixture();
+        AiDataBatch batch = batch();
+        when(fixture.dataBatchMapper.selectById(55L)).thenReturn(batch);
+        when(fixture.itemMapper.selectList(any())).thenReturn(List.of(
+                item(1L, "600519", "SYSTEM_BASELINE"),
+                item(2L, "600001", "SYSTEM_BASELINE")));
+        AiSourceObservation unavailable = observation("600001", "UNAVAILABLE");
+        unavailable.providerCode = "SINA";
+        unavailable.missingReason = null;
+        when(fixture.observationMapper.selectList(any())).thenReturn(List.of(
+                observation("600519", "READY"), unavailable, benchmarkObservation()));
+
+        AiGlobalDailyResearchExecutor.StepOutcome outcome = fixture.executor.execute(
+                "WAIT_DATA_READY", context(0, Map.of(
+                        "FETCH_SOURCE_DATA", "{\"universeSnapshotId\":91,\"dataBatchId\":55}")));
+
+        assertThat(outcome.status()).isEqualTo("WAITING_SOURCE");
+        assertThat(batch.status).isEqualTo("WAITING_SOURCE");
     }
 
     @Test

@@ -29,3 +29,31 @@ Use a small verified class/configuration patch for this deployment, then establi
 - **Notes**: Published a verified small class/configuration patch after full JAR transfer was interrupted; the service health endpoint returned `UP`.
 
 ---
+
+## [ERR-20260725-011] backend-working-directory-path
+
+**Logged**: 2026-07-25T19:30:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+Repeated the `backend/` path after changing the command working directory to `backend`.
+
+### Error
+```
+sed: backend/src/test/java/...: No such file or directory
+```
+
+### Context
+- Command ran with working directory `/Users/zqh/coding/fucknidepp/backend`.
+- The file path incorrectly began with `backend/` instead of `src/`.
+
+### Suggested Fix
+When a command specifies a nested repository as its working directory, use paths relative to that repository.
+
+### Metadata
+- Reproducible: yes
+- Related Files: `src/test/java/com/maogou/stock/service/impl/research/GlobalDailyResearchExecutorTest.java`
+
+---
