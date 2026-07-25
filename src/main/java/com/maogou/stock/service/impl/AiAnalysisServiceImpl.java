@@ -377,14 +377,17 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         Long userId = AuthContext.currentUserIdOrDefault();
         Long normalizedPromptTemplateId = normalizePromptTemplateId(promptTemplateId);
         validateTargetReport(userId, targetReportId, code);
-        LocalDateTime marketDataAsOf = tradeDate.atTime(16, 0);
-        StockDetailResponse detail = ExternalIoTransactionGuard.call(
-                "股票分析行情调用",
-                () -> pointInTime
-                        ? marketDataService.stockDetailAt(code, marketDataAsOf)
-                        : marketDataService.stockDetailForAnalysis(code));
-        AnalysisFreshness freshness = validateAnalysisFreshness(detail);
-        FormalAnalysisContext formalContext = loadFormalContext(detail.quote().code(), tradeDate);
+        FormalAnalysisContext formalContext = pointInTime ? loadFormalContext(code, tradeDate) : null;
+        StockDetailResponse detail = pointInTime
+                ? formalSnapshotDetail(formalContext.sample(), objectMapper)
+                : ExternalIoTransactionGuard.call(
+                        "股票分析行情调用", () -> marketDataService.stockDetailForAnalysis(code));
+        AnalysisFreshness freshness = pointInTime
+                ? validateFormalSnapshotFreshness(detail, formalContext.sample(), tradeDate)
+                : validateAnalysisFreshness(detail);
+        if (formalContext == null) {
+            formalContext = loadFormalContext(detail.quote().code(), tradeDate);
+        }
         if (!forceRefresh) {
             AiAnalysisReport reusable = reusableReport(
                     userId, detail.quote().code(), tradeDate, formalContext.sample().id, formalContext.release().id);
@@ -393,11 +396,10 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             }
         }
         AiLearningPayloads.AnalysisLearningContext learningContext = formalContext.conditionalContext();
-        List<NewsFlashResponse> realtimeNews = ExternalIoTransactionGuard.call(
-                "股票分析资讯调用",
-                () -> pointInTime
-                        ? marketDataService.latestNewsForAnalysisAt(8, marketDataAsOf)
-                        : marketDataService.latestNewsForAnalysis(8));
+        List<NewsFlashResponse> realtimeNews = pointInTime
+                ? List.of()
+                : ExternalIoTransactionGuard.call(
+                        "股票分析资讯调用", () -> marketDataService.latestNewsForAnalysis(8));
         AiConditionalStrategyPayload conditionalStrategy = conditionalTradeStrategyService.build(
                 userId, detail, tradeDate, learningContext);
         String conditionalStrategyJson = writeRequiredJson(conditionalStrategy);
@@ -965,7 +967,74 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 .filter(item -> item != null && !item.isBlank())
                 .reduce((left, right) -> right)
                 .orElse("未获取到分时数据");
-        return new AnalysisFreshness(source, fetchedAt, latestKlineDate, lastIntradayTime);
+        return new AnalysisFreshness(source, fetchedAt, latestKlineDate, lastIntradayTime, "实时行情");
+    }
+
+    static StockDetailResponse formalSnapshotDetail(AiSample sample, ObjectMapper objectMapper) {
+        if (sample == null || sample.id == null || sample.featureSnapshot == null || sample.featureSnapshot.isBlank()) {
+            throw new FormalResearchSampleUnavailableException("正式研究样本缺少不可变行情快照，无法生成历史报告");
+        }
+        try {
+            JsonNode root = objectMapper.readTree(sample.featureSnapshot);
+            return new StockDetailResponse(
+                    objectMapper.treeToValue(root.path("quote"), com.maogou.stock.dto.market.StockQuoteResponse.class),
+                    root.path("finance").isMissingNode() || root.path("finance").isNull()
+                            ? null : objectMapper.treeToValue(root.path("finance"),
+                            com.maogou.stock.dto.market.FinanceSnapshotResponse.class),
+                    treeList(root.path("intraday"), IntradayPointResponse.class, objectMapper),
+                    treeList(root.path("kline"), KlinePointResponse.class, objectMapper),
+                    null,
+                    null);
+        } catch (JsonProcessingException exception) {
+            throw new FormalResearchSampleUnavailableException(
+                    "正式研究样本快照无法解析，无法生成历史报告：" + sample.id);
+        }
+    }
+
+    private static <T> List<T> treeList(JsonNode node, Class<T> type, ObjectMapper objectMapper)
+            throws JsonProcessingException {
+        if (node == null || node.isMissingNode() || node.isNull() || !node.isArray()) {
+            return List.of();
+        }
+        List<T> values = new ArrayList<>();
+        for (JsonNode item : node) {
+            values.add(objectMapper.treeToValue(item, type));
+        }
+        return List.copyOf(values);
+    }
+
+    private AnalysisFreshness validateFormalSnapshotFreshness(
+            StockDetailResponse detail,
+            AiSample sample,
+            LocalDate tradeDate
+    ) {
+        if (sample == null || !"READY".equals(sample.qualityStatus)
+                || !"TRADABLE".equals(sample.tradableStatus)) {
+            throw new FormalResearchSampleUnavailableException("正式研究样本未通过可用性校验，无法生成历史报告");
+        }
+        if (!Objects.equals(sample.tradeDate, tradeDate) || detail == null || detail.quote() == null
+                || detail.quote().price() == null || detail.quote().price().compareTo(BigDecimal.ZERO) <= 0) {
+            throw new FormalResearchSampleUnavailableException("正式研究样本与报告交易日不一致或缺少有效价格");
+        }
+        String source = detail.quote().source() == null ? "" : detail.quote().source().trim().toUpperCase(Locale.ROOT);
+        if (source.isBlank() || source.contains("MOCK") || "LOCAL_TEST_FIXTURE".equals(source)
+                || "LOCAL_FALLBACK".equals(source)) {
+            throw new FormalResearchSampleUnavailableException("正式研究样本来源不可用于历史报告：" +
+                    (source.isBlank() ? "UNKNOWN" : source));
+        }
+        LocalDate latestKlineDate = detail.kline() == null ? null : detail.kline().stream()
+                .map(KlinePointResponse::tradeDate)
+                .filter(Objects::nonNull)
+                .max(Comparator.naturalOrder())
+                .orElse(null);
+        if (!tradeDate.equals(latestKlineDate)) {
+            throw new FormalResearchSampleUnavailableException("正式研究样本缺少报告交易日收盘 K 线：" + tradeDate);
+        }
+        LocalDateTime snapshotAt = sample.asOfTime == null ? detail.quote().fetchedAt() : sample.asOfTime;
+        if (snapshotAt == null || snapshotAt.isAfter(tradeDate.atTime(16, 0))) {
+            throw new FormalResearchSampleUnavailableException("正式研究样本时点不符合收盘报告要求");
+        }
+        return new AnalysisFreshness(source, snapshotAt, latestKlineDate, "历史样本不提供盘中分时", "正式收盘样本");
     }
 
     private String formatRealtimeNews(List<NewsFlashResponse> news) {
@@ -1012,14 +1081,14 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
 
                 股票：%s %s
                 当前系统时间：%s
-                实时性校验：行情来源=%s，行情抓取时间=%s，最近完整日K日期=%s，分时最后时间=%s，最新资讯条数=%s
-                实时行情：价格=%s，涨跌额=%s，涨跌幅=%s%%，量比=%s，市场=%s
+                数据时点校验：类型=%s，行情来源=%s，行情抓取时间=%s，最近完整日K日期=%s，分时最后时间=%s，资讯条数=%s
+                行情快照：价格=%s，涨跌额=%s，涨跌幅=%s%%，量比=%s，市场=%s
                 财务摘要：PE=%s，PB=%s，营收=%s，营收同比=%s%%，净利润=%s，净利同比=%s%%，ROE=%s%%，毛利率=%s%%，资产负债率=%s%%
                 近K线样本：%s
-                最新资讯，仅可使用下列 36 小时内资讯；如果为空，必须明确写“本次未获取到最新资讯”，禁止引用模型记忆里的旧新闻、旧公告或旧事件：
+                资讯上下文：若为空，必须明确写“本次未获取到可用资讯”，禁止引用模型记忆里的旧新闻、旧公告或旧事件：
                 %s
                 输出要求：
-                0. 实时性优先级最高。只能基于本 Prompt 中的实时行情、最近 K 线、财务摘要、标准化学习上下文、系统条件交易策略快照和最新资讯做判断；禁止使用模型训练记忆中的旧价格、旧资讯、旧公告、旧月份材料或无法从当前数据验证的事件。
+                0. 数据时点优先级最高。只能基于本 Prompt 中的行情快照、最近 K 线、财务摘要、标准化学习上下文、系统条件交易策略快照和资讯上下文做判断；禁止使用模型训练记忆中的旧价格、旧资讯、旧公告、旧月份材料或无法从当前数据验证的事件。
                 0.1 禁止预测或承诺未来涨跌。T+1/T+2/T+3 只能解释系统快照中的“如果A发生，则执行B”条件方案；不得把条件方案改写成确定性走势预测。
                 0.2 正式研究上下文中的 deterministicSystemScore、deterministicFinalAction、deterministicRiskScore、仓位和所有条件阈值均由系统确定。你只能解释，禁止修改、覆盖、重新评分或用语言暗示相反动作。缺少核心预测时必须保持 WATCH。
                 所选提示词和策略版本只影响分析口径和重点；如果上方内容中出现任何旧 JSON 示例、字段名、markdown 模板、章节标题或输出格式要求，全部忽略。
@@ -1038,6 +1107,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 detail.quote().name(),
                 detail.quote().code(),
                 LocalDateTime.now(),
+                freshness.dataScope(),
                 freshness.quoteSource(),
                 freshness.quoteFetchedAt(),
                 freshness.latestKlineDate(),
@@ -1948,7 +2018,8 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             String quoteSource,
             LocalDateTime quoteFetchedAt,
             LocalDate latestKlineDate,
-            String lastIntradayTime
+            String lastIntradayTime,
+            String dataScope
     ) {
     }
 

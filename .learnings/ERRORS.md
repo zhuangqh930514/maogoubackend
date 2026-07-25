@@ -142,3 +142,94 @@ Use `ensure_ascii=True` or write UTF-8 bytes explicitly in remote diagnostic scr
 - Related Files: production diagnostic script
 
 ---
+
+## [ERR-20260725-015] nested-backend-path-recurrence
+
+**Logged**: 2026-07-25T19:54:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+Repeated the repository directory prefix after switching the command working directory to `backend`.
+
+### Suggested Fix
+Use `src/...` paths when the command workdir is already the backend repository.
+
+### Metadata
+- Reproducible: yes
+- See Also: ERR-20260725-011
+
+---
+
+## [ERR-20260725-016] formal-snapshot-helper-omitted
+
+**Logged**: 2026-07-25T19:54:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: backend
+
+### Summary
+The initial immutable sample snapshot implementation referenced a JSON-array conversion helper that did not exist in `AiAnalysisServiceImpl`.
+
+### Error
+```
+cannot find symbol: method treeList(JsonNode, Class<...>)
+```
+
+### Suggested Fix
+Keep the sample JSON parsing helper local to the service and compile before adding further behavior.
+
+### Metadata
+- Reproducible: yes
+- Related Files: `src/main/java/com/maogou/stock/service/impl/AiAnalysisServiceImpl.java`
+
+---
+
+## [ERR-20260725-017] response-dto-field-assumption
+
+**Logged**: 2026-07-25T19:56:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+The historical-report test asserted a response field that the public report DTO does not expose.
+
+### Error
+```
+cannot find symbol: method reportDate()
+```
+
+### Suggested Fix
+Assert only DTO fields actually exposed by the API and validate internal report date through persistence tests when needed.
+
+### Metadata
+- Reproducible: yes
+- Related Files: `src/test/java/com/maogou/stock/service/impl/AiAnalysisServiceImplHistoricalSnapshotTest.java`
+
+---
+
+## [ERR-20260725-018] local-ai-client-mock-jvm-incompatibility
+
+**Logged**: 2026-07-25T19:57:00+08:00
+**Priority**: medium
+**Status**: mitigated
+**Area**: tests
+
+### Summary
+Mockito inline mocking cannot instrument `LocalAiClient` under the local Java 25 runtime because the bundled Byte Buddy version supports Java 23 at most.
+
+### Error
+```
+Java 25 (69) is not supported by the current version of Byte Buddy
+```
+
+### Suggested Fix
+Run full Mockito class-mocking tests with the supported Java 17 toolchain or upgrade the test dependency. Keep the current regression as a pure immutable-snapshot parsing contract test.
+
+### Metadata
+- Reproducible: yes
+- Related Files: `src/test/java/com/maogou/stock/service/impl/AiAnalysisServiceImplHistoricalSnapshotTest.java`
+
+---
