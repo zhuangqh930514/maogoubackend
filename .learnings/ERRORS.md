@@ -86,3 +86,59 @@ For remote diagnostics, avoid SQL literals where possible or send SQL by a separ
 - Related Files: `ai_pipeline_run`
 
 ---
+
+## [ERR-20260725-013] production-snapshot-schema-assumption
+
+**Logged**: 2026-07-25T19:51:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+A read-only production verification query assumed a `status` column on daily decision snapshots.
+
+### Error
+```
+ERROR 1054 (42S22): Unknown column 'status' in 'field list'
+```
+
+### Context
+- The user projection run query completed and showed a `PARTIAL_SUCCESS` result before the second read-only query failed.
+- `ai_daily_decision_snapshot` has no `status` column; pipeline status belongs to `ai_pipeline_run`.
+
+### Suggested Fix
+Inspect the entity or schema before composing cross-table production diagnostics.
+
+### Metadata
+- Reproducible: yes
+- Related Files: `ai_daily_decision_snapshot`, `ai_pipeline_run`
+
+---
+
+## [ERR-20260725-014] production-python-stdout-encoding
+
+**Logged**: 2026-07-25T19:52:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+A production API verification script failed while printing Chinese JSON fields through an ASCII-only Python stdout.
+
+### Error
+```
+UnicodeEncodeError: 'ascii' codec can't encode characters
+```
+
+### Context
+- The authenticated HTTP requests completed before output serialization.
+- The remote shell locale does not provide UTF-8 stdout to Python 3.6.
+
+### Suggested Fix
+Use `ensure_ascii=True` or write UTF-8 bytes explicitly in remote diagnostic scripts.
+
+### Metadata
+- Reproducible: yes
+- Related Files: production diagnostic script
+
+---
