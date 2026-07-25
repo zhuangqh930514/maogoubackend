@@ -334,7 +334,7 @@ class GlobalDailyResearchExecutorTest {
     @Test
     void retainsSectorEvidenceWarningsWithoutMarkingLabelStepPartial() {
         Fixture fixture = fixture();
-        when(fixture.labelCoordinator.matureSampleLabels(TRADE_DATE, STARTED_AT))
+        when(fixture.labelCoordinator.matureSampleLabels(TRADE_DATE, STARTED_AT, 120))
                 .thenReturn(new AiLabelVerificationCoordinator.VerificationResult(
                         12, 12, 0, List.of(),
                         List.of("600519 [2026-07-10]: 行业基准行情不可用"),

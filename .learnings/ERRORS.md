@@ -57,3 +57,32 @@ When a command specifies a nested repository as its working directory, use paths
 - Related Files: `src/test/java/com/maogou/stock/service/impl/research/GlobalDailyResearchExecutorTest.java`
 
 ---
+
+## [ERR-20260725-012] remote-sql-quote-truncation
+
+**Logged**: 2026-07-25T19:31:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+A read-only production SQL query was truncated by nested shell quoting.
+
+### Error
+```
+ERROR 1064 (42000): SQL syntax error near `LEFT(COALESCE(error_message, ), 500)`
+```
+
+### Context
+- The query ran through `ssh` and a quoted Python heredoc.
+- SQL literal quotes inside the outer remote command were consumed before reaching MySQL.
+- The command only read `ai_pipeline_run`; no database write was attempted.
+
+### Suggested Fix
+For remote diagnostics, avoid SQL literals where possible or send SQL by a separately quoted stdin payload.
+
+### Metadata
+- Reproducible: yes
+- Related Files: `ai_pipeline_run`
+
+---

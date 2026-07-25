@@ -68,6 +68,7 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
 
     private static final List<Integer> PREDICTION_HORIZONS = List.of(1, 2, 3, 5);
     private static final int MAX_SOURCE_RETRIES = 5;
+    private static final int DAILY_LABEL_CANDIDATE_LIMIT = 120;
 
     private final AiResearchUniverseService universeService;
     private final AiResearchUniverseSnapshotMapper universeSnapshotMapper;
@@ -807,7 +808,7 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
     }
 
     private StepOutcome matureSampleLabels(PipelineContext context) {
-        return matureSampleLabels(context, "MATURE_SAMPLE_LABELS", null);
+        return matureSampleLabels(context, "MATURE_SAMPLE_LABELS", DAILY_LABEL_CANDIDATE_LIMIT);
     }
 
     private StepOutcome matureSampleLabels(PipelineContext context, String stepKey, Integer candidateLimit) {
