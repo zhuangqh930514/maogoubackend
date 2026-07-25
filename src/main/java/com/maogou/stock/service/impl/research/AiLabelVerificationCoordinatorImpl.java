@@ -467,6 +467,10 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
 
     private KlineSeriesSnapshot loadSeries(AiSample sample, int limit, LocalDateTime asOfTime) {
         String symbol = sample == null ? null : sample.stockCode;
+        KlineSeriesSnapshot persisted = loadPersistedSeries(sample, asOfTime);
+        if (persisted != null) {
+            return persisted;
+        }
         RuntimeException realtimeFailure = null;
         try {
             KlineSeriesSnapshot series = marketDataService.klineAt(symbol, "day", limit, asOfTime);
@@ -482,10 +486,6 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
             } catch (RuntimeException exception) {
                 historicalFailure = exception;
             }
-        }
-        KlineSeriesSnapshot persisted = loadPersistedSeries(sample, asOfTime);
-        if (persisted != null) {
-            return persisted;
         }
         if (realtimeFailure == null) {
             throw historicalFailure == null

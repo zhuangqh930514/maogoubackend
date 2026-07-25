@@ -164,7 +164,7 @@ class AiLabelVerificationCoordinatorImplTest {
     }
 
     @Test
-    void fallsBackToPersistedDailySnapshotsWhenAllExternalSourcesFail() throws Exception {
+    void prefersPersistedDailySnapshotsBeforeExternalSources() throws Exception {
         Fixture fixture = fixture();
         LocalDate tradeDate = LocalDate.of(2026, 7, 10);
         LocalDateTime verifiedAt = tradeDate.atTime(16, 0);
@@ -204,6 +204,8 @@ class AiLabelVerificationCoordinatorImplTest {
         verify(fixture.observationMapper).selectReadyDailySnapshotByBatch(88L, "600519");
         verify(fixture.observationMapper).selectReadyDailySnapshotsBetween(
                 "600519", LocalDate.of(2026, 7, 3).atTime(15, 0), verifiedAt);
+        verify(fixture.marketDataService, never()).klineAt("600519", "day", 320, verifiedAt);
+        verify(fixture.historicalProvider, never()).fetchHistoricalKline("600519", 320, verifiedAt, "NONE");
     }
 
     @Test
