@@ -91,6 +91,39 @@ class AutoClosePipelineServiceImplTest {
     }
 
     @Test
+    void completedGlobalRunUsesItsOwnUserProjectionIdempotencyKey() {
+        Fixture fixture = fixture();
+        AiPipelineRun waiting = new AiPipelineRun();
+        waiting.id = 41L;
+        waiting.tradeDate = LocalDate.of(2026, 7, 15);
+        waiting.strategyReleaseId = 91L;
+        waiting.modelVersionId = 92L;
+        waiting.idempotencyKey = "SCHEDULED:GLOBAL_DAILY:2026-07-15";
+        waiting.inputFingerprint = "persisted-input";
+        waiting.startedAt = LocalDateTime.of(2026, 7, 15, 16, 0);
+        AiPipelineRun completed = new AiPipelineRun();
+        completed.id = 42L;
+        completed.tradeDate = waiting.tradeDate;
+        completed.strategyReleaseId = waiting.strategyReleaseId;
+        completed.modelVersionId = waiting.modelVersionId;
+        completed.status = "PARTIAL_SUCCESS";
+
+        fixture.config.autoClosePipelineEnabled = 1;
+        when(fixture.pipelineRunMapper.selectDueGlobalDailyRuns(any(), anyInt())).thenReturn(List.of(waiting));
+        when(fixture.calendarService.isTradingDay(waiting.tradeDate)).thenReturn(true);
+        when(fixture.dailyResearchService.run(any())).thenReturn(
+                new AiGlobalDailyResearchService.PipelineResult(completed, List.of()));
+        when(fixture.configMapper.selectEnabledAutomationConfigsAfter(eq(0L), anyInt()))
+                .thenReturn(List.of(fixture.config));
+
+        fixture.service.retryWaitingPipelines();
+
+        verify(fixture.operationsService).runUserProjection(eq(5L),
+                org.mockito.ArgumentMatchers.argThat(request -> request.parentPipelineRunId().equals(42L)
+                        && request.idempotencyKey().equals("SCHEDULED:USER_DAILY:5:2026-07-15:42")));
+    }
+
+    @Test
     void retryWaitingPipelinesAbandonsNonTradingDayRuns() {
         Fixture fixture = fixture();
         AiPipelineRun waiting = new AiPipelineRun();

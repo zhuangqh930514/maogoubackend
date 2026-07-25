@@ -191,7 +191,8 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
             return;
         }
         try {
-            String idempotencyKey = "SCHEDULED:USER_DAILY:" + config.userId + ":" + globalRun.tradeDate;
+            String idempotencyKey = "SCHEDULED:USER_DAILY:" + config.userId + ":" + globalRun.tradeDate
+                    + ":" + globalRun.id;
             ResearchLabPayloads.ActionAccepted accepted = operationsService.runUserProjection(
                     config.userId,
                     new ResearchLabPayloads.ActionRequest(
@@ -204,8 +205,8 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
                             null,
                             idempotencyKey));
         } catch (RuntimeException exception) {
-            log.warn("user daily projection submission failed, userId={}, globalRunId={}",
-                    config.userId, globalRun.id, exception);
+            log.warn("user daily projection submission failed, userId={}, globalRunId={}, error={}",
+                    config.userId, globalRun.id, rootMessage(exception), exception);
         }
     }
 
