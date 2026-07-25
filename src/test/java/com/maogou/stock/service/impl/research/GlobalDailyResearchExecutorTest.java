@@ -123,6 +123,26 @@ class GlobalDailyResearchExecutorTest {
     }
 
     @Test
+    void retryForAnEarlierResearchDateKeepsTheOriginalClosingAsOfTime() {
+        Fixture fixture = fixture();
+        when(fixture.snapshotMapper.selectById(91L)).thenReturn(snapshot());
+        when(fixture.itemMapper.selectList(any())).thenReturn(List.of(item(1L, "600519", "WATCHLIST:USER:5")));
+        when(fixture.snapshotService.startOrGetBatch(any(), any(), anyString(), any(), anyString()))
+                .thenReturn(batch());
+        when(fixture.marketDataService.stockDetailAt(anyString(), any()))
+                .thenAnswer(invocation -> detail(invocation.getArgument(0), invocation.getArgument(1)));
+
+        fixture.executor.execute("FETCH_SOURCE_DATA", context(0,
+                Map.of("SNAPSHOT_UNIVERSE", "{\"universeSnapshotId\":91}"),
+                TRADE_DATE.plusDays(1).atTime(18, 30)));
+
+        ArgumentCaptor<LocalDateTime> stockAsOf = ArgumentCaptor.forClass(LocalDateTime.class);
+        verify(fixture.marketDataService).stockDetailAt(
+                org.mockito.ArgumentMatchers.eq("600519"), stockAsOf.capture());
+        assertThat(stockAsOf.getValue()).isEqualTo(TRADE_DATE.atTime(16, 0));
+    }
+
+    @Test
     void waitingSourceRecoversWithTheSamePersistedBatchAfterExecutorRestart() {
         Fixture fixture = fixture();
         AiDataBatch batch = batch();
@@ -476,9 +496,17 @@ class GlobalDailyResearchExecutorTest {
             int attemptNo,
             Map<String, String> checkpoints
     ) {
+        return context(attemptNo, checkpoints, STARTED_AT);
+    }
+
+    private static AiGlobalDailyResearchExecutor.PipelineContext context(
+            int attemptNo,
+            Map<String, String> checkpoints,
+            LocalDateTime startedAt
+    ) {
         return new AiGlobalDailyResearchExecutor.PipelineContext(
                 4001L, TRADE_DATE, 1L, null,
-                "GLOBAL_DAILY:2026-07-14", "input-fingerprint", STARTED_AT,
+                "GLOBAL_DAILY:2026-07-14", "input-fingerprint", startedAt,
                 attemptNo, checkpoints, () -> { });
     }
 

@@ -177,7 +177,7 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         Long snapshotId = requiredCheckpointId(context, "SNAPSHOT_UNIVERSE", "universeSnapshotId");
         AiResearchUniverseSnapshot snapshot = requiredSnapshot(snapshotId);
         List<AiResearchUniverseItem> items = includedItems(snapshotId);
-        LocalDateTime fetchStartedAt = LocalDateTime.now().truncatedTo(ChronoUnit.MILLIS);
+        LocalDateTime fetchStartedAt = sourceAsOfTime(context.tradeDate());
         AiDataBatch batch = sampleSnapshotService.startOrGetBatch(
                 snapshotId, context.tradeDate(), "AFTER_CLOSE", fetchStartedAt,
                 batchIdempotencyKey(context));
@@ -1042,6 +1042,18 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("无法恢复来源证据：" + observation.sourceType, exception);
         }
+    }
+
+    /**
+     * A delayed retry must ask providers for the persisted research session's
+     * closing bar, rather than silently advancing its point-in-time boundary
+     * to the server's calendar date.
+     */
+    private static LocalDateTime sourceAsOfTime(LocalDate tradeDate) {
+        if (tradeDate == null) {
+            throw new IllegalArgumentException("研究行情缺少交易日");
+        }
+        return tradeDate.atTime(16, 0).truncatedTo(ChronoUnit.MILLIS);
     }
 
     private static Optional<LocalDate> latestTradeDate(KlineSeriesSnapshot series) {
