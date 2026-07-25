@@ -80,6 +80,12 @@ maogou:
     timeout-ms: 60000
     temperature: 0.2
     max-tokens: 2048
+    max-concurrent-requests: ${MAOGOU_AI_MAX_CONCURRENT_REQUESTS:1}
+    queue-wait-ms: ${MAOGOU_AI_QUEUE_WAIT_MS:5000}
+    retry-base-delay-ms: ${MAOGOU_AI_RETRY_BASE_DELAY_MS:1500}
+    retry-max-delay-ms: ${MAOGOU_AI_RETRY_MAX_DELAY_MS:30000}
+    report-retry-max-attempts: ${MAOGOU_AI_REPORT_RETRY_MAX_ATTEMPTS:3}
+    report-retry-delay-seconds: ${MAOGOU_AI_REPORT_RETRY_DELAY_SECONDS:300}
   scheduler:
     enabled: ${MAOGOU_SCHEDULER_ENABLED:true}
     news-fixed-rate-ms: 300000
@@ -87,6 +93,9 @@ maogou:
     close-analysis-cron: "0 30 15 * * MON-FRI"
     evolution-review-cron: "${MAOGOU_EVOLUTION_REVIEW_CRON:0 10 16 * * MON-FRI}"
     auto-close-pipeline-cron: "${MAOGOU_AUTO_CLOSE_PIPELINE_CRON:0 0 16 * * MON-FRI}"
+    pipeline-recovery-max-attempts: ${MAOGOU_PIPELINE_RECOVERY_MAX_ATTEMPTS:3}
+    pipeline-recovery-base-delay-seconds: ${MAOGOU_PIPELINE_RECOVERY_BASE_DELAY_SECONDS:300}
+    pipeline-recovery-max-delay-seconds: ${MAOGOU_PIPELINE_RECOVERY_MAX_DELAY_SECONDS:1800}
     weekly-evolution-cron: "${MAOGOU_WEEKLY_EVOLUTION_CRON:0 0 18 * * FRI}"
     monthly-training-cron: "${MAOGOU_MONTHLY_TRAINING_CRON:0 0 19 1 * *}"
     qq-order-sync-enabled: ${MAOGOU_QQ_ORDER_SYNC_ENABLED:true}

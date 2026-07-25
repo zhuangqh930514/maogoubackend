@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.math.BigDecimal;
+import java.lang.reflect.Method;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -149,6 +150,26 @@ class AiAnalysisReportLineageTest {
         assertThat(selected).extracting(item -> item.id).containsExactly(101L);
     }
 
+    @Test
+    void structuredPayloadWithoutDecisionActionIsConservativelyDowngradedToWatch() throws Exception {
+        AiAnalysisServiceImpl service = analysisService();
+        Method parse = AiAnalysisServiceImpl.class.getDeclaredMethod("parseAiPayload", String.class);
+        parse.setAccessible(true);
+
+        AiAnalysisResultPayload payload = (AiAnalysisResultPayload) parse.invoke(service, """
+                {
+                  "decision": {"confidence": 0.98, "summary": "建议买入，文本不能作为正式动作"},
+                  "technicalAnalysis": {"summary": "突破信号"},
+                  "riskWarning": {"summary": "控制风险"},
+                  "buySellPoints": {"action": "BUY"}
+                }
+                """);
+
+        assertThat(payload.decision().decision()).isEqualTo("WATCH");
+        assertThat(payload.decision().confidence()).isEqualTo(0.35);
+        assertThat(payload.decision().summary()).contains("不允许进入每日推荐关注");
+    }
+
     private static AiAnalysisReport report(
             Long id,
             Integer version,
@@ -194,6 +215,6 @@ class AiAnalysisReportLineageTest {
     private static AiAnalysisServiceImpl analysisService() {
         return new AiAnalysisServiceImpl(
                 null, null, null, null, null, null, null, null, null,
-                null, null, null, null, new ObjectMapper().findAndRegisterModules());
+                null, null, null, null, null, new ObjectMapper().findAndRegisterModules());
     }
 }

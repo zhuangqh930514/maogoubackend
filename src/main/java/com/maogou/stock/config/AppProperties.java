@@ -196,6 +196,12 @@ public class AppProperties {
         private int timeoutMs = 60000;
         private double temperature = 0.2;
         private int maxTokens = 2048;
+        private int maxConcurrentRequests = 1;
+        private long queueWaitMs = 5000;
+        private long retryBaseDelayMs = 1500;
+        private long retryMaxDelayMs = 30000;
+        private int reportRetryMaxAttempts = 3;
+        private long reportRetryDelaySeconds = 300;
 
         public String getApiBaseUrl() {
             return apiBaseUrl;
@@ -244,6 +250,54 @@ public class AppProperties {
         public void setMaxTokens(int maxTokens) {
             this.maxTokens = maxTokens;
         }
+
+        public int getMaxConcurrentRequests() {
+            return maxConcurrentRequests;
+        }
+
+        public void setMaxConcurrentRequests(int maxConcurrentRequests) {
+            this.maxConcurrentRequests = maxConcurrentRequests;
+        }
+
+        public long getQueueWaitMs() {
+            return queueWaitMs;
+        }
+
+        public void setQueueWaitMs(long queueWaitMs) {
+            this.queueWaitMs = queueWaitMs;
+        }
+
+        public long getRetryBaseDelayMs() {
+            return retryBaseDelayMs;
+        }
+
+        public void setRetryBaseDelayMs(long retryBaseDelayMs) {
+            this.retryBaseDelayMs = retryBaseDelayMs;
+        }
+
+        public long getRetryMaxDelayMs() {
+            return retryMaxDelayMs;
+        }
+
+        public void setRetryMaxDelayMs(long retryMaxDelayMs) {
+            this.retryMaxDelayMs = retryMaxDelayMs;
+        }
+
+        public int getReportRetryMaxAttempts() {
+            return reportRetryMaxAttempts;
+        }
+
+        public void setReportRetryMaxAttempts(int reportRetryMaxAttempts) {
+            this.reportRetryMaxAttempts = reportRetryMaxAttempts;
+        }
+
+        public long getReportRetryDelaySeconds() {
+            return reportRetryDelaySeconds;
+        }
+
+        public void setReportRetryDelaySeconds(long reportRetryDelaySeconds) {
+            this.reportRetryDelaySeconds = reportRetryDelaySeconds;
+        }
     }
 
     public static class Scheduler {
@@ -253,6 +307,9 @@ public class AppProperties {
         private String closeAnalysisCron = "0 30 15 * * MON-FRI";
         private String evolutionReviewCron = "0 10 16 * * MON-FRI";
         private String autoClosePipelineCron = "0 0 16 * * MON-FRI";
+        private int pipelineRecoveryMaxAttempts = 3;
+        private long pipelineRecoveryBaseDelaySeconds = 300;
+        private long pipelineRecoveryMaxDelaySeconds = 1800;
         private String weeklyEvolutionCron = "0 0 18 * * FRI";
         private String monthlyTrainingCron = "0 0 19 1 * *";
         private boolean qqOrderSyncEnabled = true;
@@ -318,6 +375,30 @@ public class AppProperties {
 
         public void setAutoClosePipelineCron(String autoClosePipelineCron) {
             this.autoClosePipelineCron = autoClosePipelineCron;
+        }
+
+        public int getPipelineRecoveryMaxAttempts() {
+            return pipelineRecoveryMaxAttempts;
+        }
+
+        public void setPipelineRecoveryMaxAttempts(int pipelineRecoveryMaxAttempts) {
+            this.pipelineRecoveryMaxAttempts = pipelineRecoveryMaxAttempts;
+        }
+
+        public long getPipelineRecoveryBaseDelaySeconds() {
+            return pipelineRecoveryBaseDelaySeconds;
+        }
+
+        public void setPipelineRecoveryBaseDelaySeconds(long pipelineRecoveryBaseDelaySeconds) {
+            this.pipelineRecoveryBaseDelaySeconds = pipelineRecoveryBaseDelaySeconds;
+        }
+
+        public long getPipelineRecoveryMaxDelaySeconds() {
+            return pipelineRecoveryMaxDelaySeconds;
+        }
+
+        public void setPipelineRecoveryMaxDelaySeconds(long pipelineRecoveryMaxDelaySeconds) {
+            this.pipelineRecoveryMaxDelaySeconds = pipelineRecoveryMaxDelaySeconds;
         }
 
         public String getWeeklyEvolutionCron() {

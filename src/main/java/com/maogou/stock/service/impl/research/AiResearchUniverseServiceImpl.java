@@ -7,11 +7,13 @@ import com.maogou.stock.domain.entity.TradeRecord;
 import com.maogou.stock.domain.entity.WatchStock;
 import com.maogou.stock.domain.entity.research.AiResearchUniverse;
 import com.maogou.stock.domain.entity.research.AiResearchUniverseItem;
+import com.maogou.stock.domain.entity.research.AiResearchUniverseItemLineage;
 import com.maogou.stock.domain.entity.research.AiResearchUniverseSnapshot;
 import com.maogou.stock.domain.enums.TradeSide;
 import com.maogou.stock.mapper.TradeRecordMapper;
 import com.maogou.stock.mapper.WatchStockMapper;
 import com.maogou.stock.mapper.research.AiResearchUniverseItemMapper;
+import com.maogou.stock.mapper.research.AiResearchUniverseItemLineageMapper;
 import com.maogou.stock.mapper.research.AiResearchUniverseMapper;
 import com.maogou.stock.mapper.research.AiResearchUniverseSnapshotMapper;
 import com.maogou.stock.service.research.AiResearchUniverseService;
@@ -32,6 +34,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Locale;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -43,6 +46,7 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
     private final AiResearchUniverseMapper universeMapper;
     private final AiResearchUniverseSnapshotMapper snapshotMapper;
     private final AiResearchUniverseItemMapper itemMapper;
+    private final AiResearchUniverseItemLineageMapper lineageMapper;
     private final WatchStockMapper watchStockMapper;
     private final TradeRecordMapper tradeRecordMapper;
     private final AiSystemCoreUniverseProvider systemCoreUniverseProvider;
@@ -53,6 +57,7 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
             AiResearchUniverseMapper universeMapper,
             AiResearchUniverseSnapshotMapper snapshotMapper,
             AiResearchUniverseItemMapper itemMapper,
+            AiResearchUniverseItemLineageMapper lineageMapper,
             WatchStockMapper watchStockMapper,
             TradeRecordMapper tradeRecordMapper,
             AiSystemCoreUniverseProvider systemCoreUniverseProvider,
@@ -61,6 +66,7 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
         this.universeMapper = universeMapper;
         this.snapshotMapper = snapshotMapper;
         this.itemMapper = itemMapper;
+        this.lineageMapper = lineageMapper;
         this.watchStockMapper = watchStockMapper;
         this.tradeRecordMapper = tradeRecordMapper;
         this.systemCoreUniverseProvider = systemCoreUniverseProvider;
@@ -73,9 +79,22 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
             AiResearchUniverseItemMapper itemMapper,
             WatchStockMapper watchStockMapper,
             TradeRecordMapper tradeRecordMapper,
+            AiSystemCoreUniverseProvider systemCoreUniverseProvider,
             ObjectMapper objectMapper
     ) {
-        this(universeMapper, snapshotMapper, itemMapper, watchStockMapper, tradeRecordMapper,
+        this(universeMapper, snapshotMapper, itemMapper, null, watchStockMapper, tradeRecordMapper,
+                systemCoreUniverseProvider, objectMapper);
+    }
+
+    AiResearchUniverseServiceImpl(
+            AiResearchUniverseMapper universeMapper,
+            AiResearchUniverseSnapshotMapper snapshotMapper,
+            AiResearchUniverseItemMapper itemMapper,
+            WatchStockMapper watchStockMapper,
+            TradeRecordMapper tradeRecordMapper,
+            ObjectMapper objectMapper
+    ) {
+        this(universeMapper, snapshotMapper, itemMapper, null, watchStockMapper, tradeRecordMapper,
                 (tradeDate, asOfTime, minimumStockCount) -> List.of(), objectMapper);
     }
 
@@ -130,6 +149,7 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
         for (MergedCandidate candidate : candidates) {
             AiResearchUniverseItem item = toItem(snapshot.id, candidate, request.tradeDate());
             itemMapper.insert(item);
+            persistLineage(item, candidate, request.asOfTime());
             items.add(item);
         }
         return new SnapshotResult(universe, snapshot, items, false);
@@ -166,8 +186,14 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
         }
 
         if (request.includeUserInterests()) {
-            List<WatchStock> watchStocks = watchStockMapper.selectList(new QueryWrapper<WatchStock>());
+            List<WatchStock> watchStocks = watchStockMapper.selectList(new QueryWrapper<WatchStock>()
+                    .eq("deleted", 0)
+                    .le("created_at", request.asOfTime())
+                    .orderByAsc("user_id", "stock_code", "id"));
             for (WatchStock watch : watchStocks) {
+                if (!active(watch)) {
+                    continue;
+                }
                 add(merged, new UniverseCandidate(
                         watch.stockCode,
                         watch.stockName,
@@ -175,35 +201,53 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
                         "USER_WATCHLIST",
                         true,
                         null,
-                        dateOrDefault(watch.createdAt, request.tradeDate())
+                        dateOrDefault(watch.createdAt, request.tradeDate()),
+                        null,
+                        "LISTED",
+                        "watch_stock:" + watch.id,
+                        sourceFingerprint("USER_WATCHLIST", watch.userId, watch.id, watch.stockCode,
+                                watch.stockName, watch.createdAt),
+                        null, null, null, null,
+                        watch.userId, watch.id, true
                 ));
             }
 
             Map<String, Integer> positionQuantity = new LinkedHashMap<>();
-            Map<String, TradeRecord> latestTrade = new LinkedHashMap<>();
-            for (TradeRecord trade : tradeRecordMapper.selectList(new QueryWrapper<TradeRecord>())) {
-                if (trade.stockCode == null || trade.quantity == null) {
+            Map<String, List<TradeRecord>> positionTrades = new LinkedHashMap<>();
+            for (TradeRecord trade : tradeRecordMapper.selectList(new QueryWrapper<TradeRecord>()
+                    .eq("deleted", 0)
+                    .le("traded_at", request.asOfTime())
+                    .orderByAsc("user_id", "stock_code", "traded_at", "id"))) {
+                if (!active(trade) || trade.userId == null || trade.stockCode == null || trade.quantity == null) {
                     continue;
                 }
                 String accountPosition = trade.userId + "|" + normalizeCode(trade.stockCode);
                 int signedQuantity = trade.side == TradeSide.SELL ? -trade.quantity : trade.quantity;
                 positionQuantity.merge(accountPosition, signedQuantity, Integer::sum);
-                latestTrade.put(accountPosition, trade);
+                positionTrades.computeIfAbsent(accountPosition, ignored -> new ArrayList<>()).add(trade);
             }
             for (Map.Entry<String, Integer> position : positionQuantity.entrySet()) {
                 if (position.getValue() <= 0) {
                     continue;
                 }
-                TradeRecord trade = latestTrade.get(position.getKey());
-                add(merged, new UniverseCandidate(
-                        trade.stockCode,
-                        trade.stockName,
-                        inferMarket(trade.stockCode),
-                        "USER_HOLDING",
-                        true,
-                        null,
-                        dateOrDefault(trade.tradedAt, request.tradeDate())
-                ));
+                for (TradeRecord trade : positionTrades.getOrDefault(position.getKey(), List.of())) {
+                    add(merged, new UniverseCandidate(
+                            trade.stockCode,
+                            trade.stockName,
+                            inferMarket(trade.stockCode),
+                            "USER_HOLDING",
+                            true,
+                            null,
+                            dateOrDefault(trade.tradedAt, request.tradeDate()),
+                            null,
+                            "LISTED",
+                            "trade_record:" + trade.id,
+                            sourceFingerprint("USER_HOLDING", trade.userId, trade.id, trade.stockCode,
+                                    trade.stockName, trade.tradedAt),
+                            null, null, null, null,
+                            trade.userId, trade.id, true
+                    ));
+                }
             }
         }
 
@@ -239,17 +283,17 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
         item.industryStandard = candidate.industryStandard();
         item.listedStatus = candidate.listedStatus();
         item.sourceType = String.join(",", candidate.sourceTypes());
+        String exclusionReason = exclusionReason(candidate, tradeDate);
         boolean effective = candidate.included()
                 && "LISTED".equals(candidate.listedStatus())
                 && (candidate.effectiveFrom() == null || !candidate.effectiveFrom().isAfter(tradeDate))
-                && (candidate.effectiveTo() == null || !candidate.effectiveTo().isBefore(tradeDate));
+                && (candidate.effectiveTo() == null || !candidate.effectiveTo().isBefore(tradeDate))
+                && exclusionReason == null;
         item.included = effective ? 1 : 0;
         item.inclusionReason = effective
                 ? "由" + String.join("、", candidate.sourceTypes()) + "纳入研究池"
                 : null;
-        item.excludeReason = effective ? null
-                : candidate.effectiveFrom() != null && candidate.effectiveFrom().isAfter(tradeDate)
-                ? "目标交易日尚未进入研究范围" : candidate.excludeReason();
+        item.excludeReason = effective ? null : exclusionReason;
         item.effectiveFrom = candidate.effectiveFrom() == null ? tradeDate : candidate.effectiveFrom();
         item.effectiveTo = candidate.effectiveTo();
         Map<String, Object> evidence = new LinkedHashMap<>();
@@ -264,7 +308,7 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
         evidence.put("listedStatus", item.listedStatus);
         evidence.put("effectiveFrom", item.effectiveFrom.toString());
         evidence.put("effectiveTo", item.effectiveTo == null ? "" : item.effectiveTo.toString());
-        evidence.put("excludeReason", candidate.excludeReason() == null ? "" : candidate.excludeReason());
+        evidence.put("excludeReason", item.excludeReason == null ? "" : item.excludeReason);
         item.evidenceJson = json(evidence);
         item.sourceFingerprint = sha256(String.join("|",
                 item.stockCode,
@@ -287,6 +331,34 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
         return item;
     }
 
+    private void persistLineage(AiResearchUniverseItem item, MergedCandidate candidate, LocalDateTime observedAt) {
+        if (lineageMapper == null || item == null || item.id == null) {
+            return;
+        }
+        for (SourceLineage source : candidate.sourceLineages()) {
+            if (source.ownerUserId() == null || source.sourceRecordId() == null) {
+                continue;
+            }
+            AiResearchUniverseItemLineage lineage = new AiResearchUniverseItemLineage();
+            lineage.universeItemId = item.id;
+            lineage.sourceType = source.sourceType();
+            lineage.ownerUserId = source.ownerUserId();
+            lineage.sourceRecordId = source.sourceRecordId();
+            lineage.activeAtSnapshot = Boolean.TRUE.equals(source.activeAtSnapshot()) ? 1 : 0;
+            lineage.sourceFingerprint = source.sourceFingerprint();
+            lineage.evidenceJson = json(Map.of(
+                    "sourceType", source.sourceType(),
+                    "ownerUserId", source.ownerUserId(),
+                    "sourceRecordId", source.sourceRecordId(),
+                    "activeAtSnapshot", Boolean.TRUE.equals(source.activeAtSnapshot()),
+                    "sourceReference", source.sourceReference() == null ? "" : source.sourceReference()
+            ));
+            lineage.observedAt = observedAt;
+            lineage.createdAt = LocalDateTime.now();
+            lineageMapper.insert(lineage);
+        }
+    }
+
     private String snapshotFingerprint(SnapshotRequest request, List<MergedCandidate> candidates) {
         String canonicalItems = candidates.stream()
                 .map(candidate -> String.join("|",
@@ -303,6 +375,13 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
                         candidate.effectiveTo() == null ? "" : candidate.effectiveTo().toString(),
                         String.join(",", candidate.sourceReferences()),
                         String.join(",", candidate.sourceEvidenceFingerprints()),
+                        candidate.sourceLineages().stream()
+                                .map(lineage -> String.join("/", lineage.sourceType(),
+                                        String.valueOf(lineage.ownerUserId()), String.valueOf(lineage.sourceRecordId()),
+                                        String.valueOf(lineage.activeAtSnapshot()), value(lineage.sourceFingerprint())))
+                                .sorted()
+                                .reduce((left, right) -> left + "," + right)
+                                .orElse(""),
                         String.join(",", candidate.industryEvidenceFingerprints()),
                         candidate.excludeReason() == null ? "" : candidate.excludeReason()
                 ))
@@ -336,6 +415,41 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
         }
         int minimum = minimumStockCount == null ? 200 : minimumStockCount;
         return includedCount >= minimum ? "READY" : "PARTIAL";
+    }
+
+    private static boolean active(WatchStock stock) {
+        return stock != null && (stock.deleted == null || stock.deleted == 0);
+    }
+
+    private static boolean active(TradeRecord record) {
+        return record != null && (record.deleted == null || record.deleted == 0);
+    }
+
+    private static String exclusionReason(MergedCandidate candidate, LocalDate tradeDate) {
+        if (candidate.excludeReason() != null && !candidate.excludeReason().isBlank()) {
+            return candidate.excludeReason();
+        }
+        if (candidate.effectiveFrom() != null && candidate.effectiveFrom().isAfter(tradeDate)) {
+            return "目标交易日尚未进入研究范围";
+        }
+        if (candidate.effectiveTo() != null && candidate.effectiveTo().isBefore(tradeDate)) {
+            return "目标交易日已不在研究范围";
+        }
+        String status = candidate.listedStatus() == null ? "" : candidate.listedStatus().trim().toUpperCase(Locale.ROOT);
+        if (!"LISTED".equals(status)) {
+            return "证券当前不属于正常上市状态：" + (status.isBlank() ? "UNKNOWN" : status);
+        }
+        String name = candidate.stockName() == null ? "" : candidate.stockName().trim().toUpperCase(Locale.ROOT);
+        if (name.startsWith("*ST") || name.startsWith("ST")) {
+            return "证券名称命中 ST 风险标识，已排除正式研究池";
+        }
+        if (name.startsWith("PT")) {
+            return "证券名称命中 PT 风险标识，已排除正式研究池";
+        }
+        if (name.contains("退")) {
+            return "证券名称包含退市标识，已排除正式研究池";
+        }
+        return null;
     }
 
     private static LocalDate dateOrDefault(LocalDateTime value, LocalDate fallback) {
@@ -378,6 +492,18 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
         }
     }
 
+    private static String sourceFingerprint(
+            String sourceType,
+            Long ownerUserId,
+            Long sourceRecordId,
+            String stockCode,
+            String stockName,
+            LocalDateTime observedAt
+    ) {
+        return sha256(String.join("|", value(sourceType), String.valueOf(ownerUserId), String.valueOf(sourceRecordId),
+                value(normalizeCode(stockCode)), value(stockName), observedAt == null ? "" : observedAt.toString()));
+    }
+
     private static void validate(SnapshotRequest request) {
         if (request == null || request.tradeDate() == null || request.asOfTime() == null
                 || request.calendarVersion() == null || request.calendarVersion().isBlank()) {
@@ -415,6 +541,7 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
             String listedStatus,
             Set<String> sourceReferences,
             Set<String> sourceEvidenceFingerprints,
+            Set<SourceLineage> sourceLineages,
             String industryCode,
             String industryName,
             String industryStandard,
@@ -435,6 +562,10 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
         private String listedStatus;
         private final Set<String> sourceReferences = new TreeSet<>();
         private final Set<String> sourceEvidenceFingerprints = new TreeSet<>();
+        private final Set<SourceLineage> sourceLineages = new TreeSet<>(Comparator
+                .comparing(SourceLineage::sourceType)
+                .thenComparing(lineage -> lineage.ownerUserId() == null ? -1L : lineage.ownerUserId())
+                .thenComparing(lineage -> lineage.sourceRecordId() == null ? -1L : lineage.sourceRecordId()));
         private String industryCode;
         private String industryName;
         private String industryStandard;
@@ -479,6 +610,13 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
                     && !candidate.sourceEvidenceFingerprint().isBlank()) {
                 sourceEvidenceFingerprints.add(candidate.sourceEvidenceFingerprint().trim());
             }
+            if (candidate.sourceOwnerUserId() != null && candidate.sourceRecordId() != null) {
+                sourceLineages.add(new SourceLineage(
+                        candidate.sourceType() == null ? "UNKNOWN" : candidate.sourceType().trim().toUpperCase(),
+                        candidate.sourceOwnerUserId(), candidate.sourceRecordId(),
+                        candidate.sourceActiveAtSnapshot(), candidate.sourceReference(),
+                        candidate.sourceEvidenceFingerprint()));
+            }
             if (candidate.industryCode() != null && !candidate.industryCode().isBlank()) {
                 String normalizedIndustryCode = candidate.industryCode().trim().toUpperCase();
                 if (industryCode != null && !industryCode.equals(normalizedIndustryCode)) {
@@ -518,11 +656,22 @@ public class AiResearchUniverseServiceImpl implements AiResearchUniverseService 
                     listedStatus == null ? "LISTED" : listedStatus,
                     Set.copyOf(sourceReferences),
                     Set.copyOf(sourceEvidenceFingerprints),
+                    Set.copyOf(sourceLineages),
                     industryCode,
                     industryName,
                     industryStandard,
                     Set.copyOf(industryEvidenceFingerprints)
             );
         }
+    }
+
+    private record SourceLineage(
+            String sourceType,
+            Long ownerUserId,
+            Long sourceRecordId,
+            Boolean activeAtSnapshot,
+            String sourceReference,
+            String sourceFingerprint
+    ) {
     }
 }

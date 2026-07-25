@@ -10,10 +10,14 @@ import java.util.Set;
 @Component
 public class DecisionPolicyV1 implements AiDailyDecisionPolicy {
 
-    public static final String VERSION = "DECISION/1.0.0";
+    public static final String VERSION = "DECISION/1.1.0";
     private static final BigDecimal H1_WEIGHT = new BigDecimal("0.20");
     private static final BigDecimal H2_WEIGHT = new BigDecimal("0.30");
     private static final BigDecimal H3_WEIGHT = new BigDecimal("0.50");
+    private static final BigDecimal LEARNING_WEIGHT = new BigDecimal("0.50");
+    private static final BigDecimal AI_REPORT_WEIGHT = new BigDecimal("0.25");
+    private static final BigDecimal FACTOR_WEIGHT = new BigDecimal("0.15");
+    private static final BigDecimal QUALITY_WEIGHT = new BigDecimal("0.10");
     private static final BigDecimal RECOMMEND_SCORE = new BigDecimal("70");
     private static final BigDecimal RECOMMEND_RISK = new BigDecimal("60");
     private static final BigDecimal MIN_RECOMMEND_QUALITY = new BigDecimal("0.90");
@@ -44,20 +48,26 @@ public class DecisionPolicyV1 implements AiDailyDecisionPolicy {
         BigDecimal quality = unit(input.dataQuality());
         BigDecimal risk = percent(input.riskScore());
         BigDecimal riskUnit = BigDecimal.ONE.subtract(risk.divide(new BigDecimal("100"), 8, RoundingMode.HALF_UP));
+        BigDecimal llmConfidence = unit(input.llmConfidence());
         BigDecimal horizon = t1.multiply(H1_WEIGHT)
                 .add(t2.multiply(H2_WEIGHT))
                 .add(t3.multiply(H3_WEIGHT));
-        BigDecimal score = horizon.multiply(new BigDecimal("0.45"))
-                .add(factor.multiply(new BigDecimal("0.20")))
-                .add(strategy.multiply(new BigDecimal("0.15")))
-                .add(quality.multiply(new BigDecimal("0.10")))
-                .add(riskUnit.multiply(new BigDecimal("0.10")))
+        BigDecimal learning = horizon.multiply(new BigDecimal("0.70"))
+                .add(strategy.multiply(new BigDecimal("0.30")));
+        BigDecimal report = reportSignal(input.reportAction(), llmConfidence);
+        BigDecimal score = learning.multiply(LEARNING_WEIGHT)
+                .add(report.multiply(AI_REPORT_WEIGHT))
+                .add(factor.multiply(FACTOR_WEIGHT))
+                .add(quality.multiply(QUALITY_WEIGHT))
                 .multiply(new BigDecimal("100"));
 
         String confidence = input.outOfSampleCount() >= 200 ? "OOS_VALIDATED" : "LOW_SAMPLE";
         String predictionAction = normalize(input.predictionAction());
+        String reportAction = normalize(input.reportAction());
+        boolean reportRisk = RISK_ACTIONS.contains(reportAction)
+                && llmConfidence.compareTo(new BigDecimal("0.50")) >= 0;
         boolean hardRisk = input.hardStop() || risk.compareTo(HIGH_RISK) >= 0
-                || RISK_ACTIONS.contains(predictionAction);
+                || RISK_ACTIONS.contains(predictionAction) || reportRisk;
         String category;
         String action;
         if (hardRisk) {
@@ -104,9 +114,11 @@ public class DecisionPolicyV1 implements AiDailyDecisionPolicy {
 
     private static BigDecimal unit(BigDecimal value) {
         if (value == null) {
-            return null;
+            return new BigDecimal("0.50");
         }
-        return value.max(BigDecimal.ZERO).min(BigDecimal.ONE);
+        BigDecimal normalized = value.compareTo(BigDecimal.ONE) > 0
+                ? value.divide(new BigDecimal("100"), 8, RoundingMode.HALF_UP) : value;
+        return normalized.max(BigDecimal.ZERO).min(BigDecimal.ONE);
     }
 
     private static BigDecimal percent(BigDecimal value) {
@@ -123,6 +135,16 @@ public class DecisionPolicyV1 implements AiDailyDecisionPolicy {
 
     private static String normalize(String value) {
         return value == null ? "WATCH" : value.trim().toUpperCase();
+    }
+
+    private static BigDecimal reportSignal(String action, BigDecimal confidence) {
+        BigDecimal direction = switch (normalize(action)) {
+            case "BUY", "HOLD" -> new BigDecimal("0.85");
+            case "REDUCE", "SELL" -> new BigDecimal("0.15");
+            default -> new BigDecimal("0.50");
+        };
+        return new BigDecimal("0.50").add(direction.subtract(new BigDecimal("0.50"))
+                .multiply(confidence));
     }
 
     private static String riskLevel(BigDecimal risk) {

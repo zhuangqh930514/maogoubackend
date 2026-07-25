@@ -20,8 +20,20 @@ public interface AiUserDailyProjectionService {
             Long globalPipelineRunId,
             Long userPipelineRunId,
             String idempotencyKey,
-            LocalDateTime generatedAt
+            LocalDateTime generatedAt,
+            boolean rebuildCurrentSnapshot
     ) {
+        public ProjectionRequest(
+                Long userId,
+                LocalDate tradeDate,
+                Long globalPipelineRunId,
+                Long userPipelineRunId,
+                String idempotencyKey,
+                LocalDateTime generatedAt
+        ) {
+            this(userId, tradeDate, globalPipelineRunId, userPipelineRunId,
+                    idempotencyKey, generatedAt, false);
+        }
     }
 
     record ProjectionResult(

@@ -115,6 +115,9 @@ public final class AiResearchDailyReportPayloads {
             BigDecimal riskScore,
             BigDecimal historicalHitRate,
             Integer historicalSampleCount,
+            String evidenceScope,
+            BigDecimal historicalHitRateLower,
+            BigDecimal historicalHitRateUpper,
             String confidenceLevel,
             String freshnessStatus,
             String reasonSummary,
@@ -137,7 +140,42 @@ public final class AiResearchDailyReportPayloads {
             BigDecimal strategyValidationScore,
             BigDecimal riskComponent,
             String decisionSource,
-            String unavailableReason
+            String decisionPolicyVersion,
+            String unavailableReason,
+            PositionPlan positionPlan,
+            List<DecisionPlan> decisionPlans
+        ) {
+        }
+
+    /** A condition plan for a formal rule-based daily decision, not an AI report. */
+    public record DecisionPlan(
+            Integer horizonDays,
+            String planSource,
+            String officialAction,
+            String status,
+            LocalDate targetTradeDate,
+            LocalDate outcomeTradeDate,
+            String triggeredState,
+            BigDecimal netActionReturn,
+            BigDecimal excessReturn,
+            Boolean actionEffective,
+            String message
+    ) {
+    }
+
+    /**
+     * Compact, user-facing conditions for an actual holding. These remain
+     * if-then rules, rather than being represented as a directional forecast.
+     */
+    public record PositionPlan(
+            BigDecimal averageCost,
+            BigDecimal currentPrice,
+            BigDecimal profitRate,
+            String protectionCondition,
+            String reduceCondition,
+            String takeProfitCondition,
+            String invalidationCondition,
+            String riskAdvice
     ) {
     }
 

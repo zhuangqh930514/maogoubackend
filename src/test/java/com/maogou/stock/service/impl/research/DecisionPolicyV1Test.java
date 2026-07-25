@@ -12,24 +12,24 @@ class DecisionPolicyV1Test {
     private final DecisionPolicyV1 policy = new DecisionPolicyV1();
 
     @Test
-    void usesTheVersionedFiveComponentFormulaAndIgnoresLlmConfidence() {
+    void usesTheVersionedEvidenceFormulaAndAppliesAlignedAiConfidence() {
         AiDailyDecisionPolicy.Input input = input(400, false, false, "BUY", false, null);
 
         AiDailyDecisionPolicy.Decision lowLlm = policy.decide(input.withLlmConfidence(new BigDecimal("0.10")));
         AiDailyDecisionPolicy.Decision highLlm = policy.decide(input.withLlmConfidence(new BigDecimal("0.99")));
 
         assertThat(lowLlm.horizonSignalScore()).isEqualByComparingTo("77.0000");
-        assertThat(lowLlm.systemScore()).isEqualByComparingTo("74.1500");
-        assertThat(highLlm.systemScore()).isEqualByComparingTo(lowLlm.systemScore());
+        assertThat(highLlm.systemScore()).isGreaterThan(lowLlm.systemScore());
         assertThat(lowLlm.category()).isEqualTo("RECOMMEND");
         assertThat(lowLlm.finalAction()).isEqualTo("BUY");
-        assertThat(policy.version()).isEqualTo("DECISION/1.0.0");
+        assertThat(policy.version()).isEqualTo("DECISION/1.1.0");
     }
 
     @Test
     void capsAHighScoreAtCautiousUntilTwoHundredOosEvaluationsExist() {
         AiDailyDecisionPolicy.Decision decision = policy.decide(
-                input(199, false, false, "BUY", false, null));
+                input(199, false, false, "BUY", false, null)
+                        .withLlmConfidence(BigDecimal.ONE));
 
         assertThat(decision.systemScore()).isGreaterThanOrEqualTo(new BigDecimal("70"));
         assertThat(decision.category()).isEqualTo("CAUTIOUS");
@@ -63,6 +63,17 @@ class DecisionPolicyV1Test {
         assertThat(decision.unavailableReason()).isEqualTo("MISSING_T2_PREDICTION");
     }
 
+    @Test
+    void aConfidentAlignedAiRiskActionOverridesAPositivePrediction() {
+        AiDailyDecisionPolicy.Decision decision = policy.decide(
+                input(400, false, false, "BUY", true, null)
+                        .withLlmConfidence(new BigDecimal("0.80"))
+                        .withReportAction("REDUCE"));
+
+        assertThat(decision.category()).isEqualTo("HOLDING_RISK");
+        assertThat(decision.finalAction()).isEqualTo("REDUCE");
+    }
+
     private static AiDailyDecisionPolicy.Input input(
             int oosCount,
             boolean hardStop,
@@ -84,6 +95,7 @@ class DecisionPolicyV1Test {
                 reduceSignal ? "REDUCE" : action,
                 holding,
                 unavailableReason,
-                BigDecimal.ZERO);
+                BigDecimal.ZERO,
+                action);
     }
 }

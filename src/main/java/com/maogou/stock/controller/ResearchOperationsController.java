@@ -9,6 +9,7 @@ import com.maogou.stock.service.research.AiTrainingDatasetPackageImportService;
 import com.maogou.stock.service.research.AiHistoricalIndustryBarImportService;
 import com.maogou.stock.service.research.AiHistoricalTradingStateImportService;
 import com.maogou.stock.service.research.AiResearchOperationsService;
+import com.maogou.stock.service.research.AiConditionalRuleGovernanceService;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -27,6 +28,7 @@ public class ResearchOperationsController {
     private final AiTrainingDatasetPackageImportService trainingDatasetPackageImportService;
     private final AiHistoricalTradingStateImportService historicalTradingStateImportService;
     private final AiHistoricalIndustryBarImportService historicalIndustryBarImportService;
+    private final AiConditionalRuleGovernanceService conditionalRuleGovernanceService;
     private final ResearchOperatorAuthorizer authorizer;
 
     public ResearchOperationsController(
@@ -35,6 +37,7 @@ public class ResearchOperationsController {
             AiTrainingDatasetPackageImportService trainingDatasetPackageImportService,
             AiHistoricalTradingStateImportService historicalTradingStateImportService,
             AiHistoricalIndustryBarImportService historicalIndustryBarImportService,
+            AiConditionalRuleGovernanceService conditionalRuleGovernanceService,
             ResearchOperatorAuthorizer authorizer
     ) {
         this.operationsService = operationsService;
@@ -42,6 +45,7 @@ public class ResearchOperationsController {
         this.trainingDatasetPackageImportService = trainingDatasetPackageImportService;
         this.historicalTradingStateImportService = historicalTradingStateImportService;
         this.historicalIndustryBarImportService = historicalIndustryBarImportService;
+        this.conditionalRuleGovernanceService = conditionalRuleGovernanceService;
         this.authorizer = authorizer;
     }
 
@@ -155,6 +159,50 @@ public class ResearchOperationsController {
             @RequestBody ResearchLabPayloads.GovernanceRequest request) {
         authorizer.requireOperator();
         return ApiResponse.ok(operationsService.rollback(currentUserId(), id, request));
+    }
+
+    @PostMapping("/conditional-rules/candidates")
+    public ApiResponse<AiConditionalRuleGovernanceService.CandidateResult> createConditionalRuleCandidate(
+            @RequestBody ResearchLabPayloads.ConditionalRuleCandidateRequest request) {
+        authorizer.requireOperator();
+        return ApiResponse.ok(conditionalRuleGovernanceService.createCandidate(currentUserId(),
+                new AiConditionalRuleGovernanceService.CandidateRequest(
+                        request.sourceTradeRuleConfigId(), request.versionNo(), request.name(), request.overrideJson(),
+                        java.time.LocalDateTime.now())));
+    }
+
+    @PostMapping("/actions/run-conditional-rule-walk-forward")
+    public ApiResponse<ResearchLabPayloads.ActionAccepted> runConditionalRuleWalkForward(
+            @RequestBody ResearchLabPayloads.ConditionalRuleExperimentRequest request) {
+        authorizer.requireOperator();
+        return ApiResponse.ok(operationsService.runConditionalRuleWalkForward(currentUserId(), request));
+    }
+
+    @PostMapping("/actions/run-conditional-rule-shadow")
+    public ApiResponse<ResearchLabPayloads.ActionAccepted> runConditionalRuleShadow(
+            @RequestBody ResearchLabPayloads.ConditionalRuleShadowRequest request) {
+        authorizer.requireOperator();
+        return ApiResponse.ok(operationsService.runConditionalRuleShadow(currentUserId(), request));
+    }
+
+    @PostMapping("/conditional-rules/shadow/{id}/approve")
+    public ApiResponse<AiConditionalRuleGovernanceService.ApprovalResult> approveConditionalRule(
+            @PathVariable Long id,
+            @RequestBody ResearchLabPayloads.ConditionalRuleDecisionRequest request) {
+        authorizer.requireOperator();
+        return ApiResponse.ok(conditionalRuleGovernanceService.approve(currentUserId(),
+                new AiConditionalRuleGovernanceService.ApprovalRequest(
+                        id, request.reason(), request.policyVersion(), java.time.LocalDateTime.now())));
+    }
+
+    @PostMapping("/conditional-rules/shadow/{id}/reject")
+    public ApiResponse<AiConditionalRuleGovernanceService.ApprovalResult> rejectConditionalRule(
+            @PathVariable Long id,
+            @RequestBody ResearchLabPayloads.ConditionalRuleDecisionRequest request) {
+        authorizer.requireOperator();
+        return ApiResponse.ok(conditionalRuleGovernanceService.reject(currentUserId(),
+                new AiConditionalRuleGovernanceService.RejectionRequest(
+                        id, request.reason(), request.policyVersion(), java.time.LocalDateTime.now())));
     }
 
     private static Long currentUserId() {

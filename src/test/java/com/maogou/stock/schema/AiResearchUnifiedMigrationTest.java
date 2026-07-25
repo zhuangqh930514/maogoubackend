@@ -52,6 +52,7 @@ class AiResearchUnifiedMigrationTest {
             "ai_research_universe",
             "ai_research_universe_snapshot",
             "ai_research_universe_item",
+            "ai_research_universe_item_lineage",
             "ai_industry_daily_bar",
             "ai_data_batch",
             "ai_source_observation",
@@ -127,9 +128,13 @@ class AiResearchUnifiedMigrationTest {
             "uk_decision_item_prediction",
             "uk_source_health_provider",
             "uk_active_strategy_release",
+            "uk_trade_rule_config_single_active",
             "uk_user_strategy_binding",
             "uk_current_daily_decision",
             "uk_current_research_report",
+            "uk_universe_item_lineage_source",
+            "idx_universe_item_lineage_owner",
+            "idx_universe_item_lineage_active",
             "idx_source_stock_type_event",
             "idx_sample_trade_stock",
             "idx_prediction_strategy_horizon",
@@ -245,6 +250,14 @@ class AiResearchUnifiedMigrationTest {
             assertThat(scalarLong(connection,
                     "SELECT COUNT(*) FROM ai_user_strategy_binding WHERE current_guard = 1"))
                     .isEqualTo(scalarLong(connection, "SELECT COUNT(*) FROM user_account WHERE deleted = 0"));
+
+            assertThatThrownBy(() -> execute(connection, """
+                    INSERT INTO ai_trade_rule_config
+                        (user_id, strategy_release_id, version_no, name, status, config_json)
+                    VALUES
+                        (1, 1, 'H2-DUPLICATE-ACTIVE/1.0.0', '重复正式条件规则', 'ACTIVE', '{}')
+                    """))
+                    .satisfies(error -> assertThat(findSqlState(error)).isEqualTo("23505"));
 
             assertThatThrownBy(() -> execute(connection, """
                     INSERT INTO ai_strategy_release
@@ -465,6 +478,15 @@ class AiResearchUnifiedMigrationTest {
                 SELECT COUNT(*) FROM ai_trade_rule_config
                 WHERE user_id = %d AND status = 'ACTIVE' AND seed_version = '20260714-unified-1.1'
                 """.formatted(userId))).isEqualTo(1);
+        assertThatThrownBy(() -> execute(connection, """
+                INSERT INTO ai_trade_rule_config
+                    (user_id, strategy_release_id, version_no, name, status, config_json)
+                SELECT %d, strategy_release_id, 'TEST-DUPLICATE-ACTIVE/%d', '重复正式条件规则', 'ACTIVE', '{}'
+                FROM ai_trade_rule_config
+                WHERE user_id = %d AND status = 'ACTIVE'
+                LIMIT 1
+                """.formatted(userId, userId, userId)))
+                .satisfies(error -> assertThat(findSqlState(error)).isEqualTo("23000"));
         if (assertMigratedCalendar) {
             assertThat(scalarLong(connection, """
                     SELECT COUNT(*) FROM ai_trading_calendar

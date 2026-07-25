@@ -36,6 +36,10 @@ public class AiTradePlanReview {
     public BigDecimal postTriggerReturn;
     public BigDecimal maxFavorableReturn;
     public BigDecimal maxAdverseReturn;
+    public BigDecimal transactionCostBps;
+    public BigDecimal netActionReturn;
+    public BigDecimal benchmarkReturn;
+    public BigDecimal excessReturn;
     public Integer actionEffective;
     public BigDecimal reviewScore;
     public String actualMetricsJson;

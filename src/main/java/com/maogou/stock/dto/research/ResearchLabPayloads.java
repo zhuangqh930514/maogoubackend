@@ -133,6 +133,58 @@ public final class ResearchLabPayloads {
         }
     }
 
+    public record ConditionalRuleCandidateRequest(
+            Long sourceTradeRuleConfigId,
+            String versionNo,
+            String name,
+            String overrideJson
+    ) {
+        public ConditionalRuleCandidateRequest {
+            versionNo = trim(versionNo);
+            name = trim(name);
+            overrideJson = trim(overrideJson);
+        }
+    }
+
+    public record ConditionalRuleExperimentRequest(
+            Long candidateTradeRuleConfigId,
+            Integer horizonDays,
+            Integer initialTrainDays,
+            Integer validationDays,
+            Integer testDays,
+            Integer stepDays,
+            Integer foldCount,
+            Integer purgeDays,
+            Integer embargoDays,
+            String idempotencyKey
+    ) {
+        public ConditionalRuleExperimentRequest {
+            idempotencyKey = trim(idempotencyKey);
+        }
+    }
+
+    public record ConditionalRuleShadowRequest(
+            Long experimentId,
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate windowStartDate,
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate windowEndDate,
+            String idempotencyKey
+    ) {
+        public ConditionalRuleShadowRequest {
+            idempotencyKey = trim(idempotencyKey);
+        }
+    }
+
+    public record ConditionalRuleDecisionRequest(
+            Long shadowObservationId,
+            String reason,
+            String policyVersion
+    ) {
+        public ConditionalRuleDecisionRequest {
+            reason = trim(reason);
+            policyVersion = trim(policyVersion);
+        }
+    }
+
     public record ActionAccepted(Long pipelineRunId, String status) {
         public ActionAccepted {
             if (pipelineRunId == null || pipelineRunId <= 0) {

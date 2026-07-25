@@ -35,6 +35,7 @@ public class AiDailyDecisionItem {
     public String confidenceLevel;
     public Integer outOfSampleCount;
     public BigDecimal historicalHitRate;
+    public String evidenceScope;
     public String triggerFactorsJson;
     public String reasonSummary;
     public String unavailableReason;

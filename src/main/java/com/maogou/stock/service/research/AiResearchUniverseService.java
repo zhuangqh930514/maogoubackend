@@ -27,7 +27,10 @@ public interface AiResearchUniverseService {
             String industryCode,
             String industryName,
             String industryStandard,
-            String industryEvidenceFingerprint
+            String industryEvidenceFingerprint,
+            Long sourceOwnerUserId,
+            Long sourceRecordId,
+            Boolean sourceActiveAtSnapshot
     ) {
         public UniverseCandidate(
                 String stockCode,
@@ -44,7 +47,7 @@ public interface AiResearchUniverseService {
         ) {
             this(stockCode, stockName, market, sourceType, included, excludeReason,
                     effectiveFrom, effectiveTo, listedStatus, sourceReference,
-                    sourceEvidenceFingerprint, null, null, null, null);
+                    sourceEvidenceFingerprint, null, null, null, null, null, null, null);
         }
 
         public UniverseCandidate(
@@ -57,7 +60,31 @@ public interface AiResearchUniverseService {
                 LocalDate effectiveFrom
         ) {
             this(stockCode, stockName, market, sourceType, included, excludeReason,
-                    effectiveFrom, null, "LISTED", null, null, null, null, null, null);
+                    effectiveFrom, null, "LISTED", null, null, null, null, null, null,
+                    null, null, null);
+        }
+
+        public UniverseCandidate(
+                String stockCode,
+                String stockName,
+                String market,
+                String sourceType,
+                boolean included,
+                String excludeReason,
+                LocalDate effectiveFrom,
+                LocalDate effectiveTo,
+                String listedStatus,
+                String sourceReference,
+                String sourceEvidenceFingerprint,
+                String industryCode,
+                String industryName,
+                String industryStandard,
+                String industryEvidenceFingerprint
+        ) {
+            this(stockCode, stockName, market, sourceType, included, excludeReason,
+                    effectiveFrom, effectiveTo, listedStatus, sourceReference,
+                    sourceEvidenceFingerprint, industryCode, industryName, industryStandard,
+                    industryEvidenceFingerprint, null, null, null);
         }
     }
 

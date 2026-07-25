@@ -3,7 +3,11 @@ package com.maogou.stock.service.impl.research;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.maogou.stock.domain.entity.AiFactorDefinition;
+import com.maogou.stock.domain.entity.AiTradeRuleConfig;
 import com.maogou.stock.domain.entity.research.AiDataBatch;
+import com.maogou.stock.domain.entity.research.AiConditionalRuleExperiment;
+import com.maogou.stock.domain.entity.research.AiConditionalRuleGovernanceEvent;
+import com.maogou.stock.domain.entity.research.AiConditionalRuleShadowObservation;
 import com.maogou.stock.domain.entity.research.AiFactorPerformance;
 import com.maogou.stock.domain.entity.research.AiFactorValue;
 import com.maogou.stock.domain.entity.research.AiLabelCostEvidence;
@@ -32,7 +36,11 @@ import com.maogou.stock.domain.entity.research.AiWalkForwardFold;
 import com.maogou.stock.domain.entity.research.AiWalkForwardRun;
 import com.maogou.stock.dto.research.ResearchLabPayloads;
 import com.maogou.stock.mapper.AiFactorDefinitionMapper;
+import com.maogou.stock.mapper.AiTradeRuleConfigMapper;
 import com.maogou.stock.mapper.research.AiDataBatchMapper;
+import com.maogou.stock.mapper.research.AiConditionalRuleExperimentMapper;
+import com.maogou.stock.mapper.research.AiConditionalRuleGovernanceEventMapper;
+import com.maogou.stock.mapper.research.AiConditionalRuleShadowObservationMapper;
 import com.maogou.stock.mapper.research.AiFactorPerformanceMapper;
 import com.maogou.stock.mapper.research.AiFactorValueMapper;
 import com.maogou.stock.mapper.research.AiLabelCostEvidenceMapper;
@@ -477,6 +485,60 @@ public class AiResearchLabQueryServiceImpl implements AiResearchLabQueryService 
     }
 
     @Override
+    public ResearchLabPayloads.PageResult<ResearchLabPayloads.EvidenceItem> conditionalRuleExperiments(
+            ResearchLabPayloads.QueryFilter filter,
+            Long userId
+    ) {
+        requireUser(userId);
+        QueryWrapper<AiConditionalRuleExperiment> query = new QueryWrapper<AiConditionalRuleExperiment>()
+                .eq("user_id", userId);
+        dates(query, filter, "window_end_date");
+        status(query, filter, "candidate_status");
+        return page(mapper(AiConditionalRuleExperimentMapper.class), query, filter,
+                "conditionalRuleExperiment", "created_at", "id");
+    }
+
+    @Override
+    public ResearchLabPayloads.PageResult<ResearchLabPayloads.EvidenceItem> conditionalRuleConfigs(
+            ResearchLabPayloads.QueryFilter filter,
+            Long userId
+    ) {
+        requireUser(userId);
+        QueryWrapper<AiTradeRuleConfig> query = new QueryWrapper<AiTradeRuleConfig>().eq("user_id", userId);
+        status(query, filter, "status");
+        return page(mapper(AiTradeRuleConfigMapper.class), query, filter,
+                "conditionalRuleConfig", "updated_at", "id");
+    }
+
+    @Override
+    public ResearchLabPayloads.PageResult<ResearchLabPayloads.EvidenceItem> conditionalRuleShadowObservations(
+            ResearchLabPayloads.QueryFilter filter,
+            Long userId
+    ) {
+        requireUser(userId);
+        QueryWrapper<AiConditionalRuleShadowObservation> query = new QueryWrapper<AiConditionalRuleShadowObservation>()
+                .eq("user_id", userId);
+        dates(query, filter, "window_end_date");
+        status(query, filter, "status");
+        return page(mapper(AiConditionalRuleShadowObservationMapper.class), query, filter,
+                "conditionalRuleShadowObservation", "observed_at", "id");
+    }
+
+    @Override
+    public ResearchLabPayloads.PageResult<ResearchLabPayloads.EvidenceItem> conditionalRuleGovernanceEvents(
+            ResearchLabPayloads.QueryFilter filter,
+            Long userId
+    ) {
+        requireUser(userId);
+        QueryWrapper<AiConditionalRuleGovernanceEvent> query = new QueryWrapper<AiConditionalRuleGovernanceEvent>()
+                .eq("user_id", userId);
+        dateTimes(query, filter, "occurred_at");
+        status(query, filter, "decision_status");
+        return page(mapper(AiConditionalRuleGovernanceEventMapper.class), query, filter,
+                "conditionalRuleGovernanceEvent", "occurred_at", "id");
+    }
+
+    @Override
     public ResearchLabPayloads.PageResult<ResearchLabPayloads.EvidenceItem> pipelineRuns(
             ResearchLabPayloads.QueryFilter filter) {
         QueryWrapper<AiPipelineRun> query = new QueryWrapper<>();
@@ -593,6 +655,12 @@ public class AiResearchLabQueryServiceImpl implements AiResearchLabQueryService 
             throw new IllegalArgumentException(message);
         }
         return value;
+    }
+
+    private static void requireUser(Long userId) {
+        if (userId == null || userId <= 0) {
+            throw new IllegalArgumentException("查询条件规则治理缺少认证用户");
+        }
     }
 
     private static <T> List<T> safe(List<T> values) {

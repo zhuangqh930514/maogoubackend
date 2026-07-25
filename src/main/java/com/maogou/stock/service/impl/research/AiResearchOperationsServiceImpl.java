@@ -3,6 +3,7 @@ package com.maogou.stock.service.impl.research;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.maogou.stock.config.AppProperties;
 import com.maogou.stock.domain.entity.research.AiPipelineRun;
 import com.maogou.stock.domain.entity.research.AiPipelineStep;
 import com.maogou.stock.domain.entity.research.AiStrategyGovernanceEvent;
@@ -13,7 +14,11 @@ import com.maogou.stock.mapper.research.AiPipelineStepMapper;
 import com.maogou.stock.mapper.research.AiStrategyGovernanceEventMapper;
 import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
 import com.maogou.stock.service.TradingCalendarService;
+import com.maogou.stock.service.AiConditionalTradeStrategyService;
+import com.maogou.stock.service.research.AiConditionalRuleGovernanceService;
 import com.maogou.stock.service.research.AiResearchCycleResult;
+import com.maogou.stock.service.research.AiDailyReportGenerationService;
+import com.maogou.stock.service.research.AiDailyDecisionPlanService;
 import com.maogou.stock.service.research.AiGlobalDailyResearchService;
 import com.maogou.stock.service.research.AiHistoricalBootstrapService;
 import com.maogou.stock.service.research.AiHistoricalEvidenceImportService;
@@ -36,6 +41,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
@@ -57,8 +63,13 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
     private final AiLabelVerificationCoordinator labelCoordinator;
     private final AiWeeklyEvolutionRunner weeklyRunner;
     private final AiMonthlyTrainingRunner trainingRunner;
+    private final AiDailyReportGenerationService dailyReportGenerationService;
+    private final AiConditionalTradeStrategyService conditionalTradeStrategyService;
+    private final AiConditionalRuleGovernanceService conditionalRuleGovernanceService;
+    private final AiDailyDecisionPlanService dailyDecisionPlanService;
     private final AiUserDailyProjectionService projectionService;
     private final AiStrategyGovernanceService governanceService;
+    private final AppProperties properties;
     private final TaskExecutor taskExecutor;
     private final TransactionTemplate transactionTemplate;
     private final ObjectMapper objectMapper;
@@ -75,8 +86,13 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
             AiLabelVerificationCoordinator labelCoordinator,
             AiWeeklyEvolutionRunner weeklyRunner,
             AiMonthlyTrainingRunner trainingRunner,
+            AiDailyReportGenerationService dailyReportGenerationService,
+            AiConditionalTradeStrategyService conditionalTradeStrategyService,
+            AiConditionalRuleGovernanceService conditionalRuleGovernanceService,
+            AiDailyDecisionPlanService dailyDecisionPlanService,
             AiUserDailyProjectionService projectionService,
             AiStrategyGovernanceService governanceService,
+            AppProperties properties,
             @Qualifier("researchTaskExecutor") TaskExecutor taskExecutor,
             TransactionTemplate transactionTemplate,
             ObjectMapper objectMapper
@@ -92,8 +108,13 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
         this.labelCoordinator = labelCoordinator;
         this.weeklyRunner = weeklyRunner;
         this.trainingRunner = trainingRunner;
+        this.dailyReportGenerationService = dailyReportGenerationService;
+        this.conditionalTradeStrategyService = conditionalTradeStrategyService;
+        this.conditionalRuleGovernanceService = conditionalRuleGovernanceService;
+        this.dailyDecisionPlanService = dailyDecisionPlanService;
         this.projectionService = projectionService;
         this.governanceService = governanceService;
+        this.properties = properties;
         this.taskExecutor = taskExecutor;
         this.transactionTemplate = transactionTemplate;
         this.objectMapper = objectMapper;
@@ -209,10 +230,31 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
                 "USER_DAILY_PROJECTION", globalRun.strategyReleaseId, globalRun.modelVersionId,
                 key, input, authenticatedUserId, null);
         submitManaged(run, "PROJECT_USER_DAILY", () -> {
+            AiConditionalTradeStrategyService.ReviewRunResult review = conditionalTradeStrategyService
+                    .verifyMatured(authenticatedUserId, tradeDate);
+            AiDailyDecisionPlanService.PlanReviewRunResult decisionPlanReview = dailyDecisionPlanService
+                    .verifyMatured(authenticatedUserId, tradeDate);
+            AiDailyReportGenerationService.GenerationResult reports = dailyReportGenerationService.generate(
+                    new AiDailyReportGenerationService.GenerationRequest(
+                            authenticatedUserId, tradeDate, globalRun.dataBatchId, globalRun.strategyReleaseId));
             AiUserDailyProjectionService.ProjectionResult result = projectionService.project(
                     new AiUserDailyProjectionService.ProjectionRequest(
-                            authenticatedUserId, tradeDate, globalRun.id, run.id, key, LocalDateTime.now()));
-            return new Counts(result.items().size(), result.items().size(), 0);
+                            authenticatedUserId, tradeDate, globalRun.id, run.id, key, LocalDateTime.now(),
+                            value(run.retryCount) > 0));
+            boolean retryScheduled = reports.retryableFailureCount() > 0
+                    && value(run.retryCount) < Math.max(0, properties.getAi().getReportRetryMaxAttempts());
+            String retryMessage = retryScheduled
+                    ? "；包含 " + reports.retryableFailureCount() + " 个可恢复模型失败，系统将自动重试"
+                    : reports.retryableFailureCount() > 0
+                    ? "；模型重试次数已达上限，请检查模型配置"
+                    : "";
+            return new Counts(
+                    result.items().size() + reports.skipped().size() + review.processedCount()
+                            + decisionPlanReview.processedCount(),
+                    result.items().size(),
+                    reports.failedCount() + review.failedCount() + decisionPlanReview.failedCount(),
+                    reviewSummary(review, decisionPlanReview) + "；" + reports.summary() + retryMessage + detailedIssues(reports),
+                    retryScheduled);
         });
         return accepted(run);
     }
@@ -290,6 +332,56 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
         return accepted(run);
     }
 
+    @Override
+    public ResearchLabPayloads.ActionAccepted runConditionalRuleWalkForward(
+            Long actorUserId,
+            ResearchLabPayloads.ConditionalRuleExperimentRequest request
+    ) {
+        if (request == null || request.candidateTradeRuleConfigId() == null) {
+            throw new IllegalArgumentException("条件规则 Walk-forward 缺少候选规则配置");
+        }
+        String key = key(request.idempotencyKey(), "MANUAL:CONDITIONAL_RULE_WALK_FORWARD:"
+                + request.candidateTradeRuleConfigId() + ":" + fingerprint(
+                request.horizonDays(), request.initialTrainDays(), request.validationDays(), request.testDays(),
+                request.stepDays(), request.foldCount(), request.purgeDays(), request.embargoDays()));
+        AiPipelineRun run = prepareRun("GLOBAL", null, null, LocalDate.now(),
+                "CONDITIONAL_RULE_WALK_FORWARD", null, null, key,
+                fingerprint("CONDITIONAL_RULE_WALK_FORWARD", request.candidateTradeRuleConfigId(),
+                        request.horizonDays(), request.initialTrainDays(), request.validationDays(), request.testDays(),
+                        request.stepDays(), request.foldCount(), request.purgeDays(), request.embargoDays()),
+                actorUserId, "候选条件规则 Walk-forward");
+        submitManagedResult(run, "RUN_CONDITIONAL_RULE_WALK_FORWARD", () -> conditionalWalkForwardResult(
+                conditionalRuleGovernanceService.runWalkForward(actorUserId,
+                        new AiConditionalRuleGovernanceService.ExperimentRequest(
+                                request.candidateTradeRuleConfigId(), request.horizonDays(), request.initialTrainDays(),
+                                request.validationDays(), request.testDays(), request.stepDays(), request.foldCount(),
+                                request.purgeDays(), request.embargoDays(), key, LocalDateTime.now()))));
+        return accepted(run);
+    }
+
+    @Override
+    public ResearchLabPayloads.ActionAccepted runConditionalRuleShadow(
+            Long actorUserId,
+            ResearchLabPayloads.ConditionalRuleShadowRequest request
+    ) {
+        if (request == null || request.experimentId() == null) {
+            throw new IllegalArgumentException("条件规则 Shadow 缺少候选实验");
+        }
+        String key = key(request.idempotencyKey(), "MANUAL:CONDITIONAL_RULE_SHADOW:"
+                + request.experimentId() + ":" + fingerprint(request.windowStartDate(), request.windowEndDate()));
+        AiPipelineRun run = prepareRun("GLOBAL", null, null, LocalDate.now(),
+                "CONDITIONAL_RULE_SHADOW", null, null, key,
+                fingerprint("CONDITIONAL_RULE_SHADOW", request.experimentId(),
+                        request.windowStartDate(), request.windowEndDate()),
+                actorUserId, "候选条件规则 Shadow");
+        submitManagedResult(run, "RUN_CONDITIONAL_RULE_SHADOW", () -> conditionalShadowResult(
+                conditionalRuleGovernanceService.runShadow(actorUserId,
+                        new AiConditionalRuleGovernanceService.ShadowRequest(
+                                request.experimentId(), request.windowStartDate(), request.windowEndDate(),
+                                key, LocalDateTime.now()))));
+        return accepted(run);
+    }
+
     private AiPipelineRun governanceRun(
             Long actorUserId,
             AiStrategyRelease strategy,
@@ -353,6 +445,7 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
             throw new IllegalStateException("幂等键已绑定不同研究任务输入");
         }
         recoverStaleRun(stored, now);
+        recoverDueUserProjectionRetry(stored, now);
         recordRequest(stored.id, actorUserId, pipelineType, reason, idempotencyKey, now);
         AiPipelineRun current = runMapper.selectById(stored.id);
         return current == null ? stored : current;
@@ -371,6 +464,28 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
                 + "；最后更新时间=" + run.updatedAt;
         runMapper.recoverStaleRunning(
                 run.id, now.minus(STALE_RUN_GRACE), now, message, detail);
+    }
+
+    private void recoverDueUserProjectionRetry(AiPipelineRun run, LocalDateTime now) {
+        if (run == null || !"USER".equals(run.scopeType)
+                || !"USER_DAILY_PROJECTION".equals(run.pipelineType)
+                || !"PARTIAL_SUCCESS".equals(run.status) || run.nextRetryAt == null
+                || run.nextRetryAt.isAfter(now)) {
+            return;
+        }
+        int maxAttempts = Math.max(0, properties.getAi().getReportRetryMaxAttempts());
+        if (value(run.retryCount) >= maxAttempts) {
+            return;
+        }
+        String message = "正在重试此前失败的日报个股报告";
+        String detail = message + "；运行ID=" + run.id + "；已重试次数=" + value(run.retryCount);
+        if (runMapper.resetDueUserProjectionRetry(run.id, now, maxAttempts, message, detail) == 1) {
+            run.status = "PENDING";
+            run.retryCount = value(run.retryCount) + 1;
+            run.nextRetryAt = null;
+            run.finishedAt = null;
+            run.currentStep = "RETRY_PENDING";
+        }
     }
 
     private void recordRequest(
@@ -423,6 +538,14 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
         }
         AiPipelineStep step = prepareExecutionStep(run.id, stepKey);
         submit(run, () -> executeManaged(run.id, step, () -> managedCounts(operation.run())));
+    }
+
+    private void submitManagedResult(AiPipelineRun run, String stepKey, ManagedOperation operation) {
+        if (complete(run.status) || "RUNNING".equals(run.status)) {
+            return;
+        }
+        AiPipelineStep step = prepareExecutionStep(run.id, stepKey);
+        submit(run, () -> executeManaged(run.id, step, operation));
     }
 
     private void submitManagedCycle(AiPipelineRun run, String stepKey, CycleOperation operation) {
@@ -511,6 +634,9 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
             run.processedCount = result.processed();
             run.successCount = result.success();
             run.failedCount = result.failed();
+            run.nextRetryAt = result.scheduleRetry()
+                    ? finished.plusSeconds(Math.max(1L, properties.getAi().getReportRetryDelaySeconds()))
+                    : null;
             run.errorMessage = result.problem() ? PipelineMessageFormatter.summary(result.message()) : null;
             run.errorDetail = result.problem() ? PipelineMessageFormatter.detail(result.message()) : null;
             run.finishedAt = finished;
@@ -684,17 +810,17 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
         return switch (status) {
             case "SUCCESS" -> failed > 0
                     ? new ManagedResult("PARTIAL_SUCCESS", "SUCCESS_WITH_WARNINGS",
-                    processed, success, failed, message)
-                    : new ManagedResult("SUCCESS", "SUCCESS", processed, success, 0, message);
+                    processed, success, failed, message, false)
+                    : new ManagedResult("SUCCESS", "SUCCESS", processed, success, 0, message, false);
             case "PARTIAL_SUCCESS", "SUCCESS_WITH_WARNINGS" ->
                     new ManagedResult("PARTIAL_SUCCESS", "SUCCESS_WITH_WARNINGS",
-                            processed, success, failed, message);
+                            processed, success, failed, message, false);
             case "SKIPPED" -> new ManagedResult(
-                    "SKIPPED", "SKIPPED", processed, success, failed, message);
+                    "SKIPPED", "SKIPPED", processed, success, failed, message, false);
             case "INSUFFICIENT_DATA" -> new ManagedResult(
-                    "INSUFFICIENT_DATA", "INSUFFICIENT_DATA", processed, success, failed, message);
+                    "INSUFFICIENT_DATA", "INSUFFICIENT_DATA", processed, success, failed, message, false);
             case "FAILED" -> new ManagedResult(
-                    "FAILED", "FAILED", Math.max(processed, 1), success, Math.max(failed, 1), message);
+                    "FAILED", "FAILED", Math.max(processed, 1), success, Math.max(failed, 1), message, false);
             default -> throw new IllegalStateException("研究运行器返回未知状态：" + status);
         };
     }
@@ -705,9 +831,85 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
         }
         return counts.failed() > 0
                 ? new ManagedResult("PARTIAL_SUCCESS", "SUCCESS_WITH_WARNINGS",
-                counts.processed(), counts.success(), counts.failed(), "")
+                counts.processed(), counts.success(), counts.failed(), counts.message(), counts.scheduleRetry())
                 : new ManagedResult("SUCCESS", "SUCCESS",
-                counts.processed(), counts.success(), 0, "");
+                counts.processed(), counts.success(), 0, counts.message(), false);
+    }
+
+    private static ManagedResult conditionalWalkForwardResult(
+            AiConditionalRuleGovernanceService.ExperimentResult result
+    ) {
+        if (result == null || result.experiment() == null) {
+            throw new IllegalStateException("条件规则 Walk-forward 未返回实验结果");
+        }
+        var experiment = result.experiment();
+        if ("INSUFFICIENT_DATA".equals(experiment.status)) {
+            return new ManagedResult("INSUFFICIENT_DATA", "INSUFFICIENT_DATA",
+                    Math.max(0, experiment.eligibleSampleCount), 0, 0,
+                    "候选条件规则样本不足，未生成模拟信号或正式结论", false);
+        }
+        String message = "候选条件规则 Walk-forward 完成："
+                + ("WALK_FORWARD_PASSED".equals(experiment.candidateStatus)
+                ? "通过门槛，可进入 Shadow" : "未通过门槛，保持禁用");
+        return new ManagedResult("SUCCESS", "SUCCESS", Math.max(0, experiment.eligibleSampleCount),
+                Math.max(0, experiment.triggeredSampleCount), 0, message, false);
+    }
+
+    private static ManagedResult conditionalShadowResult(
+            AiConditionalRuleGovernanceService.ShadowResult result
+    ) {
+        if (result == null || result.observation() == null) {
+            throw new IllegalStateException("条件规则 Shadow 未返回观察结果");
+        }
+        var observation = result.observation();
+        if ("INSUFFICIENT_DATA".equals(observation.status)) {
+            return new ManagedResult("INSUFFICIENT_DATA", "INSUFFICIENT_DATA",
+                    Math.max(0, observation.eligibleSampleCount), 0, 0,
+                    "候选条件规则 Shadow 样本不足，保持禁用", false);
+        }
+        String message = "候选条件规则 Shadow 完成："
+                + ("READY_FOR_REVIEW".equals(observation.status)
+                ? "已达到人工复核条件，尚未启用" : "未达到门槛，保持禁用");
+        return new ManagedResult("SUCCESS", "SUCCESS", Math.max(0, observation.eligibleSampleCount),
+                Math.max(0, observation.candidateTriggeredCount), 0, message, false);
+    }
+
+    private static String detailedIssues(AiDailyReportGenerationService.GenerationResult result) {
+        if (result.failed().isEmpty() && result.skipped().isEmpty()) {
+            return "";
+        }
+        java.util.List<String> issues = new java.util.ArrayList<>();
+        result.failed().forEach(item -> issues.add(item.reason()));
+        result.skipped().stream().limit(12).forEach(item -> issues.add(item.reason()));
+        return "；" + PipelineMessageFormatter.summary(issues);
+    }
+
+    private static String reviewSummary(
+            AiConditionalTradeStrategyService.ReviewRunResult review,
+            AiDailyDecisionPlanService.PlanReviewRunResult decisionPlanReview
+    ) {
+        if (review == null) {
+            return "条件计划复盘未返回结果";
+        }
+        String summary = "条件计划复盘：处理 " + review.processedCount()
+                + "，已验证 " + review.verifiedCount()
+                + "，未触发 " + review.noTriggerCount()
+                + "，待到期 " + review.pendingCount()
+                + "，失败 " + review.failedCount();
+        String dailySummary = decisionPlanReview == null ? "日报条件计划复盘未返回结果"
+                : "日报条件计划复盘：处理 " + decisionPlanReview.processedCount()
+                + "，已验证 " + decisionPlanReview.verifiedCount()
+                + "，不执行 " + decisionPlanReview.noActionCount()
+                + "，待到期 " + decisionPlanReview.pendingCount()
+                + "，失败 " + decisionPlanReview.failedCount();
+        if ((review.errors() == null || review.errors().isEmpty())
+                && (decisionPlanReview == null || decisionPlanReview.errors().isEmpty())) {
+            return summary + "；" + dailySummary;
+        }
+        List<String> errors = new java.util.ArrayList<>();
+        if (review.errors() != null) errors.addAll(review.errors());
+        if (decisionPlanReview != null && decisionPlanReview.errors() != null) errors.addAll(decisionPlanReview.errors());
+        return summary + "；" + dailySummary + "；" + PipelineMessageFormatter.summary(errors);
     }
 
     private static void requireUser(Long userId) {
@@ -801,18 +1003,24 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
             int processed,
             int success,
             int failed,
-            String message
+            String message,
+            boolean scheduleRetry
     ) {
         boolean problem() {
             return !"SUCCESS".equals(runStatus);
         }
     }
 
-    private record Counts(int processed, int success, int failed) {
+    private record Counts(int processed, int success, int failed, String message, boolean scheduleRetry) {
+        private Counts(int processed, int success, int failed) {
+            this(processed, success, failed, "", false);
+        }
+
         private Counts {
             processed = Math.max(0, processed);
             success = Math.max(0, success);
             failed = Math.max(0, failed);
+            message = message == null ? "" : message;
             if (success + failed > processed) {
                 processed = success + failed;
             }

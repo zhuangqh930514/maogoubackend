@@ -21,4 +21,10 @@ public interface AiResearchOperationsService {
     ResearchLabPayloads.ActionAccepted reject(Long actorUserId, Long strategyId, ResearchLabPayloads.GovernanceRequest request);
 
     ResearchLabPayloads.ActionAccepted rollback(Long actorUserId, Long strategyId, ResearchLabPayloads.GovernanceRequest request);
+
+    ResearchLabPayloads.ActionAccepted runConditionalRuleWalkForward(
+            Long actorUserId, ResearchLabPayloads.ConditionalRuleExperimentRequest request);
+
+    ResearchLabPayloads.ActionAccepted runConditionalRuleShadow(
+            Long actorUserId, ResearchLabPayloads.ConditionalRuleShadowRequest request);
 }

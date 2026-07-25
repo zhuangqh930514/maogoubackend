@@ -16,6 +16,12 @@ public interface AiResearchDailyReportService {
 
     List<AiResearchDailyReportPayloads.ReportListItem> list(int limit);
 
+    ReportListPage pageHistory(ReportListQuery query);
+
+    DailyOverview overview(int historyLimit);
+
+    DecisionItemPage pageItems(Long reportId, DecisionItemQuery query);
+
     ReportView detail(Long reportId);
 
     ReportView rebuildToday();
@@ -85,6 +91,72 @@ public interface AiResearchDailyReportService {
                     view.marketRegime(), view.recommendationCount(), view.watchCount(),
                     view.avoidCount(), view.holdingRiskCount(), view.freshnessStatus(),
                     view.dataQualityScore(), view.content(), view.markdownContent(), view.generatedAt());
+        }
+    }
+
+    record DailyOverview(
+            ReportView report,
+            List<AiResearchDailyReportPayloads.ReportListItem> history,
+            List<DailyChange> dailyChanges,
+            LocalDateTime nextAutoRunAt
+    ) {
+    }
+
+    record ReportListQuery(LocalDate tradeDate, int page, int pageSize) {
+        public ReportListQuery {
+            page = Math.max(1, page);
+            pageSize = Math.max(1, Math.min(pageSize, 30));
+        }
+    }
+
+    record ReportListPage(
+            List<AiResearchDailyReportPayloads.ReportListItem> items,
+            long total,
+            int page,
+            int pageSize,
+            int totalPages
+    ) {
+        public static ReportListPage empty(int page, int pageSize) {
+            return new ReportListPage(List.of(), 0, Math.max(1, page), Math.max(1, pageSize), 0);
+        }
+    }
+
+    record DailyChange(
+            String stockCode,
+            String stockName,
+            String changeType,
+            String previousAction,
+            String currentAction,
+            String previousCategory,
+            String currentCategory,
+            String message
+    ) {
+    }
+
+    record DecisionItemQuery(
+            String category,
+            String action,
+            String dataStatus,
+            String keyword,
+            String sort,
+            int page,
+            int pageSize
+    ) {
+        public DecisionItemQuery {
+            page = Math.max(1, page);
+            pageSize = Math.max(1, Math.min(pageSize, 50));
+        }
+    }
+
+    record DecisionItemPage(
+            List<AiResearchDailyReportPayloads.StockCard> items,
+            long total,
+            int page,
+            int pageSize,
+            int totalPages
+    ) {
+        public static DecisionItemPage empty(int page, int pageSize) {
+            return new DecisionItemPage(List.of(), 0, Math.max(1, page), Math.max(1, pageSize), 0);
         }
     }
 }

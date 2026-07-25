@@ -250,6 +250,46 @@ class GlobalDailyResearchExecutorTest {
     }
 
     @Test
+    void excludesRestrictedAndSuspendedSecuritiesBeforeFormalSamplesAreCreated() throws Exception {
+        Fixture fixture = fixture();
+        AiDataBatch batch = batch();
+        batch.qualityStatus = "PARTIAL";
+        AiResearchUniverseItem stItem = item(1L, "600519", "SYSTEM_BASELINE");
+        stItem.stockName = "*ST 测试";
+        AiResearchUniverseItem suspendedItem = item(2L, "000001", "SYSTEM_BASELINE");
+        suspendedItem.stockName = "平安银行";
+        when(fixture.dataBatchMapper.selectById(55L)).thenReturn(batch);
+        when(fixture.itemMapper.selectList(any())).thenReturn(List.of(stItem, suspendedItem));
+
+        AiSourceObservation st = observation("600519", "READY");
+        st.providerCode = "EASTMONEY";
+        st.payloadJson = fixture.objectMapper.writeValueAsString(detail("600519", STARTED_AT));
+        AiSourceObservation suspended = observation("000001", "READY");
+        suspended.providerCode = "SINA";
+        StockDetailResponse suspendedDetail = detail("000001", STARTED_AT);
+        KlinePointResponse zeroVolume = new KlinePointResponse(
+                TRADE_DATE, BigDecimal.TEN, BigDecimal.TEN, BigDecimal.TEN,
+                BigDecimal.TEN, 0L, BigDecimal.ZERO);
+        suspended.payloadJson = fixture.objectMapper.writeValueAsString(new StockDetailResponse(
+                suspendedDetail.quote(), suspendedDetail.finance(), suspendedDetail.intraday(),
+                List.of(suspendedDetail.kline().get(0), zeroVolume), null, null));
+        when(fixture.observationMapper.selectList(any())).thenReturn(List.of(st, suspended));
+
+        AiGlobalDailyResearchExecutor.StepOutcome outcome = fixture.executor.execute(
+                "BUILD_SAMPLES", context(Map.of(
+                        "FETCH_SOURCE_DATA", "{\"universeSnapshotId\":91,\"dataBatchId\":55}")));
+
+        assertThat(outcome.status()).isEqualTo("SUCCESS");
+        assertThat(outcome.processedCount()).isEqualTo(2);
+        assertThat(outcome.successCount()).isZero();
+        assertThat(outcome.failedCount()).isZero();
+        assertThat(outcome.checkpointJson()).contains(
+                "600519", "ST 风险标识", "EASTMONEY",
+                "000001", "当日无成交", "SINA");
+        verify(fixture.snapshotService, never()).createOrGetSnapshot(any());
+    }
+
+    @Test
     void retainsSectorEvidenceWarningsWithoutMarkingLabelStepPartial() {
         Fixture fixture = fixture();
         when(fixture.labelCoordinator.matureSampleLabels(TRADE_DATE, STARTED_AT))
@@ -467,7 +507,7 @@ class GlobalDailyResearchExecutorTest {
         item.id = id;
         item.universeSnapshotId = 91L;
         item.stockCode = code;
-        item.stockName = code;
+        item.stockName = "测试股份" + code;
         item.sourceType = "USER_UNION";
         item.inclusionReason = reason;
         item.included = 1;

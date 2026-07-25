@@ -2,6 +2,7 @@ package com.maogou.stock.service.impl.research;
 
 import com.maogou.stock.domain.entity.research.AiPipelineRun;
 import com.maogou.stock.domain.entity.research.AiPipelineStep;
+import com.maogou.stock.config.AppProperties;
 import com.maogou.stock.mapper.research.AiPipelineRunMapper;
 import com.maogou.stock.mapper.research.AiPipelineStepMapper;
 import com.maogou.stock.service.research.AiGlobalDailyResearchExecutor;
@@ -32,6 +33,9 @@ public class AiGlobalDailyResearchServiceImpl implements AiGlobalDailyResearchSe
     private static final Logger log = LoggerFactory.getLogger(AiGlobalDailyResearchServiceImpl.class);
     private static final Duration DEFAULT_LEASE_DURATION = Duration.ofMinutes(2);
     private static final Duration DEFAULT_HEARTBEAT_INTERVAL = Duration.ofSeconds(20);
+    private static final int DEFAULT_RECOVERY_MAX_ATTEMPTS = 3;
+    private static final Duration DEFAULT_RECOVERY_BASE_DELAY = Duration.ofMinutes(5);
+    private static final Duration DEFAULT_RECOVERY_MAX_DELAY = Duration.ofMinutes(30);
     private static final ScheduledExecutorService HEARTBEAT_EXECUTOR = Executors.newScheduledThreadPool(
             1, daemonThreadFactory());
 
@@ -51,14 +55,24 @@ public class AiGlobalDailyResearchServiceImpl implements AiGlobalDailyResearchSe
     private final AiGlobalDailyResearchExecutor executor;
     private final Duration leaseDuration;
     private final Duration heartbeatInterval;
+    private final int recoveryMaxAttempts;
+    private final Duration recoveryBaseDelay;
+    private final Duration recoveryMaxDelay;
 
     @Autowired
     public AiGlobalDailyResearchServiceImpl(
             AiPipelineRunMapper runMapper,
             AiPipelineStepMapper stepMapper,
-            AiGlobalDailyResearchExecutor executor
+            AiGlobalDailyResearchExecutor executor,
+            AppProperties properties
     ) {
-        this(runMapper, stepMapper, executor, DEFAULT_LEASE_DURATION, DEFAULT_HEARTBEAT_INTERVAL);
+        this(runMapper, stepMapper, executor, DEFAULT_LEASE_DURATION, DEFAULT_HEARTBEAT_INTERVAL,
+                properties == null ? DEFAULT_RECOVERY_MAX_ATTEMPTS
+                        : properties.getScheduler().getPipelineRecoveryMaxAttempts(),
+                properties == null ? DEFAULT_RECOVERY_BASE_DELAY
+                        : Duration.ofSeconds(properties.getScheduler().getPipelineRecoveryBaseDelaySeconds()),
+                properties == null ? DEFAULT_RECOVERY_MAX_DELAY
+                        : Duration.ofSeconds(properties.getScheduler().getPipelineRecoveryMaxDelaySeconds()));
     }
 
     AiGlobalDailyResearchServiceImpl(
@@ -67,6 +81,20 @@ public class AiGlobalDailyResearchServiceImpl implements AiGlobalDailyResearchSe
             AiGlobalDailyResearchExecutor executor,
             Duration leaseDuration,
             Duration heartbeatInterval
+    ) {
+        this(runMapper, stepMapper, executor, leaseDuration, heartbeatInterval,
+                DEFAULT_RECOVERY_MAX_ATTEMPTS, DEFAULT_RECOVERY_BASE_DELAY, DEFAULT_RECOVERY_MAX_DELAY);
+    }
+
+    AiGlobalDailyResearchServiceImpl(
+            AiPipelineRunMapper runMapper,
+            AiPipelineStepMapper stepMapper,
+            AiGlobalDailyResearchExecutor executor,
+            Duration leaseDuration,
+            Duration heartbeatInterval,
+            int recoveryMaxAttempts,
+            Duration recoveryBaseDelay,
+            Duration recoveryMaxDelay
     ) {
         this.runMapper = runMapper;
         this.stepMapper = stepMapper;
@@ -79,6 +107,9 @@ public class AiGlobalDailyResearchServiceImpl implements AiGlobalDailyResearchSe
         }
         this.leaseDuration = leaseDuration;
         this.heartbeatInterval = heartbeatInterval;
+        this.recoveryMaxAttempts = Math.max(0, recoveryMaxAttempts);
+        this.recoveryBaseDelay = positive(recoveryBaseDelay, DEFAULT_RECOVERY_BASE_DELAY);
+        this.recoveryMaxDelay = positive(recoveryMaxDelay, DEFAULT_RECOVERY_MAX_DELAY);
     }
 
     @Override
@@ -101,7 +132,8 @@ public class AiGlobalDailyResearchServiceImpl implements AiGlobalDailyResearchSe
         run.leaseUntil = claimTime.plus(leaseDuration);
 
         try {
-            if ("FAILED".equals(run.status) || "WAITING_SOURCE".equals(run.status)) {
+            if ("FAILED".equals(run.status) || "FAILED_RECOVERABLE".equals(run.status)
+                    || "WAITING_SOURCE".equals(run.status)) {
                 run.retryCount = value(run.retryCount) + 1;
             }
             run.status = "RUNNING";
@@ -327,24 +359,25 @@ public class AiGlobalDailyResearchServiceImpl implements AiGlobalDailyResearchSe
     }
 
     private void failStep(AiPipelineRun run, AiPipelineStep step, RuntimeException exception, String owner) {
-        String detail = rootMessage(exception);
-        String message = PipelineMessageFormatter.summary(detail);
         LocalDateTime now = LocalDateTime.now();
+        PipelineFailureClassifier.FailureDisposition failure = PipelineFailureClassifier.classify(
+                step.stepKey, exception, value(run.retryCount), recoveryMaxAttempts,
+                recoveryBaseDelay, recoveryMaxDelay, now);
         step.status = "FAILED";
         step.nextRetryAt = null;
         step.leaseUntil = null;
-        step.errorMessage = message;
-        step.errorDetail = PipelineMessageFormatter.detail(detail);
+        step.errorMessage = PipelineMessageFormatter.summary(failure.summary());
+        step.errorDetail = PipelineMessageFormatter.detail(failure.detail());
         step.finishedAt = now;
         step.updatedAt = now;
         updateStepFenced(step, owner, now);
 
         List<AiPipelineStep> steps = orderedSteps(run.id);
         updateCounts(run, steps);
-        run.status = "FAILED";
+        run.status = failure.runStatus();
         run.currentStep = step.stepKey;
-        run.nextRetryAt = null;
-        run.errorMessage = message;
+        run.nextRetryAt = failure.nextRetryAt();
+        run.errorMessage = step.errorMessage;
         run.errorDetail = step.errorDetail;
         run.finishedAt = now;
         run.updatedAt = now;
@@ -352,7 +385,7 @@ public class AiGlobalDailyResearchServiceImpl implements AiGlobalDailyResearchSe
         try {
             executor.onPipelineFailure(context(run, new PipelineRequest(
                     run.tradeDate, run.strategyReleaseId, run.modelVersionId, run.idempotencyKey,
-                    run.inputFingerprint, run.startedAt), steps, owner), step.stepKey, message);
+                    run.inputFingerprint, run.startedAt), steps, owner), step.stepKey, step.errorMessage);
         } catch (RuntimeException ignored) {
             // Failure reporting is best-effort; the original step failure remains authoritative.
         }
@@ -441,7 +474,8 @@ public class AiGlobalDailyResearchServiceImpl implements AiGlobalDailyResearchSe
     }
 
     private static boolean isComplete(String status) {
-        return "SUCCESS".equals(status) || "PARTIAL_SUCCESS".equals(status);
+        return "SUCCESS".equals(status) || "PARTIAL_SUCCESS".equals(status)
+                || "FAILED_FINAL".equals(status);
     }
 
     private static void assertSameRequest(AiPipelineRun run, PipelineRequest request) {
@@ -465,6 +499,10 @@ public class AiGlobalDailyResearchServiceImpl implements AiGlobalDailyResearchSe
 
     private static int value(Integer value) {
         return value == null ? 0 : value;
+    }
+
+    private static Duration positive(Duration value, Duration fallback) {
+        return value == null || value.isZero() || value.isNegative() ? fallback : value;
     }
 
     private static String rootMessage(Throwable throwable) {

@@ -64,6 +64,20 @@ public interface AiResearchDailyReportMapper extends BaseMapper<AiResearchDailyR
     @Select("""
             SELECT * FROM ai_research_daily_report
             WHERE user_id = #{userId}
+              AND is_current = 1
+              AND trade_date < #{tradeDate}
+            ORDER BY trade_date DESC
+            LIMIT 1
+            """)
+    AiResearchDailyReport selectPreviousCurrent(
+            @Param("userId") Long userId,
+            @Param("tradeDate") LocalDate tradeDate
+    );
+
+    @Select("""
+            SELECT * FROM ai_research_daily_report
+            WHERE user_id = #{userId}
+              AND is_current = 1
             ORDER BY trade_date DESC, report_version DESC
             LIMIT #{limit}
             """)

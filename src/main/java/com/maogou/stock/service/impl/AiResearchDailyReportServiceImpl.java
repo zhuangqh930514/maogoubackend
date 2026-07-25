@@ -8,6 +8,8 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.maogou.stock.domain.entity.WatchStock;
+import com.maogou.stock.domain.entity.AiAnalysisReport;
+import com.maogou.stock.dto.portfolio.TradePositionAggregate;
 import com.maogou.stock.domain.entity.research.AiDailyDecisionItem;
 import com.maogou.stock.domain.entity.research.AiDailyDecisionItemPrediction;
 import com.maogou.stock.domain.entity.research.AiDailyDecisionSnapshot;
@@ -15,6 +17,7 @@ import com.maogou.stock.domain.entity.research.AiPipelineRun;
 import com.maogou.stock.domain.entity.research.AiPipelineStep;
 import com.maogou.stock.domain.entity.research.AiResearchDailyReport;
 import com.maogou.stock.domain.entity.research.AiStrategyRelease;
+import com.maogou.stock.dto.ai.AiConditionalStrategyPayload;
 import com.maogou.stock.dto.ai.AiResearchDailyReportPayloads;
 import com.maogou.stock.mapper.research.AiDailyDecisionItemMapper;
 import com.maogou.stock.mapper.research.AiDailyDecisionItemPredictionMapper;
@@ -24,9 +27,15 @@ import com.maogou.stock.mapper.research.AiPipelineStepMapper;
 import com.maogou.stock.mapper.research.AiResearchDailyReportMapper;
 import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
 import com.maogou.stock.mapper.WatchStockMapper;
+import com.maogou.stock.mapper.AiAnalysisReportMapper;
+import com.maogou.stock.mapper.TradeRecordMapper;
 import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.AiResearchDailyReportService;
+import com.maogou.stock.service.AiUserNotificationService;
 import com.maogou.stock.service.TradingCalendarService;
+import com.maogou.stock.service.research.AiDailyDecisionPlanService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -40,11 +49,14 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Service
 public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportService {
+
+    private static final Logger log = LoggerFactory.getLogger(AiResearchDailyReportServiceImpl.class);
 
     private final AiResearchDailyReportMapper reportMapper;
     private final AiDailyDecisionSnapshotMapper snapshotMapper;
@@ -54,8 +66,12 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
     private final AiPipelineStepMapper pipelineStepMapper;
     private final AiStrategyReleaseMapper strategyReleaseMapper;
     private final WatchStockMapper watchStockMapper;
+    private final AiAnalysisReportMapper analysisReportMapper;
+    private final TradeRecordMapper tradeRecordMapper;
     private final ObjectMapper objectMapper;
     private final TradingCalendarService tradingCalendarService;
+    private final AiUserNotificationService notificationService;
+    private final AiDailyDecisionPlanService dailyDecisionPlanService;
 
     public AiResearchDailyReportServiceImpl(
             AiResearchDailyReportMapper reportMapper,
@@ -66,8 +82,12 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
             AiPipelineStepMapper pipelineStepMapper,
             AiStrategyReleaseMapper strategyReleaseMapper,
             WatchStockMapper watchStockMapper,
+            AiAnalysisReportMapper analysisReportMapper,
+            TradeRecordMapper tradeRecordMapper,
             ObjectMapper objectMapper,
-            TradingCalendarService tradingCalendarService
+            TradingCalendarService tradingCalendarService,
+            AiUserNotificationService notificationService,
+            AiDailyDecisionPlanService dailyDecisionPlanService
     ) {
         this.reportMapper = reportMapper;
         this.snapshotMapper = snapshotMapper;
@@ -77,8 +97,12 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
         this.pipelineStepMapper = pipelineStepMapper;
         this.strategyReleaseMapper = strategyReleaseMapper;
         this.watchStockMapper = watchStockMapper;
+        this.analysisReportMapper = analysisReportMapper;
+        this.tradeRecordMapper = tradeRecordMapper;
         this.objectMapper = objectMapper;
         this.tradingCalendarService = tradingCalendarService;
+        this.notificationService = notificationService;
+        this.dailyDecisionPlanService = dailyDecisionPlanService;
     }
 
     @Override
@@ -110,7 +134,9 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
             reportMapper.updateById(current);
         }
         reportMapper.insert(entity);
-        return ReportView.from(toView(entity));
+        ReportView view = ReportView.from(toView(entity));
+        notificationService.publishDailyReport(request.userId(), view);
+        return view;
     }
 
     @Override
@@ -141,6 +167,83 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
     }
 
     @Override
+    public ReportListPage pageHistory(ReportListQuery query) {
+        ReportListQuery resolved = query == null ? new ReportListQuery(null, 1, 10) : query;
+        long userId = AuthContext.currentUserIdOrDefault();
+        QueryWrapper<AiResearchDailyReport> filter = historyQuery(userId, resolved);
+        long total = reportMapper.selectCount(filter);
+        if (total == 0) {
+            return ReportListPage.empty(resolved.page(), resolved.pageSize());
+        }
+        int totalPages = (int) Math.ceil((double) total / resolved.pageSize());
+        int page = Math.min(resolved.page(), totalPages);
+        QueryWrapper<AiResearchDailyReport> pageQuery = historyQuery(userId, resolved)
+                .orderByDesc("trade_date", "generated_at", "id")
+                .last("LIMIT " + resolved.pageSize() + " OFFSET " + ((long) (page - 1) * resolved.pageSize()));
+        List<AiResearchDailyReportPayloads.ReportListItem> items = safeList(reportMapper.selectList(pageQuery)).stream()
+                .map(AiResearchDailyReportPayloads.ReportListItem::from)
+                .toList();
+        return new ReportListPage(items, total, page, resolved.pageSize(), totalPages);
+    }
+
+    @Override
+    public DailyOverview overview(int historyLimit) {
+        long userId = AuthContext.currentUserIdOrDefault();
+        AiResearchDailyReport entity = reportMapper.selectLatestCurrent(userId, latestExpectedTradeDate());
+        if (entity == null) {
+            throw new IllegalArgumentException("暂无投研日报");
+        }
+        ReportView fullReport = ReportView.from(toView(entity));
+        AiResearchDailyReport previous = reportMapper.selectPreviousCurrent(userId, entity.tradeDate);
+        ReportView previousView = previous == null ? null : ReportView.from(toView(previous));
+        return new DailyOverview(
+                trimPagedSections(fullReport),
+                list(historyLimit),
+                dailyChanges(fullReport, previousView),
+                tradingCalendarService.nextTradingDateTime(LocalDateTime.now(), 16, 0));
+    }
+
+    @Override
+    public DecisionItemPage pageItems(Long reportId, DecisionItemQuery query) {
+        if (reportId == null || reportId <= 0) {
+            throw new IllegalArgumentException("日报 ID 无效");
+        }
+        DecisionItemQuery resolved = query == null
+                ? new DecisionItemQuery("ALL", null, "ALL", null, "SYSTEM_SCORE_DESC", 1, 10)
+                : query;
+        long userId = AuthContext.currentUserIdOrDefault();
+        AiResearchDailyReport report = reportMapper.selectById(reportId);
+        if (report == null || !Objects.equals(report.userId, userId)) {
+            throw new IllegalArgumentException("日报不存在");
+        }
+        if (report.decisionSnapshotId == null) {
+            throw new IllegalStateException("该日报为字段升级前的历史版本，暂不支持按页读取决策明细");
+        }
+        QueryWrapper<AiDailyDecisionItem> filter = decisionItemQuery(userId, report.decisionSnapshotId, resolved);
+        long total = itemMapper.selectCount(filter);
+        if (total == 0) {
+            return DecisionItemPage.empty(resolved.page(), resolved.pageSize());
+        }
+        int totalPages = (int) Math.ceil((double) total / resolved.pageSize());
+        int page = Math.min(resolved.page(), totalPages);
+        QueryWrapper<AiDailyDecisionItem> pageQuery = decisionItemQuery(userId, report.decisionSnapshotId, resolved);
+        applyDecisionItemSort(pageQuery, resolved.sort());
+        pageQuery.last("LIMIT " + resolved.pageSize() + " OFFSET " + ((long) (page - 1) * resolved.pageSize()));
+        List<AiDailyDecisionItem> items = safeList(itemMapper.selectList(pageQuery));
+        Map<Long, AiDailyDecisionItemPrediction> primaryPredictions = primaryPredictions(userId, items);
+        Map<Long, AiAnalysisReport> reportsById = reportsById(userId, items);
+        Map<String, HoldingSnapshot> holdings = holdings(userId);
+        Map<Long, List<AiResearchDailyReportPayloads.DecisionPlan>> plans = decisionPlans(userId, items);
+        List<AiResearchDailyReportPayloads.StockCard> cards = items.stream()
+                .map(item -> stockCard(item,
+                        item.id == null ? null : primaryPredictions.get(item.id),
+                        item.reportId == null ? null : reportsById.get(item.reportId),
+                        holdings.get(item.stockCode), decisionPlansForItem(plans, item.id)))
+                .toList();
+        return new DecisionItemPage(cards, total, page, resolved.pageSize(), totalPages);
+    }
+
+    @Override
     public ReportView detail(Long reportId) {
         if (reportId == null || reportId <= 0) {
             throw new IllegalArgumentException("日报 ID 无效");
@@ -149,7 +252,209 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
         if (entity == null || !Objects.equals(entity.userId, AuthContext.currentUserIdOrDefault())) {
             throw new IllegalArgumentException("日报不存在");
         }
-        return ReportView.from(toView(entity));
+        return trimPagedSections(ReportView.from(toView(entity)));
+    }
+
+    /**
+     * Watch and unavailable groups can contain an entire user research pool. They have a
+     * dedicated, ownership-scoped page endpoint, so do not transfer them on every page load.
+     * Legacy reports cannot use that endpoint because they have no decision snapshot; retain
+     * their archived content for read compatibility.
+     */
+    private static ReportView trimPagedSections(ReportView view) {
+        if (view == null || view.decisionSnapshotId() == null || view.content() == null) {
+            return view;
+        }
+        AiResearchDailyReportPayloads.ReportContent content = view.content();
+        AiResearchDailyReportPayloads.ReportContent trimmed = new AiResearchDailyReportPayloads.ReportContent(
+                content.freshness(), content.pipeline(), content.strategyPerformance(),
+                content.recommendations(), holdingCards(content.watches()), content.avoids(), content.holdingRisks(),
+                holdingCards(content.unavailable()), content.keyFactors(), content.insightSummary());
+        return new ReportView(
+                view.id(), view.decisionSnapshotId(), view.tradeDate(), view.reportVersion(), view.pipelineRunId(),
+                view.strategyReleaseId(), view.modelVersionId(), view.supersedesReportId(), view.current(),
+                view.reportStatus(), view.title(), view.executiveSummary(), view.marketRegime(),
+                view.recommendationCount(), view.watchCount(), view.avoidCount(), view.holdingRiskCount(),
+                view.freshnessStatus(), view.dataQualityScore(), trimmed, view.markdownContent(), view.generatedAt());
+    }
+
+    private static List<DailyChange> dailyChanges(ReportView current, ReportView previous) {
+        if (current == null || current.content() == null) {
+            return List.of();
+        }
+        Map<String, AiResearchDailyReportPayloads.StockCard> before = new LinkedHashMap<>(cardsByCode(
+                previous == null ? null : previous.content()));
+        Map<String, AiResearchDailyReportPayloads.StockCard> after = cardsByCode(current.content());
+        List<DailyChange> changes = new ArrayList<>();
+        for (AiResearchDailyReportPayloads.StockCard item : after.values()) {
+            AiResearchDailyReportPayloads.StockCard old = before.remove(item.stockCode());
+            if (old == null) {
+                changes.add(change(item, null, "NEW", "新增进入日报"));
+                continue;
+            }
+            if (!Objects.equals(old.action(), item.action()) || !Objects.equals(old.actionBucket(), item.actionBucket())) {
+                changes.add(change(item, old, "ACTION_CHANGED", "最终动作或分类已调整"));
+                continue;
+            }
+            if (!Objects.equals(old.riskLevel(), item.riskLevel())) {
+                boolean holding = "HOLDING_RISK".equals(item.actionBucket())
+                        || "HOLDING_RISK".equals(old.actionBucket());
+                changes.add(change(item, old, holding ? "HOLDING_RISK_CHANGED" : "RISK_CHANGED",
+                        holding ? "持仓风险等级已变化" : "风险等级已变化"));
+                continue;
+            }
+            if (!Objects.equals(factorSignature(old), factorSignature(item))) {
+                changes.add(change(item, old, "FACTORS_CHANGED", "触发因子已变化"));
+                continue;
+            }
+            if (!Objects.equals(old.freshnessStatus(), item.freshnessStatus())) {
+                changes.add(change(item, old, "FRESHNESS_CHANGED", "数据新鲜度已变化"));
+            }
+        }
+        for (AiResearchDailyReportPayloads.StockCard old : before.values()) {
+            changes.add(new DailyChange(
+                    old.stockCode(), old.stockName(), "REMOVED", old.action(), null,
+                    old.actionBucket(), null, "已移出当日投研范围"));
+        }
+        return changes.stream()
+                .sorted(Comparator.<DailyChange>comparingInt(change -> changePriority(change.changeType()))
+                        .thenComparing(DailyChange::stockCode, Comparator.nullsLast(String::compareTo)))
+                .toList();
+    }
+
+    private static List<AiResearchDailyReportPayloads.StockCard> holdingCards(
+            List<AiResearchDailyReportPayloads.StockCard> items
+    ) {
+        return safeList(items).stream()
+                .filter(Objects::nonNull)
+                .filter(item -> item.positionPlan() != null)
+                .toList();
+    }
+
+    private static String factorSignature(AiResearchDailyReportPayloads.StockCard item) {
+        if (item == null || item.triggerFactors() == null || item.triggerFactors().isEmpty()) {
+            return "";
+        }
+        return item.triggerFactors().stream()
+                .filter(Objects::nonNull)
+                .map(factor -> String.join(":",
+                        normalizedFactorValue(factor.factorCode()),
+                        normalizedFactorValue(factor.direction()),
+                        normalizedFactorValue(factor.contribution())))
+                .sorted()
+                .collect(Collectors.joining("|"));
+    }
+
+    private static String normalizedFactorValue(Object value) {
+        return value == null ? "" : String.valueOf(value).trim();
+    }
+
+    private static int changePriority(String changeType) {
+        return switch (changeType == null ? "" : changeType) {
+            case "HOLDING_RISK_CHANGED" -> 1;
+            case "ACTION_CHANGED" -> 2;
+            case "RISK_CHANGED" -> 3;
+            case "FACTORS_CHANGED" -> 4;
+            case "FRESHNESS_CHANGED" -> 5;
+            case "NEW" -> 6;
+            case "REMOVED" -> 7;
+            default -> 99;
+        };
+    }
+
+    private static DailyChange change(
+            AiResearchDailyReportPayloads.StockCard current,
+            AiResearchDailyReportPayloads.StockCard previous,
+            String type,
+            String message
+    ) {
+        return new DailyChange(
+                current.stockCode(), current.stockName(), type,
+                previous == null ? null : previous.action(), current.action(),
+                previous == null ? null : previous.actionBucket(), current.actionBucket(), message);
+    }
+
+    private static Map<String, AiResearchDailyReportPayloads.StockCard> cardsByCode(
+            AiResearchDailyReportPayloads.ReportContent content
+    ) {
+        if (content == null) {
+            return Map.of();
+        }
+        return java.util.stream.Stream.of(
+                        content.recommendations(), content.watches(), content.avoids(),
+                        content.holdingRisks(), content.unavailable())
+                .filter(Objects::nonNull)
+                .flatMap(List::stream)
+                .filter(Objects::nonNull)
+                .filter(item -> item.stockCode() != null && !item.stockCode().isBlank())
+                .collect(Collectors.toMap(
+                        AiResearchDailyReportPayloads.StockCard::stockCode,
+                        Function.identity(), (first, ignored) -> first, LinkedHashMap::new));
+    }
+
+    private static QueryWrapper<AiDailyDecisionItem> decisionItemQuery(
+            long userId,
+            Long snapshotId,
+            DecisionItemQuery query
+    ) {
+        QueryWrapper<AiDailyDecisionItem> wrapper = new QueryWrapper<AiDailyDecisionItem>()
+                .eq("user_id", userId)
+                .eq("decision_snapshot_id", snapshotId);
+        String category = normalizedQueryValue(query.category());
+        if (category != null && !"ALL".equals(category)) {
+            if (!Set.of("RECOMMEND", "CAUTIOUS", "AVOID", "HOLDING_RISK", "DATA_UNAVAILABLE").contains(category)) {
+                throw new IllegalArgumentException("不支持的日报分类：" + query.category());
+            }
+            wrapper.eq("category", category);
+        }
+        String action = normalizedQueryValue(query.action());
+        if (action != null && !"ALL".equals(action)) {
+            if (!Set.of("BUY", "HOLD", "WATCH", "REDUCE", "SELL").contains(action)) {
+                throw new IllegalArgumentException("不支持的最终动作：" + query.action());
+            }
+            wrapper.eq("final_action", action);
+        }
+        String dataStatus = normalizedQueryValue(query.dataStatus());
+        if ("AVAILABLE".equals(dataStatus)) {
+            wrapper.ne("freshness_status", "UNAVAILABLE");
+        } else if ("UNAVAILABLE".equals(dataStatus)) {
+            wrapper.eq("freshness_status", "UNAVAILABLE");
+        } else if (dataStatus != null && !"ALL".equals(dataStatus)) {
+            throw new IllegalArgumentException("不支持的数据状态：" + query.dataStatus());
+        }
+        String keyword = query.keyword() == null ? null : query.keyword().trim();
+        if (keyword != null && !keyword.isBlank()) {
+            wrapper.and(value -> value.like("stock_code", keyword).or().like("stock_name", keyword));
+        }
+        return wrapper;
+    }
+
+    private static QueryWrapper<AiResearchDailyReport> historyQuery(long userId, ReportListQuery query) {
+        QueryWrapper<AiResearchDailyReport> wrapper = new QueryWrapper<AiResearchDailyReport>()
+                .eq("user_id", userId)
+                .eq("is_current", 1);
+        if (query.tradeDate() != null) {
+            wrapper.eq("trade_date", query.tradeDate());
+        }
+        return wrapper;
+    }
+
+    private static void applyDecisionItemSort(QueryWrapper<AiDailyDecisionItem> query, String requestedSort) {
+        String sort = normalizedQueryValue(requestedSort);
+        switch (sort == null ? "SYSTEM_SCORE_DESC" : sort) {
+            case "RISK_DESC" -> query.orderByDesc("risk_score", "system_score").orderByAsc("stock_code");
+            case "STOCK_ASC" -> query.orderByAsc("stock_code");
+            case "FRESHNESS_ASC" -> query.orderByAsc("freshness_status").orderByDesc("system_score").orderByAsc("stock_code");
+            case "SYSTEM_SCORE_DESC" -> query.orderByDesc("system_score", "risk_score").orderByAsc("stock_code");
+            default -> throw new IllegalArgumentException("不支持的日报排序：" + requestedSort);
+        }
+    }
+
+    private static String normalizedQueryValue(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        return value.trim().toUpperCase(java.util.Locale.ROOT);
     }
 
     @Override
@@ -203,16 +508,19 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
             GenerationRequest request
     ) {
         Map<Long, AiDailyDecisionItemPrediction> primaryPredictions = primaryPredictions(snapshot.userId, items);
+        Map<Long, AiAnalysisReport> reportsById = reportsById(snapshot.userId, items);
+        Map<String, HoldingSnapshot> holdings = holdings(snapshot.userId);
+        Map<Long, List<AiResearchDailyReportPayloads.DecisionPlan>> plans = decisionPlans(snapshot.userId, items);
         List<AiResearchDailyReportPayloads.StockCard> recommendations = mapItems(
-                items, "RECOMMEND", primaryPredictions);
+                items, "RECOMMEND", primaryPredictions, reportsById, holdings, plans);
         List<AiResearchDailyReportPayloads.StockCard> watches = mapItems(
-                items, "CAUTIOUS", primaryPredictions);
+                items, "CAUTIOUS", primaryPredictions, reportsById, holdings, plans);
         List<AiResearchDailyReportPayloads.StockCard> avoids = mapItems(
-                items, "AVOID", primaryPredictions);
+                items, "AVOID", primaryPredictions, reportsById, holdings, plans);
         List<AiResearchDailyReportPayloads.StockCard> holdingRisks = mapItems(
-                items, "HOLDING_RISK", primaryPredictions);
+                items, "HOLDING_RISK", primaryPredictions, reportsById, holdings, plans);
         List<AiResearchDailyReportPayloads.StockCard> unavailable = mapItems(
-                items, "DATA_UNAVAILABLE", primaryPredictions);
+                items, "DATA_UNAVAILABLE", primaryPredictions, reportsById, holdings, plans);
         return new AiResearchDailyReportPayloads.ReportContent(
                 new AiResearchDailyReportPayloads.Freshness(
                         snapshot.freshnessStatus,
@@ -254,10 +562,25 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
                         (left, right) -> left, LinkedHashMap::new));
     }
 
+    private Map<Long, AiAnalysisReport> reportsById(Long userId, List<AiDailyDecisionItem> items) {
+        List<Long> reportIds = items.stream().map(item -> item.reportId)
+                .filter(Objects::nonNull).distinct().toList();
+        if (reportIds.isEmpty()) {
+            return Map.of();
+        }
+        return safeList(analysisReportMapper.selectOwnedByIds(userId, reportIds)).stream()
+                .filter(report -> report != null && report.id != null)
+                .collect(Collectors.toMap(report -> report.id, Function.identity(),
+                        (left, right) -> right, LinkedHashMap::new));
+    }
+
     private List<AiResearchDailyReportPayloads.StockCard> mapItems(
             List<AiDailyDecisionItem> items,
             String category,
-            Map<Long, AiDailyDecisionItemPrediction> primaryPredictions
+            Map<Long, AiDailyDecisionItemPrediction> primaryPredictions,
+            Map<Long, AiAnalysisReport> reportsById,
+            Map<String, HoldingSnapshot> holdings,
+            Map<Long, List<AiResearchDailyReportPayloads.DecisionPlan>> plans
     ) {
         return items.stream()
                 .filter(item -> category.equals(item.category))
@@ -265,13 +588,29 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
                         (AiDailyDecisionItem item) -> zero(item.systemScore), Comparator.reverseOrder())
                         .thenComparing(item -> item.stockCode))
                 .map(item -> stockCard(item,
-                        item.id == null ? null : primaryPredictions.get(item.id)))
+                        item.id == null ? null : primaryPredictions.get(item.id),
+                        item.reportId == null ? null : reportsById.get(item.reportId),
+                        holdings.get(item.stockCode), decisionPlansForItem(plans, item.id)))
                 .toList();
+    }
+
+    private static List<AiResearchDailyReportPayloads.DecisionPlan> decisionPlansForItem(
+            Map<Long, List<AiResearchDailyReportPayloads.DecisionPlan>> plans,
+            Long itemId
+    ) {
+        if (plans == null || plans.isEmpty() || itemId == null) {
+            return List.of();
+        }
+        List<AiResearchDailyReportPayloads.DecisionPlan> values = plans.get(itemId);
+        return values == null ? List.of() : values;
     }
 
     private AiResearchDailyReportPayloads.StockCard stockCard(
             AiDailyDecisionItem item,
-            AiDailyDecisionItemPrediction primaryPrediction
+            AiDailyDecisionItemPrediction primaryPrediction,
+            AiAnalysisReport report,
+            HoldingSnapshot holding,
+            List<AiResearchDailyReportPayloads.DecisionPlan> decisionPlans
     ) {
         return new AiResearchDailyReportPayloads.StockCard(
                 item.stockCode,
@@ -282,6 +621,9 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
                 item.riskScore,
                 item.historicalHitRate,
                 item.outOfSampleCount,
+                evidenceScope(item),
+                wilsonLowerBound(item.historicalHitRate, item.outOfSampleCount),
+                wilsonUpperBound(item.historicalHitRate, item.outOfSampleCount),
                 item.confidenceLevel,
                 item.freshnessStatus,
                 item.reasonSummary,
@@ -289,22 +631,185 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
                 primaryPrediction == null ? null : primaryPrediction.predictionId,
                 item.sampleId,
                 item.systemScore,
-                item.finalAction,
-                BigDecimal.ZERO,
+                report == null ? null : report.finalAction,
+                report == null ? null : report.calibratedConfidence,
                 direction(item.finalAction),
                 item.riskLevel,
                 item.dataQualityComponent,
                 freshnessScore(item.freshnessStatus),
                 freshnessMessage(item),
                 parseFactors(item.triggerFactorsJson),
-                null,
+                report == null ? null : report.generatedAt,
                 null,
                 item.horizonSignalScore,
                 item.factorReliabilityScore,
                 item.strategyValidationScore,
                 item.riskComponent,
                 item.decisionSource,
-                item.unavailableReason);
+                item.decisionPolicyVersion,
+                item.unavailableReason,
+                positionPlan(report, holding, item),
+                decisionPlans == null ? List.of() : decisionPlans);
+    }
+
+    private Map<Long, List<AiResearchDailyReportPayloads.DecisionPlan>> decisionPlans(
+            Long userId,
+            List<AiDailyDecisionItem> items
+    ) {
+        List<Long> ids = items.stream().map(item -> item.id).filter(Objects::nonNull).toList();
+        return ids.isEmpty() ? Map.of() : dailyDecisionPlanService.plansByDecisionItemIds(userId, ids);
+    }
+
+    private static String evidenceScope(AiDailyDecisionItem item) {
+        if (item == null || item.evidenceScope == null || item.evidenceScope.isBlank()) {
+            return "UNKNOWN";
+        }
+        return item.evidenceScope;
+    }
+
+    private static BigDecimal wilsonLowerBound(BigDecimal hitRate, Integer sampleCount) {
+        return wilsonInterval(hitRate, sampleCount, false);
+    }
+
+    private static BigDecimal wilsonUpperBound(BigDecimal hitRate, Integer sampleCount) {
+        return wilsonInterval(hitRate, sampleCount, true);
+    }
+
+    private static BigDecimal wilsonInterval(BigDecimal hitRate, Integer sampleCount, boolean upper) {
+        if (hitRate == null || sampleCount == null || sampleCount <= 0) {
+            return null;
+        }
+        double count = sampleCount.doubleValue();
+        double probability = hitRate.doubleValue() / 100d;
+        if (!Double.isFinite(probability)) {
+            return null;
+        }
+        probability = Math.max(0d, Math.min(1d, probability));
+        double z = 1.959963984540054d;
+        double z2 = z * z;
+        double denominator = 1d + z2 / count;
+        double center = (probability + z2 / (2d * count)) / denominator;
+        double margin = z * Math.sqrt((probability * (1d - probability) + z2 / (4d * count)) / count)
+                / denominator;
+        double result = Math.max(0d, Math.min(1d, upper ? center + margin : center - margin));
+        return BigDecimal.valueOf(result * 100d).setScale(2, RoundingMode.HALF_UP);
+    }
+
+    private Map<String, HoldingSnapshot> holdings(Long userId) {
+        if (tradeRecordMapper == null || userId == null || userId <= 0) {
+            return Map.of();
+        }
+        return safeList(tradeRecordMapper.selectActivePositions(userId)).stream()
+                .filter(item -> item != null && item.stockCode != null && item.quantity != null && item.quantity > 0)
+                .collect(Collectors.toMap(item -> item.stockCode,
+                        item -> new HoldingSnapshot(averageCost(item), item.quantity),
+                        (first, ignored) -> first, LinkedHashMap::new));
+    }
+
+    private AiResearchDailyReportPayloads.PositionPlan positionPlan(
+            AiAnalysisReport report,
+            HoldingSnapshot holding,
+            AiDailyDecisionItem item
+    ) {
+        if (report == null || report.conditionalStrategy == null || report.conditionalStrategy.isBlank()) {
+            return fallbackPositionPlan(holding, item);
+        }
+        try {
+            AiConditionalStrategyPayload strategy = objectMapper.readValue(
+                    report.conditionalStrategy, AiConditionalStrategyPayload.class);
+            AiConditionalStrategyPayload.PositionContext position = strategy.position();
+            if (position == null || !position.holding()) {
+                return null;
+            }
+            AiConditionalStrategyPayload.SignalModel target = signal(strategy.sellModels(), "SELL_TARGET_PROFIT");
+            AiConditionalStrategyPayload.SignalModel technicalStop = signal(strategy.sellModels(), "SELL_TECHNICAL_STOP");
+            AiConditionalStrategyPayload.SignalModel logicStop = signal(strategy.sellModels(), "SELL_LOGIC_STOP");
+            AiConditionalStrategyPayload.ConditionalRule reduce = planRule(strategy.tradingPlans(), 1, "T1_WEAK");
+            return new AiResearchDailyReportPayloads.PositionPlan(
+                    position.averageCost(),
+                    position.currentPrice(),
+                    position.profitRate(),
+                    ifThen(technicalStop),
+                    ifThen(reduce),
+                    ifThen(target),
+                    ifThen(logicStop),
+                    strategy.riskScore() == null ? null : strategy.riskScore().advice());
+        } catch (Exception exception) {
+            log.warn("daily report skipped invalid holding strategy, reportId={}, stockCode={}, reason={}",
+                    report.id, report.stockCode, exception.getMessage());
+            return fallbackPositionPlan(holding, item);
+        }
+    }
+
+    private static AiResearchDailyReportPayloads.PositionPlan fallbackPositionPlan(
+            HoldingSnapshot holding,
+            AiDailyDecisionItem item
+    ) {
+        if (holding == null) {
+            return null;
+        }
+        String action = item == null || item.finalAction == null ? "WATCH" : item.finalAction;
+        String risk = item == null || item.riskLevel == null ? "待确认" : item.riskLevel;
+        return new AiResearchDailyReportPayloads.PositionPlan(
+                holding.averageCost(),
+                null,
+                null,
+                "如果任一交易日收盘价低于持仓成本的 92%，则执行止损或将仓位降至可承受范围",
+                "如果日报最终动作变为减仓或卖出，且对应条件已满足，则按当前持仓分批降低仓位",
+                "如果浮动收益达到 8% 且接近历史压力位，则分批止盈；未取得真实现价前不自动判定已触发",
+                "如果正式数据质量降为不可用、关键支撑失守或行业风险持续恶化，则冻结加仓并重新评估",
+                "当前正式动作为 " + action + "，风险等级为 " + risk
+                        + "。AI 持仓报告暂未就绪，以上为真实成本和净持仓生成的保守兜底计划。");
+    }
+
+    private static BigDecimal averageCost(TradePositionAggregate position) {
+        if (position.totalCost == null || position.quantity == null || position.quantity <= 0) {
+            return null;
+        }
+        return position.totalCost.divide(BigDecimal.valueOf(position.quantity), 2, RoundingMode.HALF_UP);
+    }
+
+    private record HoldingSnapshot(BigDecimal averageCost, int quantity) {
+    }
+
+    private static AiConditionalStrategyPayload.SignalModel signal(
+            List<AiConditionalStrategyPayload.SignalModel> models,
+            String modelCode
+    ) {
+        if (models == null) {
+            return null;
+        }
+        return models.stream()
+                .filter(Objects::nonNull)
+                .filter(model -> modelCode.equals(model.modelCode()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private static AiConditionalStrategyPayload.ConditionalRule planRule(
+            List<AiConditionalStrategyPayload.HorizonPlan> plans,
+            int horizonDays,
+            String ruleCode
+    ) {
+        if (plans == null) {
+            return null;
+        }
+        return plans.stream()
+                .filter(Objects::nonNull)
+                .filter(plan -> plan.horizonDays() != null && plan.horizonDays() == horizonDays)
+                .flatMap(plan -> plan.rules() == null ? java.util.stream.Stream.empty() : plan.rules().stream())
+                .filter(Objects::nonNull)
+                .filter(rule -> ruleCode.equals(rule.ruleCode()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private static String ifThen(AiConditionalStrategyPayload.SignalModel model) {
+        return model == null ? null : model.ifThen();
+    }
+
+    private static String ifThen(AiConditionalStrategyPayload.ConditionalRule rule) {
+        return rule == null ? null : rule.ifThen();
     }
 
     private AiResearchDailyReportPayloads.PipelineSummary pipelineSummary(

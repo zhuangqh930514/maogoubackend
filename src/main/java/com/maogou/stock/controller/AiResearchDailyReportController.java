@@ -36,6 +36,39 @@ public class AiResearchDailyReportController {
         return ApiResponse.ok(reportService.list(limit));
     }
 
+    @GetMapping("/history")
+    public ApiResponse<AiResearchDailyReportService.ReportListPage> history(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate tradeDate,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "10") int pageSize
+    ) {
+        return ApiResponse.ok(reportService.pageHistory(
+                new AiResearchDailyReportService.ReportListQuery(tradeDate, page, pageSize)));
+    }
+
+    @GetMapping("/overview")
+    public ApiResponse<AiResearchDailyReportService.DailyOverview> overview(
+            @RequestParam(defaultValue = "20") int historyLimit
+    ) {
+        return ApiResponse.ok(reportService.overview(historyLimit));
+    }
+
+    @GetMapping("/{reportId}/items")
+    public ApiResponse<AiResearchDailyReportService.DecisionItemPage> pageItems(
+            @PathVariable Long reportId,
+            @RequestParam(defaultValue = "ALL") String category,
+            @RequestParam(required = false) String action,
+            @RequestParam(defaultValue = "ALL") String dataStatus,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(defaultValue = "SYSTEM_SCORE_DESC") String sort,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "10") int pageSize
+    ) {
+        return ApiResponse.ok(reportService.pageItems(reportId,
+                new AiResearchDailyReportService.DecisionItemQuery(
+                        category, action, dataStatus, keyword, sort, page, pageSize)));
+    }
+
     @GetMapping("/{reportId}")
     public ApiResponse<AiResearchDailyReportService.ReportView> detail(@PathVariable Long reportId) {
         return ApiResponse.ok(reportService.detail(reportId));

@@ -35,8 +35,25 @@ class ConditionalTradeStrategySchemaContractTest {
                     .contains("conditional_strategy")
                     .contains("CREATE TABLE IF NOT EXISTS ai_trade_rule_config")
                     .contains("CREATE TABLE IF NOT EXISTS ai_trade_plan_review")
-                    .contains("CREATE TABLE IF NOT EXISTS ai_trade_rule_performance");
+                    .contains("CREATE TABLE IF NOT EXISTS ai_trade_rule_performance")
+                    .contains("CREATE TABLE IF NOT EXISTS ai_trade_factor_feedback")
+                    .contains("net_action_return")
+                    .contains("benchmark_return")
+                    .contains("feedback_scope");
         }
+    }
+
+    @Test
+    void reviewFeedbackMigrationKeepsCandidateEvidenceSeparatedFromFormalRules() throws Exception {
+        String migration = read("/db/20260725_conditional_trade_review_feedback.sql");
+
+        assertThat(migration)
+                .contains("net_action_return")
+                .contains("benchmark_return")
+                .contains("avg_excess_return")
+                .contains("feedback_scope")
+                .contains("CREATE TABLE IF NOT EXISTS ai_trade_factor_feedback")
+                .contains("CANDIDATE_ONLY");
     }
 
     private static String read(String resource) throws Exception {

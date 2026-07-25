@@ -38,7 +38,7 @@ class MultiUserProjectionIsolationTest {
     }
 
     @Test
-    void oneGlobalRunProjectsEveryEnabledUserAndOneFailureDoesNotPolluteTheNextUser() {
+    void oneGlobalRunSubmitsEveryEnabledUserAndOneFailureDoesNotPolluteTheNextUser() {
         AiModelConfigMapper configMapper = mock(AiModelConfigMapper.class);
         TradingCalendarService calendarService = mock(TradingCalendarService.class);
         AiGlobalDailyResearchService dailyResearchService = mock(AiGlobalDailyResearchService.class);
@@ -89,8 +89,9 @@ class MultiUserProjectionIsolationTest {
         assertThat(secondRequest.getValue().userId()).isNull();
         assertThat(secondRequest.getValue().parentPipelineRunId()).isEqualTo(901L);
         assertThat(secondRequest.getValue().tradeDate()).isEqualTo(tradeDate);
-        assertThat(first.autoClosePipelineLastStatus).isEqualTo("FAILED");
-        assertThat(second.autoClosePipelineLastStatus).isEqualTo("PENDING");
+        // 运行状态由 ai_pipeline_run 持久化；模型配置只保存自动化开关和模型连接信息。
+        assertThat(first.autoClosePipelineLastStatus).isNull();
+        assertThat(second.autoClosePipelineLastStatus).isNull();
     }
 
     private static AiModelConfig enabledConfig(Long id, Long userId) {

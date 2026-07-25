@@ -5,11 +5,13 @@ import com.maogou.stock.domain.entity.TradeRecord;
 import com.maogou.stock.domain.entity.WatchStock;
 import com.maogou.stock.domain.entity.research.AiResearchUniverse;
 import com.maogou.stock.domain.entity.research.AiResearchUniverseItem;
+import com.maogou.stock.domain.entity.research.AiResearchUniverseItemLineage;
 import com.maogou.stock.domain.entity.research.AiResearchUniverseSnapshot;
 import com.maogou.stock.domain.enums.TradeSide;
 import com.maogou.stock.mapper.TradeRecordMapper;
 import com.maogou.stock.mapper.WatchStockMapper;
 import com.maogou.stock.mapper.research.AiResearchUniverseItemMapper;
+import com.maogou.stock.mapper.research.AiResearchUniverseItemLineageMapper;
 import com.maogou.stock.mapper.research.AiResearchUniverseMapper;
 import com.maogou.stock.mapper.research.AiResearchUniverseSnapshotMapper;
 import com.maogou.stock.service.research.AiResearchUniverseService;
@@ -188,6 +190,114 @@ class AiResearchUniverseServiceImplTest {
         assertThat(itemCaptor.getAllValues()).allSatisfy(item -> {
             assertThat(item.evidenceJson).contains("sourceTypes");
             assertThat(item.sourceFingerprint).hasSize(64);
+        });
+    }
+
+    @Test
+    void persistsImmutableUserSourceLineageForActiveWatchlistAndNetHolding() {
+        AiResearchUniverseMapper universeMapper = mock(AiResearchUniverseMapper.class);
+        AiResearchUniverseSnapshotMapper snapshotMapper = mock(AiResearchUniverseSnapshotMapper.class);
+        AiResearchUniverseItemMapper itemMapper = mock(AiResearchUniverseItemMapper.class);
+        AiResearchUniverseItemLineageMapper lineageMapper = mock(AiResearchUniverseItemLineageMapper.class);
+        WatchStockMapper watchMapper = mock(WatchStockMapper.class);
+        TradeRecordMapper tradeMapper = mock(TradeRecordMapper.class);
+        when(universeMapper.selectOne(any())).thenReturn(universe());
+        when(snapshotMapper.selectOne(any())).thenReturn(null);
+        when(snapshotMapper.selectCount(any())).thenReturn(0L);
+        when(snapshotMapper.insert(any(AiResearchUniverseSnapshot.class))).thenAnswer(invocation -> {
+            invocation.getArgument(0, AiResearchUniverseSnapshot.class).id = 40L;
+            return 1;
+        });
+        AtomicLong sequence = new AtomicLong(50);
+        when(itemMapper.insert(any(AiResearchUniverseItem.class))).thenAnswer(invocation -> {
+            invocation.getArgument(0, AiResearchUniverseItem.class).id = sequence.getAndIncrement();
+            return 1;
+        });
+        WatchStock watch = watch(5L, "600519", "贵州茅台", "SH", "2026-07-01T09:00:00");
+        watch.id = 701L;
+        TradeRecord buy = trade(5L, "002594", "比亚迪", TradeSide.BUY, 200, "2026-07-01T10:00:00");
+        buy.id = 801L;
+        TradeRecord partialSell = trade(5L, "002594", "比亚迪", TradeSide.SELL, 50, "2026-07-02T10:00:00");
+        partialSell.id = 802L;
+        when(watchMapper.selectList(any())).thenReturn(List.of(watch));
+        when(tradeMapper.selectList(any())).thenReturn(List.of(buy, partialSell));
+
+        AiResearchUniverseService service = new AiResearchUniverseServiceImpl(
+                universeMapper, snapshotMapper, itemMapper, lineageMapper, watchMapper, tradeMapper,
+                (tradeDate, asOfTime, minimumStockCount) -> List.of(), new ObjectMapper());
+        service.createSystemCoreSnapshot(new AiResearchUniverseService.SnapshotRequest(
+                LocalDate.parse("2026-07-14"), LocalDateTime.parse("2026-07-14T16:00:00"),
+                "CN_A_CALENDAR/2026.1", List.of()));
+
+        ArgumentCaptor<AiResearchUniverseItemLineage> captor = ArgumentCaptor.forClass(AiResearchUniverseItemLineage.class);
+        verify(lineageMapper, times(3)).insert(captor.capture());
+        assertThat(captor.getAllValues()).extracting(lineage -> lineage.sourceRecordId)
+                .containsExactlyInAnyOrder(701L, 801L, 802L);
+        assertThat(captor.getAllValues()).allSatisfy(lineage -> {
+            assertThat(lineage.ownerUserId).isEqualTo(5L);
+            assertThat(lineage.activeAtSnapshot).isEqualTo(1);
+            assertThat(lineage.sourceFingerprint).hasSize(64);
+            assertThat(lineage.evidenceJson).contains("activeAtSnapshot");
+        });
+        assertThat(captor.getAllValues()).filteredOn(lineage -> lineage.sourceRecordId.equals(701L))
+                .allSatisfy(lineage -> assertThat(lineage.sourceType).isEqualTo("USER_WATCHLIST"));
+        assertThat(captor.getAllValues()).filteredOn(lineage -> lineage.sourceRecordId != 701L)
+                .allSatisfy(lineage -> assertThat(lineage.sourceType).isEqualTo("USER_HOLDING"));
+    }
+
+    @Test
+    void excludesDeletedAndSpecialTreatmentSecuritiesFromTheFormalResearchPool() {
+        AiResearchUniverseMapper universeMapper = mock(AiResearchUniverseMapper.class);
+        AiResearchUniverseSnapshotMapper snapshotMapper = mock(AiResearchUniverseSnapshotMapper.class);
+        AiResearchUniverseItemMapper itemMapper = mock(AiResearchUniverseItemMapper.class);
+        WatchStockMapper watchMapper = mock(WatchStockMapper.class);
+        TradeRecordMapper tradeMapper = mock(TradeRecordMapper.class);
+        when(universeMapper.selectOne(any())).thenReturn(universe());
+        when(snapshotMapper.selectOne(any())).thenReturn(null);
+        when(snapshotMapper.selectCount(any())).thenReturn(0L);
+        AtomicLong sequence = new AtomicLong(80);
+        when(snapshotMapper.insert(any(AiResearchUniverseSnapshot.class))).thenAnswer(invocation -> {
+            invocation.getArgument(0, AiResearchUniverseSnapshot.class).id = sequence.incrementAndGet();
+            return 1;
+        });
+        when(itemMapper.insert(any(AiResearchUniverseItem.class))).thenAnswer(invocation -> {
+            invocation.getArgument(0, AiResearchUniverseItem.class).id = sequence.incrementAndGet();
+            return 1;
+        });
+
+        WatchStock deleted = watch(5L, "601138", "工业富联", "SH", "2026-07-01T09:00:00");
+        deleted.deleted = 1;
+        when(watchMapper.selectList(any())).thenReturn(List.of(
+                deleted,
+                watch(5L, "600734", "*ST实达", "SH", "2026-07-01T09:00:00"),
+                watch(5L, "600519", "贵州茅台", "SH", "2026-07-01T09:00:00")
+        ));
+        TradeRecord deletedTrade = trade(6L, "300750", "宁德时代", TradeSide.BUY, 100,
+                "2026-07-01T10:00:00");
+        deletedTrade.deleted = 1;
+        when(tradeMapper.selectList(any())).thenReturn(List.of(deletedTrade));
+
+        AiResearchUniverseService service = new AiResearchUniverseServiceImpl(
+                universeMapper, snapshotMapper, itemMapper, watchMapper, tradeMapper, new ObjectMapper());
+        AiResearchUniverseService.SnapshotResult result = service.createSystemCoreSnapshot(
+                new AiResearchUniverseService.SnapshotRequest(
+                        LocalDate.parse("2026-07-14"), LocalDateTime.parse("2026-07-14T16:00:00"),
+                        "CN_A_CALENDAR/2026.1",
+                        List.of(candidate("600734", "*ST实达", "SH", "CONFIGURED_BASELINE", true, null),
+                                candidate("600519", "贵州茅台", "SH", "CONFIGURED_BASELINE", true, null))
+                )
+        );
+
+        assertThat(result.items()).extracting(item -> item.stockCode)
+                .containsExactly("600519", "600734").doesNotContain("601138", "300750");
+        assertThat(result.items()).anySatisfy(item -> {
+            assertThat(item.stockCode).isEqualTo("600734");
+            assertThat(item.included).isZero();
+            assertThat(item.excludeReason).contains("ST");
+        });
+        assertThat(result.items()).anySatisfy(item -> {
+            assertThat(item.stockCode).isEqualTo("600519");
+            assertThat(item.included).isEqualTo(1);
         });
     }
 

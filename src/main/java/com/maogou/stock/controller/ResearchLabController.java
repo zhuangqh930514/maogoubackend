@@ -151,6 +151,30 @@ public class ResearchLabController {
         return ApiResponse.ok(queryService.governanceEvents(filter));
     }
 
+    @GetMapping("/conditional-rules/experiments")
+    public ApiResponse<ResearchLabPayloads.PageResult<ResearchLabPayloads.EvidenceItem>> conditionalRuleExperiments(
+            @ModelAttribute ResearchLabPayloads.QueryFilter filter) {
+        return ApiResponse.ok(queryService.conditionalRuleExperiments(filter, currentUserId()));
+    }
+
+    @GetMapping("/conditional-rules/configs")
+    public ApiResponse<ResearchLabPayloads.PageResult<ResearchLabPayloads.EvidenceItem>> conditionalRuleConfigs(
+            @ModelAttribute ResearchLabPayloads.QueryFilter filter) {
+        return ApiResponse.ok(queryService.conditionalRuleConfigs(filter, currentUserId()));
+    }
+
+    @GetMapping("/conditional-rules/shadow-observations")
+    public ApiResponse<ResearchLabPayloads.PageResult<ResearchLabPayloads.EvidenceItem>> conditionalRuleShadowObservations(
+            @ModelAttribute ResearchLabPayloads.QueryFilter filter) {
+        return ApiResponse.ok(queryService.conditionalRuleShadowObservations(filter, currentUserId()));
+    }
+
+    @GetMapping("/conditional-rules/governance-events")
+    public ApiResponse<ResearchLabPayloads.PageResult<ResearchLabPayloads.EvidenceItem>> conditionalRuleGovernanceEvents(
+            @ModelAttribute ResearchLabPayloads.QueryFilter filter) {
+        return ApiResponse.ok(queryService.conditionalRuleGovernanceEvents(filter, currentUserId()));
+    }
+
     @GetMapping("/pipeline-runs")
     public ApiResponse<ResearchLabPayloads.PageResult<ResearchLabPayloads.EvidenceItem>> pipelineRuns(
             @ModelAttribute ResearchLabPayloads.QueryFilter filter) {
@@ -159,8 +183,11 @@ public class ResearchLabController {
 
     @GetMapping("/pipeline-runs/{id}")
     public ApiResponse<ResearchLabPayloads.Detail> pipelineRun(@PathVariable Long id) {
-        Long userId = AuthContext.currentUserId().orElseThrow(() ->
+        return ApiResponse.ok(queryService.pipelineRun(id, currentUserId()));
+    }
+
+    private static Long currentUserId() {
+        return AuthContext.currentUserId().orElseThrow(() ->
                 new org.springframework.security.access.AccessDeniedException("请先登录"));
-        return ApiResponse.ok(queryService.pipelineRun(id, userId));
     }
 }

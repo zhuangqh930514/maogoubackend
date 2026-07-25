@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 import java.time.LocalDate;
+import java.util.List;
 
 public interface AiAnalysisReportMapper extends BaseMapper<AiAnalysisReport> {
 
@@ -37,5 +38,50 @@ public interface AiAnalysisReportMapper extends BaseMapper<AiAnalysisReport> {
     AiAnalysisReport selectOwned(
             @Param("reportId") Long reportId,
             @Param("userId") Long userId
+    );
+
+    @Select("""
+            <script>
+            SELECT r.*
+            FROM ai_analysis_report r
+            INNER JOIN (
+                SELECT stock_code, MAX(report_version) AS latest_version
+                FROM ai_analysis_report
+                WHERE user_id = #{userId}
+                  AND report_date = #{reportDate}
+                  AND status = 'SUCCESS'
+                  AND stock_code IN
+                <foreach collection="stockCodes" item="stockCode" open="(" separator="," close=")">
+                    #{stockCode}
+                </foreach>
+                GROUP BY stock_code
+            ) latest ON latest.stock_code = r.stock_code
+                    AND latest.latest_version = r.report_version
+            WHERE r.user_id = #{userId}
+              AND r.report_date = #{reportDate}
+              AND r.status = 'SUCCESS'
+            ORDER BY r.stock_code, r.id DESC
+            </script>
+            """)
+    List<AiAnalysisReport> selectLatestSuccessfulForDailyDecision(
+            @Param("userId") Long userId,
+            @Param("reportDate") LocalDate reportDate,
+            @Param("stockCodes") List<String> stockCodes
+    );
+
+    @Select("""
+            <script>
+            SELECT *
+            FROM ai_analysis_report
+            WHERE user_id = #{userId}
+              AND id IN
+              <foreach collection="reportIds" item="reportId" open="(" separator="," close=")">
+                #{reportId}
+              </foreach>
+            </script>
+            """)
+    List<AiAnalysisReport> selectOwnedByIds(
+            @Param("userId") Long userId,
+            @Param("reportIds") List<Long> reportIds
     );
 }

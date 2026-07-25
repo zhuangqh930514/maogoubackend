@@ -21,4 +21,43 @@ public interface AiDailyDecisionItemMapper extends BaseMapper<AiDailyDecisionIte
             @Param("userId") Long userId,
             @Param("snapshotId") Long snapshotId
     );
+
+    @Select("""
+            <script>
+            SELECT item.*
+            FROM ai_daily_decision_item item
+            INNER JOIN ai_daily_decision_snapshot snapshot
+                    ON snapshot.id = item.decision_snapshot_id
+                   AND snapshot.user_id = item.user_id
+                   AND snapshot.is_current = 1
+            WHERE item.user_id = #{userId}
+              AND item.report_id IN
+              <foreach collection="reportIds" item="reportId" open="(" separator="," close=")">
+                #{reportId}
+              </foreach>
+            ORDER BY snapshot.trade_date DESC, snapshot.snapshot_version DESC, item.id DESC
+            </script>
+            """)
+    List<AiDailyDecisionItem> selectCurrentByReportIds(
+            @Param("userId") Long userId,
+            @Param("reportIds") List<Long> reportIds
+    );
+
+    @Select("""
+            SELECT item.*
+            FROM ai_daily_decision_item item
+            INNER JOIN ai_daily_decision_snapshot snapshot
+                    ON snapshot.id = item.decision_snapshot_id
+                   AND snapshot.user_id = item.user_id
+                   AND snapshot.is_current = 1
+            WHERE item.user_id = #{userId}
+              AND item.stock_code = #{stockCode}
+              AND item.trade_date = #{tradeDate}
+            LIMIT 1
+            """)
+    AiDailyDecisionItem selectCurrentByStockAndTradeDate(
+            @Param("userId") Long userId,
+            @Param("stockCode") String stockCode,
+            @Param("tradeDate") java.time.LocalDate tradeDate
+    );
 }

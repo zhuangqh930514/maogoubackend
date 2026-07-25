@@ -3,7 +3,9 @@ package com.maogou.stock.service.impl;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.maogou.stock.domain.entity.AiAnalysisReport;
+import com.maogou.stock.domain.entity.research.AiDailyDecisionItem;
 import com.maogou.stock.mapper.AiAnalysisReportMapper;
+import com.maogou.stock.mapper.research.AiDailyDecisionItemMapper;
 import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.AiConditionalTradeStrategyService;
 import org.junit.jupiter.api.Test;
@@ -89,6 +91,33 @@ class AiAnalysisReportPaginationTest {
         verify(reportMapper, never()).selectList(any());
     }
 
+    @Test
+    void reportDetailUsesCurrentDailyDecisionWhenManualReportIsNotLinkedByReportId() {
+        AiAnalysisReportMapper reportMapper = mock(AiAnalysisReportMapper.class);
+        AiDailyDecisionItemMapper dailyDecisionItemMapper = mock(AiDailyDecisionItemMapper.class);
+        AiAnalysisReport report = report(81L);
+        AiDailyDecisionItem decision = new AiDailyDecisionItem();
+        decision.id = 901L;
+        decision.tradeDate = report.reportDate;
+        decision.stockCode = report.stockCode;
+        decision.finalAction = "WATCH";
+        decision.category = "CAUTIOUS";
+        decision.systemScore = new java.math.BigDecimal("64.5");
+        decision.reasonSummary = "正式日报尚未满足推荐门槛";
+
+        when(reportMapper.selectOwned(81L, 5L)).thenReturn(report);
+        when(dailyDecisionItemMapper.selectCurrentByReportIds(any(), any())).thenReturn(List.of());
+        when(dailyDecisionItemMapper.selectCurrentByStockAndTradeDate(
+                5L, "600519", LocalDate.of(2026, 7, 13))).thenReturn(decision);
+
+        var response = AuthContext.callAs(5L, () -> service(reportMapper, dailyDecisionItemMapper).report(81L));
+
+        assertThat(response.dailyDecision()).isNotNull();
+        assertThat(response.dailyDecision().decisionItemId()).isEqualTo(901L);
+        assertThat(response.dailyDecision().finalAction()).isEqualTo("WATCH");
+        assertThat(response.dailyDecision().reasonSummary()).isEqualTo("正式日报尚未满足推荐门槛");
+    }
+
     @SuppressWarnings({"unchecked", "rawtypes"})
     private static ArgumentCaptor<Wrapper<AiAnalysisReport>> wrapperCaptor() {
         return (ArgumentCaptor) ArgumentCaptor.forClass(Wrapper.class);
@@ -108,6 +137,15 @@ class AiAnalysisReportPaginationTest {
     }
 
     private static AiAnalysisServiceImpl service(AiAnalysisReportMapper reportMapper) {
+        AiDailyDecisionItemMapper dailyDecisionItemMapper = mock(AiDailyDecisionItemMapper.class);
+        when(dailyDecisionItemMapper.selectCurrentByReportIds(any(), any())).thenReturn(List.of());
+        return service(reportMapper, dailyDecisionItemMapper);
+    }
+
+    private static AiAnalysisServiceImpl service(
+            AiAnalysisReportMapper reportMapper,
+            AiDailyDecisionItemMapper dailyDecisionItemMapper
+    ) {
         AiConditionalTradeStrategyService conditionalStrategyService = mock(AiConditionalTradeStrategyService.class);
         when(conditionalStrategyService.reviewsByReportIds(any(), any())).thenReturn(Map.of());
         return new AiAnalysisServiceImpl(
@@ -116,6 +154,7 @@ class AiAnalysisReportPaginationTest {
                 null,
                 null,
                 null,
+                dailyDecisionItemMapper,
                 null,
                 null,
                 null,

@@ -5,6 +5,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.maogou.stock.domain.entity.TradeRecord;
 import com.maogou.stock.domain.entity.WatchStock;
+import com.maogou.stock.domain.entity.AiAnalysisReport;
 import com.maogou.stock.domain.entity.research.AiDailyDecisionItem;
 import com.maogou.stock.domain.entity.research.AiDailyDecisionItemPrediction;
 import com.maogou.stock.domain.entity.research.AiDailyDecisionSnapshot;
@@ -16,6 +17,7 @@ import com.maogou.stock.domain.entity.research.AiSample;
 import com.maogou.stock.domain.enums.TradeSide;
 import com.maogou.stock.mapper.TradeRecordMapper;
 import com.maogou.stock.mapper.WatchStockMapper;
+import com.maogou.stock.mapper.AiAnalysisReportMapper;
 import com.maogou.stock.mapper.research.AiDailyDecisionItemMapper;
 import com.maogou.stock.mapper.research.AiDailyDecisionItemPredictionMapper;
 import com.maogou.stock.mapper.research.AiDailyDecisionSnapshotMapper;
@@ -26,6 +28,7 @@ import com.maogou.stock.mapper.research.AiPredictionEvaluationMapper;
 import com.maogou.stock.mapper.research.AiPredictionMapper;
 import com.maogou.stock.mapper.research.AiSampleMapper;
 import com.maogou.stock.service.AiResearchDailyReportService;
+import com.maogou.stock.service.research.AiDailyDecisionPlanService;
 import com.maogou.stock.service.research.AiDailyDecisionPolicy;
 import com.maogou.stock.service.research.AiResearchContract;
 import com.maogou.stock.service.research.AiUserDailyProjectionService;
@@ -61,7 +64,7 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
             2, new BigDecimal("0.300000"),
             3, new BigDecimal("0.500000"));
     private static final List<String> PROJECTION_STEPS = List.of(
-            "GENERATE_STOCK_REPORTS", "BUILD_DAILY_DECISION", "ARCHIVE_RESEARCH_REPORT");
+            "GENERATE_STOCK_REPORTS", "BUILD_DAILY_DECISION", "BUILD_DECISION_PLANS", "ARCHIVE_RESEARCH_REPORT");
 
     private final AiDailyDecisionSnapshotMapper snapshotMapper;
     private final AiDailyDecisionItemMapper itemMapper;
@@ -74,8 +77,10 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
     private final AiPredictionEvaluationMapper evaluationMapper;
     private final AiFactorValueMapper factorValueMapper;
     private final AiFactorPerformanceMapper factorPerformanceMapper;
+    private final AiAnalysisReportMapper analysisReportMapper;
     private final AiDailyDecisionPolicy decisionPolicy;
     private final AiResearchDailyReportService dailyReportService;
+    private final AiDailyDecisionPlanService dailyDecisionPlanService;
     private final ObjectMapper objectMapper;
 
     public AiUserDailyProjectionServiceImpl(
@@ -90,8 +95,10 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
             AiPredictionEvaluationMapper evaluationMapper,
             AiFactorValueMapper factorValueMapper,
             AiFactorPerformanceMapper factorPerformanceMapper,
+            AiAnalysisReportMapper analysisReportMapper,
             AiDailyDecisionPolicy decisionPolicy,
             AiResearchDailyReportService dailyReportService,
+            AiDailyDecisionPlanService dailyDecisionPlanService,
             ObjectMapper objectMapper
     ) {
         this.snapshotMapper = snapshotMapper;
@@ -105,8 +112,10 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
         this.evaluationMapper = evaluationMapper;
         this.factorValueMapper = factorValueMapper;
         this.factorPerformanceMapper = factorPerformanceMapper;
+        this.analysisReportMapper = analysisReportMapper;
         this.decisionPolicy = decisionPolicy;
         this.dailyReportService = dailyReportService;
+        this.dailyDecisionPlanService = dailyDecisionPlanService;
         this.objectMapper = objectMapper;
     }
 
@@ -117,20 +126,24 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
         AiPipelineRun globalRun = requireGlobalRun(request);
         AiDailyDecisionSnapshot existing = snapshotMapper.selectByIdempotencyForShare(
                 request.userId(), request.idempotencyKey());
-        if (existing != null) {
+        if (existing != null && !request.rebuildCurrentSnapshot()) {
             assertOwned(existing, request.userId());
+            ProjectionResult result = stored(existing);
+            dailyDecisionPlanService.initializeDeterministicPlans(request.userId(), request.tradeDate(), result.items());
             archiveReport(request, globalRun, existing);
-            return stored(existing);
+            return result;
         }
 
         if (snapshotMapper.lockUser(request.userId()) == null) {
             throw new IllegalArgumentException("用户不存在，无法生成每日决策");
         }
         existing = snapshotMapper.selectByIdempotencyForShare(request.userId(), request.idempotencyKey());
-        if (existing != null) {
+        if (existing != null && !request.rebuildCurrentSnapshot()) {
             assertOwned(existing, request.userId());
+            ProjectionResult result = stored(existing);
+            dailyDecisionPlanService.initializeDeterministicPlans(request.userId(), request.tradeDate(), result.items());
             archiveReport(request, globalRun, existing);
-            return stored(existing);
+            return result;
         }
 
         UserUniverse universe = loadUserUniverse(request.userId());
@@ -162,7 +175,12 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
                 .collect(Collectors.groupingBy(value -> value.sampleId, LinkedHashMap::new, Collectors.toList()));
         List<AiFactorPerformance> factorPerformance = sampleIds.isEmpty()
                 ? List.of() : safeList(factorPerformanceMapper.selectForSamplesBefore(sampleIds, request.tradeDate()));
-        BigDecimal factorReliability = factorReliability(factorPerformance);
+        Map<Long, AiFactorPerformance> factorPerformanceByDefinition = factorPerformance.stream()
+                .filter(performance -> performance != null && performance.factorDefinitionId != null)
+                .collect(Collectors.toMap(performance -> performance.factorDefinitionId, Function.identity(),
+                        AiUserDailyProjectionServiceImpl::latestPerformance, LinkedHashMap::new));
+        Map<String, AiAnalysisReport> reportsByStock = loadCurrentReports(
+                request.userId(), request.tradeDate(), universe.stockCodes());
 
         AiDailyDecisionSnapshot current = snapshotMapper.selectCurrentForUpdate(
                 request.userId(), request.tradeDate());
@@ -186,10 +204,12 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
             Map<Integer, AiPrediction> corePredictions = sample == null
                     ? Map.of() : predictionsBySample.getOrDefault(sample.id, Map.of());
             boolean holding = universe.holdingCodes().contains(stockCode);
+            AiAnalysisReport report = reportsByStock.get(stockCode);
             AiDailyDecisionItem item = buildItem(
                     request, snapshot, stockCode, universe.stockNames().get(stockCode), sample,
-                    corePredictions, evidence, factorReliability,
-                    factorsBySample.getOrDefault(sample == null ? null : sample.id, List.of()), holding);
+                    corePredictions, evidence,
+                    factorsBySample.getOrDefault(sample == null ? null : sample.id, List.of()), holding, report,
+                    globalRun.strategyReleaseId, factorPerformanceByDefinition);
             itemMapper.insert(item);
             if (item.id == null) {
                 throw new IllegalStateException("每日决策明细写入后缺少主键：" + stockCode);
@@ -213,6 +233,11 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
         }
         applySnapshotMetrics(snapshot, items, samples, evidence);
         snapshotMapper.updateById(snapshot);
+        AiDailyDecisionPlanService.PlanBuildResult planResult = dailyDecisionPlanService
+                .initializeDeterministicPlans(request.userId(), request.tradeDate(), items);
+        if (planResult.failedCount() > 0) {
+            throw new IllegalStateException("日报条件计划初始化失败：" + String.join("；", planResult.errors()));
+        }
         archiveReport(request, globalRun, snapshot);
         return new ProjectionResult(snapshot, items, links, PROJECTION_STEPS);
     }
@@ -229,7 +254,7 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
                 request.userPipelineRunId(),
                 globalRun.strategyReleaseId,
                 globalRun.modelVersionId,
-                "USER_PROJECTION_REPORT:" + fingerprint(request.idempotencyKey()),
+                "USER_PROJECTION_REPORT:" + fingerprint(request.idempotencyKey(), snapshot.snapshotVersion),
                 globalRun.status,
                 null,
                 "用户每日决策投影已完成",
@@ -252,13 +277,19 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
             AiSample sample,
             Map<Integer, AiPrediction> predictions,
             EvaluationEvidence evidence,
-            BigDecimal factorReliability,
             List<AiFactorValue> factors,
-            boolean holding
+            boolean holding,
+            AiAnalysisReport report,
+            Long strategyReleaseId,
+            Map<Long, AiFactorPerformance> factorPerformanceByDefinition
     ) {
         String unavailable = availabilityReason(sample, predictions);
         AiPrediction primary = predictions.get(3);
-        BigDecimal risk = primary == null ? null : primary.riskScore;
+        boolean reportAligned = alignedReport(report, sample, strategyReleaseId, request.tradeDate());
+        BigDecimal reportRisk = reportAligned ? report.riskScore : null;
+        BigDecimal risk = max(primary == null ? null : primary.riskScore, reportRisk);
+        StockEvaluationEvidence stockEvidence = evidence.forStock(stockCode);
+        BigDecimal factorReliability = factorReliability(factors, factorPerformanceByDefinition);
         boolean hardStop = primary != null && ("SELL".equals(primary.action)
                 || containsIgnoreCase(primary.reasonJson, "HARD_STOP"));
         AiDailyDecisionPolicy.Decision decision = decisionPolicy.decide(new AiDailyDecisionPolicy.Input(
@@ -267,19 +298,20 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
                 sample == null || sample.dataQualityScore == null
                         ? null : sample.dataQualityScore.divide(new BigDecimal("100"), 8, RoundingMode.HALF_UP),
                 risk,
-                evidence.outOfSampleCount(),
+                stockEvidence.outOfSampleCount(),
                 hardStop,
                 primary == null ? null : primary.action,
                 holding,
                 unavailable,
-                BigDecimal.ZERO));
+                reportAligned ? report.calibratedConfidence : BigDecimal.ZERO,
+                reportAligned ? report.finalAction : null));
 
         AiDailyDecisionItem item = new AiDailyDecisionItem();
         item.userId = request.userId();
         item.decisionSnapshotId = snapshot.id;
         item.tradeDate = request.tradeDate();
         item.sampleId = sample == null ? null : sample.id;
-        item.reportId = null;
+        item.reportId = reportAligned ? report.id : null;
         item.stockCode = stockCode;
         item.stockName = resolveStockName(
                 stockCode,
@@ -295,14 +327,15 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
         item.finalAction = decision.finalAction();
         item.riskScore = decision.riskScore();
         item.riskLevel = decision.riskLevel();
-        item.decisionSource = "DETERMINISTIC_POLICY";
+        item.decisionSource = reportAligned ? "RECONCILED_AI_REPORT" : "DETERMINISTIC_POLICY";
         item.freshnessStatus = unavailable == null ? "CURRENT_CLOSE" : "UNAVAILABLE";
         item.decisionPolicyVersion = decisionPolicy.version();
         item.confidenceLevel = decision.confidenceLevel();
-        item.outOfSampleCount = evidence.outOfSampleCount();
-        item.historicalHitRate = evidence.hitRateByStock().get(stockCode);
+        item.outOfSampleCount = stockEvidence.outOfSampleCount();
+        item.historicalHitRate = stockEvidence.hitRate();
+        item.evidenceScope = stockEvidence.scope();
         item.triggerFactorsJson = triggerFactorsJson(factors);
-        item.reasonSummary = reasonSummary(decision, evidence.outOfSampleCount());
+        item.reasonSummary = reasonSummary(decision, stockEvidence, report, reportAligned);
         item.unavailableReason = decision.unavailableReason();
         item.inputFingerprint = fingerprint(
                 decisionPolicy.version(), request.userId(), request.tradeDate(), stockCode,
@@ -312,6 +345,34 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
                         .sorted().collect(Collectors.joining(",")));
         item.createdAt = request.generatedAt();
         return item;
+    }
+
+    private Map<String, AiAnalysisReport> loadCurrentReports(
+            Long userId,
+            LocalDate tradeDate,
+            List<String> stockCodes
+    ) {
+        if (stockCodes == null || stockCodes.isEmpty()) {
+            return Map.of();
+        }
+        return safeList(analysisReportMapper.selectLatestSuccessfulForDailyDecision(userId, tradeDate, stockCodes))
+                .stream()
+                .filter(report -> report != null && report.stockCode != null)
+                .collect(Collectors.toMap(report -> report.stockCode, Function.identity(),
+                        (left, right) -> right, LinkedHashMap::new));
+    }
+
+    private static boolean alignedReport(
+            AiAnalysisReport report,
+            AiSample sample,
+            Long strategyReleaseId,
+            LocalDate tradeDate
+    ) {
+        return report != null && report.id != null && sample != null && sample.id != null
+                && Objects.equals(report.sampleId, sample.id)
+                && Objects.equals(report.strategyReleaseId, strategyReleaseId)
+                && Objects.equals(report.reportDate, tradeDate)
+                && report.status == com.maogou.stock.domain.enums.AnalysisStatus.SUCCESS;
     }
 
     private AiDailyDecisionSnapshot newSnapshot(
@@ -457,33 +518,61 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
                 evaluationMapper.selectDecisionEvidenceSummary(strategyReleaseId, tradeDate);
         List<AiPredictionEvaluationMapper.StockEvaluationSummary> stockSummaries =
                 safeList(evaluationMapper.selectDecisionEvidenceByStock(strategyReleaseId, tradeDate));
-        int total = summary == null || summary.totalCount == null ? 0 : Math.toIntExact(summary.totalCount);
         long assessed = summary == null || summary.assessedCount == null ? 0L : summary.assessedCount;
         long correct = summary == null || summary.correctCount == null ? 0L : summary.correctCount;
         BigDecimal overall = assessed == 0 ? null : percentage(correct, assessed);
-        Map<String, BigDecimal> byStock = stockSummaries.stream()
+        Map<String, StockEvaluationEvidence> byStock = stockSummaries.stream()
                 .filter(value -> value != null && value.stockCode != null
                         && value.totalCount != null && value.totalCount > 0)
                 .collect(Collectors.toMap(
                         value -> value.stockCode,
-                        value -> percentage(
-                                value.correctCount == null ? 0L : value.correctCount,
-                                value.totalCount),
+                        value -> new StockEvaluationEvidence(
+                                Math.toIntExact(value.totalCount),
+                                percentage(value.correctCount == null ? 0L : value.correctCount,
+                                        value.totalCount),
+                                "STOCK"),
                         (left, right) -> right,
                         LinkedHashMap::new));
         BigDecimal strategy = overall == null ? new BigDecimal("0.50")
                 : overall.divide(new BigDecimal("100"), 8, RoundingMode.HALF_UP);
-        return new EvaluationEvidence(total, overall, byStock, strategy);
+        return new EvaluationEvidence(Math.toIntExact(assessed), overall, byStock, strategy);
     }
 
-    private static BigDecimal factorReliability(List<AiFactorPerformance> performance) {
-        return performance.stream().map(item -> item.wilsonLowerBound).filter(Objects::nonNull)
+    private static BigDecimal factorReliability(
+            List<AiFactorValue> values,
+            Map<Long, AiFactorPerformance> performanceByDefinition
+    ) {
+        return values.stream()
+                .filter(value -> value != null && value.factorDefinitionId != null)
+                .filter(value -> value.hit != null && value.hit == 1)
+                .filter(value -> value.missing == null || value.missing == 0)
+                .map(value -> performanceByDefinition.get(value.factorDefinitionId))
+                .filter(Objects::nonNull)
+                .map(item -> item.wilsonLowerBound).filter(Objects::nonNull)
                 .map(AiUserDailyProjectionServiceImpl::normalizeRate)
                 .reduce(BigDecimal::add)
-                .map(sum -> sum.divide(BigDecimal.valueOf(performance.stream()
+                .map(sum -> sum.divide(BigDecimal.valueOf(values.stream()
+                        .filter(value -> value != null && value.factorDefinitionId != null)
+                        .filter(value -> value.hit != null && value.hit == 1)
+                        .filter(value -> value.missing == null || value.missing == 0)
+                        .map(value -> performanceByDefinition.get(value.factorDefinitionId))
+                        .filter(Objects::nonNull)
                         .map(item -> item.wilsonLowerBound).filter(Objects::nonNull).count()),
                         8, RoundingMode.HALF_UP))
                 .orElse(new BigDecimal("0.50"));
+    }
+
+    private static AiFactorPerformance latestPerformance(
+            AiFactorPerformance left,
+            AiFactorPerformance right
+    ) {
+        if (left.evaluatedAt == null) {
+            return right;
+        }
+        if (right.evaluatedAt == null) {
+            return left;
+        }
+        return right.evaluatedAt.isAfter(left.evaluatedAt) ? right : left;
     }
 
     private static BigDecimal signal(AiPrediction prediction) {
@@ -547,14 +636,41 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
         }
     }
 
-    private static String reasonSummary(AiDailyDecisionPolicy.Decision decision, int oosCount) {
+    private static String reasonSummary(
+            AiDailyDecisionPolicy.Decision decision,
+            StockEvaluationEvidence evidence,
+            AiAnalysisReport report,
+            boolean reportAligned
+    ) {
         if ("DATA_UNAVAILABLE".equals(decision.category())) {
             return "核心研究数据不可用：" + decision.unavailableReason();
         }
         if ("LOW_SAMPLE".equals(decision.confidenceLevel())) {
-            return "当前仅有 " + oosCount + " 条样本外评价，结论最高限制为谨慎观察";
+            return evidenceDescription(evidence) + "当前仅有 " + evidence.outOfSampleCount()
+                    + " 条已评价样本，结论最高限制为谨慎观察";
         }
-        return "结论由 " + DecisionPolicyV1.VERSION + " 基于三周期预测和样本外证据确定";
+        if (report == null) {
+            return evidenceDescription(evidence) + "当日未生成结构化 AI 报告，结论由 " + DecisionPolicyV1.VERSION
+                    + " 基于三周期预测、因子与样本外证据确定";
+        }
+        if (!reportAligned) {
+            return evidenceDescription(evidence) + "当日 AI 报告未与当前正式样本或策略版本对齐，已按 " + DecisionPolicyV1.VERSION
+                    + " 降级为规则决策";
+        }
+        if (Objects.equals(report.finalAction, decision.finalAction())) {
+            return evidenceDescription(evidence) + "AI 报告动作“" + report.finalAction + "”与 " + DecisionPolicyV1.VERSION + " 证据一致";
+        }
+        return evidenceDescription(evidence) + "AI 报告建议“" + report.finalAction + "”，但综合分 " + decision.systemScore()
+                + " 未满足正式动作门槛或触发风险约束，最终裁决为“" + decision.finalAction() + "”";
+    }
+
+    private static String evidenceDescription(StockEvaluationEvidence evidence) {
+        if (evidence == null || evidence.outOfSampleCount() <= 0) {
+            return "没有可用的已评价历史证据；";
+        }
+        return "STRATEGY_FALLBACK".equals(evidence.scope())
+                ? "该股票历史样本不足，已使用策略级已评价证据并保守降级；"
+                : "已使用该股票的已评价历史证据；";
     }
 
     private static String dominantMarketRegime(List<AiSample> samples) {
@@ -594,6 +710,16 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
         BigDecimal normalized = value.compareTo(BigDecimal.ONE) > 0
                 ? value.divide(new BigDecimal("100"), 8, RoundingMode.HALF_UP) : value;
         return normalized.max(BigDecimal.ZERO).min(BigDecimal.ONE);
+    }
+
+    private static BigDecimal max(BigDecimal left, BigDecimal right) {
+        if (left == null) {
+            return right;
+        }
+        if (right == null) {
+            return left;
+        }
+        return left.max(right);
     }
 
     private static BigDecimal percentage(long numerator, long denominator) {
@@ -658,8 +784,24 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
     private record EvaluationEvidence(
             int outOfSampleCount,
             BigDecimal overallHitRate,
-            Map<String, BigDecimal> hitRateByStock,
+            Map<String, StockEvaluationEvidence> byStock,
             BigDecimal strategyValidation
     ) {
+        private StockEvaluationEvidence forStock(String stockCode) {
+            StockEvaluationEvidence stock = byStock.get(stockCode);
+            if (stock != null) {
+                return stock;
+            }
+            if (outOfSampleCount > 0 && overallHitRate != null) {
+                return new StockEvaluationEvidence(outOfSampleCount, overallHitRate, "STRATEGY_FALLBACK");
+            }
+            return StockEvaluationEvidence.empty();
+        }
+    }
+
+    private record StockEvaluationEvidence(int outOfSampleCount, BigDecimal hitRate, String scope) {
+        private static StockEvaluationEvidence empty() {
+            return new StockEvaluationEvidence(0, null, "NONE");
+        }
     }
 }

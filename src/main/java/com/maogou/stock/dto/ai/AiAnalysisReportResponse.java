@@ -3,6 +3,7 @@ package com.maogou.stock.dto.ai;
 import com.maogou.stock.domain.entity.AiAnalysisReport;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -27,7 +28,9 @@ public record AiAnalysisReportResponse(
         Integer reportVersion,
         Long supersedesReportId,
         BigDecimal dataQualityScore,
-        BigDecimal calibratedConfidence
+        BigDecimal calibratedConfidence,
+        String finalAction,
+        DailyDecision dailyDecision
 ) {
     public static AiAnalysisReportResponse from(AiAnalysisReport entity) {
         return from(entity, List.of());
@@ -36,6 +39,14 @@ public record AiAnalysisReportResponse(
     public static AiAnalysisReportResponse from(
             AiAnalysisReport entity,
             List<AiConditionalStrategyPayload.ReviewResult> tradePlanReviews
+    ) {
+        return from(entity, tradePlanReviews, null);
+    }
+
+    public static AiAnalysisReportResponse from(
+            AiAnalysisReport entity,
+            List<AiConditionalStrategyPayload.ReviewResult> tradePlanReviews,
+            DailyDecision dailyDecision
     ) {
         String stockName = entity.stockName;
         if (stockName == null || stockName.isBlank() || "未知股票".equals(stockName.trim())) {
@@ -62,7 +73,28 @@ public record AiAnalysisReportResponse(
                 entity.reportVersion,
                 entity.supersedesReportId,
                 entity.dataQualityScore,
-                entity.calibratedConfidence
+                entity.calibratedConfidence,
+                entity.finalAction,
+                dailyDecision
         );
+    }
+
+    public record DailyDecision(
+            Long decisionItemId,
+            LocalDate tradeDate,
+            String finalAction,
+            String category,
+            BigDecimal systemScore,
+            BigDecimal riskScore,
+            String riskLevel,
+            String decisionSource,
+            String decisionPolicyVersion,
+            String reasonSummary,
+            String freshnessStatus,
+            BigDecimal dataQualityScore,
+            Integer outOfSampleCount,
+            String confidenceLevel,
+            String unavailableReason
+    ) {
     }
 }

@@ -17,6 +17,7 @@
     "targetProfitSecondPct": 15.0,
     "technicalStopLossPct": -8.0,
     "actionEffectivenessBufferPct": 0.3,
+    "evaluationTransactionCostBps": 20.0,
     "highVolatilityPct": 5.0,
     "signalConditionWeight": 0.55,
     "signalFactorWeight": 0.20,

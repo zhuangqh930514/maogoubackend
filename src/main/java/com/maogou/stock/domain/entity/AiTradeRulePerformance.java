@@ -27,8 +27,13 @@ public class AiTradeRulePerformance {
     public BigDecimal effectivenessRate;
     public BigDecimal avgPostTriggerReturn;
     public BigDecimal avgAdverseReturn;
+    public BigDecimal avgNetActionReturn;
+    public BigDecimal avgExcessReturn;
+    public BigDecimal avgTransactionCostBps;
+    public BigDecimal wilsonLowerBound;
     public BigDecimal learnedWeight;
     public String confidenceLevel;
+    public String feedbackScope;
     public String inputFingerprint;
     public LocalDateTime lastEvaluatedAt;
     public LocalDateTime createdAt;

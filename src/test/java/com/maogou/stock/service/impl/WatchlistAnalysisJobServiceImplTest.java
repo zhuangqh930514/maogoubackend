@@ -153,6 +153,8 @@ class WatchlistAnalysisJobServiceImplTest {
                 1,
                 null,
                 null,
+                null,
+                null,
                 null
         );
     }

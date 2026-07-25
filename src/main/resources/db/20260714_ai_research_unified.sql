@@ -37,6 +37,7 @@ DROP TABLE IF EXISTS ai_analysis_report;
 DROP TABLE IF EXISTS ai_trade_rule_config;
 DROP TABLE IF EXISTS ai_trade_plan_review;
 DROP TABLE IF EXISTS ai_trade_rule_performance;
+DROP TABLE IF EXISTS ai_trade_factor_feedback;
 DROP TABLE IF EXISTS ai_analysis_outcome;
 DROP TABLE IF EXISTS ai_analysis_decision;
 DROP TABLE IF EXISTS ai_analysis_factor_hit;
@@ -156,6 +157,26 @@ CREATE TABLE IF NOT EXISTS ai_research_universe_item (
     CONSTRAINT chk_universe_item_included CHECK (included IN (0, 1)),
     CONSTRAINT fk_universe_item_snapshot
         FOREIGN KEY (universe_snapshot_id) REFERENCES ai_research_universe_snapshot (id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_research_universe_item_lineage (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    universe_item_id BIGINT NOT NULL,
+    source_type VARCHAR(48) NOT NULL,
+    owner_user_id BIGINT NOT NULL,
+    source_record_id BIGINT NOT NULL,
+    active_at_snapshot TINYINT NOT NULL,
+    source_fingerprint VARCHAR(128) NOT NULL,
+    evidence_json MEDIUMTEXT NOT NULL,
+    observed_at DATETIME(3) NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_universe_item_lineage_source
+        (universe_item_id, source_type, owner_user_id, source_record_id),
+    KEY idx_universe_item_lineage_owner (owner_user_id, source_type, source_record_id),
+    KEY idx_universe_item_lineage_active (universe_item_id, active_at_snapshot),
+    CONSTRAINT chk_universe_item_lineage_active CHECK (active_at_snapshot IN (0, 1)),
+    CONSTRAINT fk_universe_item_lineage_item
+        FOREIGN KEY (universe_item_id) REFERENCES ai_research_universe_item (id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 
 CREATE TABLE IF NOT EXISTS ai_data_batch (
@@ -1307,8 +1328,12 @@ CREATE TABLE IF NOT EXISTS ai_trade_rule_config (
     seed_version VARCHAR(64) NULL,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    active_guard TINYINT GENERATED ALWAYS AS (
+        CASE WHEN status = 'ACTIVE' THEN 1 ELSE NULL END
+    ) STORED,
     UNIQUE KEY uk_trade_rule_config_user_version (user_id, version_no),
     UNIQUE KEY uk_trade_rule_config_user_id (user_id, id),
+    UNIQUE KEY uk_trade_rule_config_single_active (user_id, active_guard),
     KEY idx_trade_rule_config_active (user_id, status, updated_at),
     KEY idx_trade_rule_config_release (strategy_release_id, status),
     CONSTRAINT fk_trade_rule_config_user FOREIGN KEY (user_id) REFERENCES user_account (id),
@@ -1340,6 +1365,10 @@ CREATE TABLE IF NOT EXISTS ai_trade_plan_review (
     post_trigger_return DECIMAL(12, 6) NULL,
     max_favorable_return DECIMAL(12, 6) NULL,
     max_adverse_return DECIMAL(12, 6) NULL,
+    transaction_cost_bps DECIMAL(10, 4) NULL,
+    net_action_return DECIMAL(12, 6) NULL,
+    benchmark_return DECIMAL(12, 6) NULL,
+    excess_return DECIMAL(12, 6) NULL,
     action_effective TINYINT NULL,
     review_score DECIMAL(10, 4) NULL,
     actual_metrics_json MEDIUMTEXT NULL,
@@ -1385,8 +1414,13 @@ CREATE TABLE IF NOT EXISTS ai_trade_rule_performance (
     effectiveness_rate DECIMAL(10, 4) NOT NULL DEFAULT 0,
     avg_post_trigger_return DECIMAL(12, 6) NOT NULL DEFAULT 0,
     avg_adverse_return DECIMAL(12, 6) NOT NULL DEFAULT 0,
+    avg_net_action_return DECIMAL(12, 6) NOT NULL DEFAULT 0,
+    avg_excess_return DECIMAL(12, 6) NOT NULL DEFAULT 0,
+    avg_transaction_cost_bps DECIMAL(10, 4) NOT NULL DEFAULT 0,
+    wilson_lower_bound DECIMAL(10, 4) NOT NULL DEFAULT 0,
     learned_weight DECIMAL(10, 4) NOT NULL DEFAULT 50,
     confidence_level VARCHAR(24) NOT NULL DEFAULT 'LOW_SAMPLE',
+    feedback_scope VARCHAR(24) NOT NULL DEFAULT 'CANDIDATE_ONLY',
     input_fingerprint VARCHAR(128) NOT NULL,
     last_evaluated_at DATETIME(3) NULL,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -1399,6 +1433,41 @@ CREATE TABLE IF NOT EXISTS ai_trade_rule_performance (
     CONSTRAINT chk_trade_rule_performance_horizon
         CHECK (horizon_trading_days IN (1, 2, 3, 5)),
     CONSTRAINT fk_trade_rule_performance_config
+        FOREIGN KEY (user_id, trade_rule_config_id)
+        REFERENCES ai_trade_rule_config (user_id, id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_trade_factor_feedback (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    trade_rule_config_id BIGINT NOT NULL,
+    factor_code VARCHAR(96) NOT NULL,
+    factor_name VARCHAR(128) NOT NULL,
+    factor_group VARCHAR(64) NOT NULL,
+    rule_code VARCHAR(64) NOT NULL,
+    rule_type VARCHAR(32) NOT NULL,
+    horizon_trading_days INT NOT NULL,
+    market_regime VARCHAR(32) NOT NULL,
+    window_start_date DATE NOT NULL,
+    window_end_date DATE NOT NULL,
+    sample_count INT NOT NULL DEFAULT 0,
+    effective_count INT NOT NULL DEFAULT 0,
+    effectiveness_rate DECIMAL(10, 4) NOT NULL DEFAULT 0,
+    avg_net_action_return DECIMAL(12, 6) NOT NULL DEFAULT 0,
+    avg_excess_return DECIMAL(12, 6) NOT NULL DEFAULT 0,
+    confidence_level VARCHAR(24) NOT NULL DEFAULT 'LOW_SAMPLE',
+    feedback_scope VARCHAR(24) NOT NULL DEFAULT 'CANDIDATE_ONLY',
+    input_fingerprint VARCHAR(128) NOT NULL,
+    last_evaluated_at DATETIME(3) NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_trade_factor_feedback_window
+        (user_id, trade_rule_config_id, factor_code, rule_code, horizon_trading_days,
+         market_regime, window_start_date, window_end_date),
+    KEY idx_trade_factor_feedback_lookup
+        (user_id, factor_code, market_regime, sample_count, last_evaluated_at),
+    CONSTRAINT chk_trade_factor_feedback_horizon CHECK (horizon_trading_days IN (1, 2, 3, 5)),
+    CONSTRAINT fk_trade_factor_feedback_config
         FOREIGN KEY (user_id, trade_rule_config_id)
         REFERENCES ai_trade_rule_config (user_id, id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;

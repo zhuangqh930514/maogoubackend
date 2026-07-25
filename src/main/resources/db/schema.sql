@@ -249,6 +249,26 @@ CREATE TABLE IF NOT EXISTS ai_research_universe_item (
         FOREIGN KEY (universe_snapshot_id) REFERENCES ai_research_universe_snapshot (id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 
+CREATE TABLE IF NOT EXISTS ai_research_universe_item_lineage (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    universe_item_id BIGINT NOT NULL,
+    source_type VARCHAR(48) NOT NULL,
+    owner_user_id BIGINT NOT NULL,
+    source_record_id BIGINT NOT NULL,
+    active_at_snapshot TINYINT NOT NULL,
+    source_fingerprint VARCHAR(128) NOT NULL,
+    evidence_json MEDIUMTEXT NOT NULL,
+    observed_at DATETIME(3) NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_universe_item_lineage_source
+        (universe_item_id, source_type, owner_user_id, source_record_id),
+    KEY idx_universe_item_lineage_owner (owner_user_id, source_type, source_record_id),
+    KEY idx_universe_item_lineage_active (universe_item_id, active_at_snapshot),
+    CONSTRAINT chk_universe_item_lineage_active CHECK (active_at_snapshot IN (0, 1)),
+    CONSTRAINT fk_universe_item_lineage_item
+        FOREIGN KEY (universe_item_id) REFERENCES ai_research_universe_item (id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
 CREATE TABLE IF NOT EXISTS ai_data_batch (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     universe_snapshot_id BIGINT NOT NULL,
@@ -1424,8 +1444,12 @@ CREATE TABLE IF NOT EXISTS ai_trade_rule_config (
     seed_version VARCHAR(64) NULL,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    active_guard TINYINT GENERATED ALWAYS AS (
+        CASE WHEN status = 'ACTIVE' THEN 1 ELSE NULL END
+    ) STORED,
     UNIQUE KEY uk_trade_rule_config_user_version (user_id, version_no),
     UNIQUE KEY uk_trade_rule_config_user_id (user_id, id),
+    UNIQUE KEY uk_trade_rule_config_single_active (user_id, active_guard),
     KEY idx_trade_rule_config_active (user_id, status, updated_at),
     KEY idx_trade_rule_config_release (strategy_release_id, status),
     CONSTRAINT fk_trade_rule_config_user FOREIGN KEY (user_id) REFERENCES user_account (id),
@@ -1457,6 +1481,10 @@ CREATE TABLE IF NOT EXISTS ai_trade_plan_review (
     post_trigger_return DECIMAL(12, 6) NULL,
     max_favorable_return DECIMAL(12, 6) NULL,
     max_adverse_return DECIMAL(12, 6) NULL,
+    transaction_cost_bps DECIMAL(10, 4) NULL,
+    net_action_return DECIMAL(12, 6) NULL,
+    benchmark_return DECIMAL(12, 6) NULL,
+    excess_return DECIMAL(12, 6) NULL,
     action_effective TINYINT NULL,
     review_score DECIMAL(10, 4) NULL,
     actual_metrics_json MEDIUMTEXT NULL,
@@ -1502,8 +1530,13 @@ CREATE TABLE IF NOT EXISTS ai_trade_rule_performance (
     effectiveness_rate DECIMAL(10, 4) NOT NULL DEFAULT 0,
     avg_post_trigger_return DECIMAL(12, 6) NOT NULL DEFAULT 0,
     avg_adverse_return DECIMAL(12, 6) NOT NULL DEFAULT 0,
+    avg_net_action_return DECIMAL(12, 6) NOT NULL DEFAULT 0,
+    avg_excess_return DECIMAL(12, 6) NOT NULL DEFAULT 0,
+    avg_transaction_cost_bps DECIMAL(10, 4) NOT NULL DEFAULT 0,
+    wilson_lower_bound DECIMAL(10, 4) NOT NULL DEFAULT 0,
     learned_weight DECIMAL(10, 4) NOT NULL DEFAULT 50,
     confidence_level VARCHAR(24) NOT NULL DEFAULT 'LOW_SAMPLE',
+    feedback_scope VARCHAR(24) NOT NULL DEFAULT 'CANDIDATE_ONLY',
     input_fingerprint VARCHAR(128) NOT NULL,
     last_evaluated_at DATETIME(3) NULL,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -1516,6 +1549,41 @@ CREATE TABLE IF NOT EXISTS ai_trade_rule_performance (
     CONSTRAINT chk_trade_rule_performance_horizon
         CHECK (horizon_trading_days IN (1, 2, 3, 5)),
     CONSTRAINT fk_trade_rule_performance_config
+        FOREIGN KEY (user_id, trade_rule_config_id)
+        REFERENCES ai_trade_rule_config (user_id, id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_trade_factor_feedback (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    trade_rule_config_id BIGINT NOT NULL,
+    factor_code VARCHAR(96) NOT NULL,
+    factor_name VARCHAR(128) NOT NULL,
+    factor_group VARCHAR(64) NOT NULL,
+    rule_code VARCHAR(64) NOT NULL,
+    rule_type VARCHAR(32) NOT NULL,
+    horizon_trading_days INT NOT NULL,
+    market_regime VARCHAR(32) NOT NULL,
+    window_start_date DATE NOT NULL,
+    window_end_date DATE NOT NULL,
+    sample_count INT NOT NULL DEFAULT 0,
+    effective_count INT NOT NULL DEFAULT 0,
+    effectiveness_rate DECIMAL(10, 4) NOT NULL DEFAULT 0,
+    avg_net_action_return DECIMAL(12, 6) NOT NULL DEFAULT 0,
+    avg_excess_return DECIMAL(12, 6) NOT NULL DEFAULT 0,
+    confidence_level VARCHAR(24) NOT NULL DEFAULT 'LOW_SAMPLE',
+    feedback_scope VARCHAR(24) NOT NULL DEFAULT 'CANDIDATE_ONLY',
+    input_fingerprint VARCHAR(128) NOT NULL,
+    last_evaluated_at DATETIME(3) NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_trade_factor_feedback_window
+        (user_id, trade_rule_config_id, factor_code, rule_code, horizon_trading_days,
+         market_regime, window_start_date, window_end_date),
+    KEY idx_trade_factor_feedback_lookup
+        (user_id, factor_code, market_regime, sample_count, last_evaluated_at),
+    CONSTRAINT chk_trade_factor_feedback_horizon CHECK (horizon_trading_days IN (1, 2, 3, 5)),
+    CONSTRAINT fk_trade_factor_feedback_config
         FOREIGN KEY (user_id, trade_rule_config_id)
         REFERENCES ai_trade_rule_config (user_id, id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
@@ -1619,6 +1687,7 @@ CREATE TABLE IF NOT EXISTS ai_daily_decision_item (
     confidence_level VARCHAR(32) NOT NULL DEFAULT 'LOW_SAMPLE',
     out_of_sample_count INT NOT NULL DEFAULT 0,
     historical_hit_rate DECIMAL(10, 4) NULL,
+    evidence_scope VARCHAR(32) NOT NULL DEFAULT 'UNKNOWN',
     trigger_factors_json MEDIUMTEXT NULL,
     reason_summary VARCHAR(1024) NULL,
     unavailable_reason VARCHAR(512) NULL,
@@ -1648,6 +1717,72 @@ CREATE TABLE IF NOT EXISTS ai_daily_decision_item (
         FOREIGN KEY (sample_id) REFERENCES ai_sample (id),
     CONSTRAINT fk_daily_decision_item_report
         FOREIGN KEY (user_id, report_id) REFERENCES ai_analysis_report (user_id, id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_daily_decision_plan (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    decision_item_id BIGINT NOT NULL,
+    sample_id BIGINT NULL,
+    trade_rule_config_id BIGINT NULL,
+    stock_code VARCHAR(16) NOT NULL,
+    trade_date DATE NOT NULL,
+    horizon_days INT NOT NULL,
+    plan_source VARCHAR(32) NOT NULL,
+    official_action VARCHAR(16) NOT NULL,
+    status VARCHAR(24) NOT NULL DEFAULT 'PENDING',
+    target_trade_date DATE NULL,
+    outcome_trade_date DATE NULL,
+    plan_json MEDIUMTEXT NULL,
+    input_fingerprint VARCHAR(128) NOT NULL,
+    source_provider VARCHAR(64) NULL,
+    source_as_of DATETIME(3) NULL,
+    unavailable_reason VARCHAR(1024) NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_daily_decision_plan_item_horizon (user_id, decision_item_id, horizon_days),
+    UNIQUE KEY uk_daily_decision_plan_user_id (user_id, id),
+    KEY idx_daily_decision_plan_pending (user_id, status, outcome_trade_date),
+    KEY idx_daily_decision_plan_stock_date (user_id, stock_code, trade_date),
+    CONSTRAINT chk_daily_decision_plan_horizon CHECK (horizon_days IN (1, 2, 3)),
+    CONSTRAINT fk_daily_decision_plan_item
+        FOREIGN KEY (user_id, decision_item_id) REFERENCES ai_daily_decision_item (user_id, id),
+    CONSTRAINT fk_daily_decision_plan_sample FOREIGN KEY (sample_id) REFERENCES ai_sample (id),
+    CONSTRAINT fk_daily_decision_plan_rule_config
+        FOREIGN KEY (user_id, trade_rule_config_id) REFERENCES ai_trade_rule_config (user_id, id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_daily_decision_plan_review (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    decision_plan_id BIGINT NOT NULL,
+    trigger_trade_date DATE NULL,
+    outcome_trade_date DATE NULL,
+    status VARCHAR(24) NOT NULL DEFAULT 'PENDING',
+    triggered_rule_code VARCHAR(64) NULL,
+    triggered_state VARCHAR(64) NULL,
+    suggested_action VARCHAR(16) NULL,
+    trigger_price DECIMAL(18,4) NULL,
+    outcome_price DECIMAL(18,4) NULL,
+    post_trigger_return DECIMAL(12,6) NULL,
+    max_favorable_return DECIMAL(12,6) NULL,
+    max_adverse_return DECIMAL(12,6) NULL,
+    transaction_cost_bps DECIMAL(10,4) NULL,
+    net_action_return DECIMAL(12,6) NULL,
+    benchmark_return DECIMAL(12,6) NULL,
+    excess_return DECIMAL(12,6) NULL,
+    action_effective TINYINT NULL,
+    review_score DECIMAL(10,4) NULL,
+    actual_metrics_json MEDIUMTEXT NULL,
+    feedback_json MEDIUMTEXT NULL,
+    feedback_summary VARCHAR(1024) NULL,
+    evaluated_at DATETIME(3) NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_daily_decision_plan_review (user_id, decision_plan_id),
+    KEY idx_daily_decision_plan_review_status (user_id, status, outcome_trade_date),
+    CONSTRAINT fk_daily_decision_plan_review_plan
+        FOREIGN KEY (user_id, decision_plan_id) REFERENCES ai_daily_decision_plan (user_id, id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 
 CREATE TABLE IF NOT EXISTS ai_daily_decision_item_prediction (
@@ -1826,3 +1961,235 @@ UPDATE ai_research_schema_version
 SET status = 'APPLIED', completed_at = CURRENT_TIMESTAMP(3)
 WHERE version_no = '20260714-unified-1.1'
   AND status = 'APPLYING';
+
+CREATE TABLE IF NOT EXISTS ai_user_notification (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    notification_type VARCHAR(48) NOT NULL,
+    dedupe_key VARCHAR(160) NOT NULL,
+    level VARCHAR(16) NOT NULL DEFAULT 'INFO',
+    title VARCHAR(160) NOT NULL,
+    content VARCHAR(1024) NOT NULL,
+    report_id BIGINT NULL,
+    trade_date DATE NULL,
+    is_read TINYINT NOT NULL DEFAULT 0,
+    read_at DATETIME(3) NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_ai_user_notification_dedupe (user_id, dedupe_key),
+    KEY idx_ai_user_notification_recent (user_id, is_read, created_at DESC),
+    KEY idx_ai_user_notification_report (user_id, report_id),
+    CONSTRAINT fk_ai_user_notification_user
+        FOREIGN KEY (user_id) REFERENCES user_account (id),
+    CONSTRAINT fk_ai_user_notification_report
+        FOREIGN KEY (report_id) REFERENCES ai_research_daily_report (id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+-- 用户体验反馈仅用于解释质量和产品排序，禁止作为行情标签、因子权重或模型训练目标。
+CREATE TABLE IF NOT EXISTS ai_research_user_feedback (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    report_id BIGINT NOT NULL,
+    stock_code VARCHAR(16) NOT NULL,
+    feedback_type VARCHAR(24) NOT NULL,
+    comment VARCHAR(500) NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_ai_research_feedback_user_report_stock (user_id, report_id, stock_code),
+    KEY idx_ai_research_feedback_report (user_id, report_id, updated_at DESC),
+    CONSTRAINT fk_ai_research_feedback_user
+        FOREIGN KEY (user_id) REFERENCES user_account (id),
+    CONSTRAINT fk_ai_research_feedback_report
+        FOREIGN KEY (report_id) REFERENCES ai_research_daily_report (id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+-- Conditional-rule governance is deliberately separate from model-release governance.
+CREATE TABLE IF NOT EXISTS ai_conditional_rule_experiment (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    trade_rule_config_id BIGINT NOT NULL,
+    experiment_key VARCHAR(160) NOT NULL,
+    rule_config_version VARCHAR(64) NOT NULL,
+    horizon_days INT NOT NULL,
+    window_start_date DATE NOT NULL,
+    window_end_date DATE NOT NULL,
+    fold_count INT NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    candidate_status VARCHAR(32) NOT NULL,
+    eligible_sample_count INT NOT NULL DEFAULT 0,
+    triggered_sample_count INT NOT NULL DEFAULT 0,
+    config_snapshot_json MEDIUMTEXT NOT NULL,
+    threshold_snapshot_json MEDIUMTEXT NOT NULL,
+    aggregate_metrics_json MEDIUMTEXT NOT NULL,
+    input_fingerprint VARCHAR(128) NOT NULL,
+    evaluated_at DATETIME(3) NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_conditional_rule_experiment_key (experiment_key),
+    KEY idx_conditional_rule_experiment_config (user_id, trade_rule_config_id, candidate_status, created_at),
+    KEY idx_conditional_rule_experiment_window (user_id, horizon_days, window_end_date),
+    CONSTRAINT chk_conditional_rule_experiment_horizon CHECK (horizon_days IN (1, 2, 3, 5)),
+    CONSTRAINT chk_conditional_rule_experiment_window CHECK (window_start_date <= window_end_date),
+    CONSTRAINT fk_conditional_rule_experiment_config
+        FOREIGN KEY (user_id, trade_rule_config_id) REFERENCES ai_trade_rule_config (user_id, id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_conditional_rule_experiment_fold (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    experiment_id BIGINT NOT NULL,
+    fold_no INT NOT NULL,
+    train_start_date DATE NOT NULL,
+    train_end_date DATE NOT NULL,
+    validation_start_date DATE NOT NULL,
+    validation_end_date DATE NOT NULL,
+    test_start_date DATE NOT NULL,
+    test_end_date DATE NOT NULL,
+    train_eligible_count INT NOT NULL DEFAULT 0,
+    validation_eligible_count INT NOT NULL DEFAULT 0,
+    test_eligible_count INT NOT NULL DEFAULT 0,
+    test_triggered_count INT NOT NULL DEFAULT 0,
+    metrics_json MEDIUMTEXT NOT NULL,
+    input_fingerprint VARCHAR(128) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_conditional_rule_experiment_fold (experiment_id, fold_no),
+    KEY idx_conditional_rule_fold_test (experiment_id, test_start_date, test_end_date),
+    CONSTRAINT chk_conditional_rule_fold_dates CHECK (
+        train_start_date <= train_end_date AND validation_start_date <= validation_end_date
+        AND test_start_date <= test_end_date
+    ),
+    CONSTRAINT fk_conditional_rule_experiment_fold_parent
+        FOREIGN KEY (experiment_id) REFERENCES ai_conditional_rule_experiment (id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_conditional_rule_experiment_item (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    experiment_id BIGINT NOT NULL,
+    experiment_fold_id BIGINT NOT NULL,
+    sample_id BIGINT NOT NULL,
+    sample_label_id BIGINT NOT NULL,
+    stock_code VARCHAR(16) NOT NULL,
+    trade_date DATE NOT NULL,
+    horizon_days INT NOT NULL,
+    evaluation_partition VARCHAR(16) NOT NULL,
+    rule_code VARCHAR(64) NULL,
+    suggested_action VARCHAR(32) NULL,
+    triggered TINYINT NOT NULL DEFAULT 0,
+    realized_net_return DECIMAL(12,6) NULL,
+    realized_excess_return DECIMAL(12,6) NULL,
+    action_effective TINYINT NULL,
+    feature_fingerprint VARCHAR(128) NOT NULL,
+    label_fingerprint VARCHAR(128) NOT NULL,
+    evidence_json MEDIUMTEXT NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_conditional_rule_experiment_item
+        (experiment_id, experiment_fold_id, sample_id, horizon_days),
+    KEY idx_conditional_rule_experiment_item_test
+        (experiment_id, evaluation_partition, trade_date, triggered),
+    KEY idx_conditional_rule_experiment_item_label (sample_label_id),
+    CONSTRAINT chk_conditional_rule_experiment_item_horizon CHECK (horizon_days IN (1, 2, 3, 5)),
+    CONSTRAINT fk_conditional_rule_experiment_item_parent
+        FOREIGN KEY (experiment_id) REFERENCES ai_conditional_rule_experiment (id),
+    CONSTRAINT fk_conditional_rule_experiment_item_fold
+        FOREIGN KEY (experiment_fold_id) REFERENCES ai_conditional_rule_experiment_fold (id),
+    CONSTRAINT fk_conditional_rule_experiment_item_sample
+        FOREIGN KEY (sample_id) REFERENCES ai_sample (id),
+    CONSTRAINT fk_conditional_rule_experiment_item_label
+        FOREIGN KEY (sample_label_id) REFERENCES ai_sample_label (id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_conditional_rule_shadow_observation (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    experiment_id BIGINT NOT NULL,
+    baseline_trade_rule_config_id BIGINT NOT NULL,
+    candidate_trade_rule_config_id BIGINT NOT NULL,
+    observation_key VARCHAR(160) NOT NULL,
+    horizon_days INT NOT NULL,
+    window_start_date DATE NOT NULL,
+    window_end_date DATE NOT NULL,
+    eligible_sample_count INT NOT NULL DEFAULT 0,
+    baseline_triggered_count INT NOT NULL DEFAULT 0,
+    candidate_triggered_count INT NOT NULL DEFAULT 0,
+    status VARCHAR(32) NOT NULL,
+    metrics_json MEDIUMTEXT NOT NULL,
+    threshold_snapshot_json MEDIUMTEXT NOT NULL,
+    input_fingerprint VARCHAR(128) NOT NULL,
+    observed_at DATETIME(3) NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_conditional_rule_shadow_observation_key (observation_key),
+    KEY idx_conditional_rule_shadow_candidate
+        (user_id, candidate_trade_rule_config_id, status, window_end_date),
+    CONSTRAINT chk_conditional_rule_shadow_horizon CHECK (horizon_days IN (1, 2, 3, 5)),
+    CONSTRAINT chk_conditional_rule_shadow_window CHECK (window_start_date <= window_end_date),
+    CONSTRAINT chk_conditional_rule_shadow_configs CHECK
+        (baseline_trade_rule_config_id <> candidate_trade_rule_config_id),
+    CONSTRAINT fk_conditional_rule_shadow_experiment
+        FOREIGN KEY (experiment_id) REFERENCES ai_conditional_rule_experiment (id),
+    CONSTRAINT fk_conditional_rule_shadow_baseline_config
+        FOREIGN KEY (user_id, baseline_trade_rule_config_id) REFERENCES ai_trade_rule_config (user_id, id),
+    CONSTRAINT fk_conditional_rule_shadow_candidate_config
+        FOREIGN KEY (user_id, candidate_trade_rule_config_id) REFERENCES ai_trade_rule_config (user_id, id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_conditional_rule_shadow_item (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    shadow_observation_id BIGINT NOT NULL,
+    sample_id BIGINT NOT NULL,
+    sample_label_id BIGINT NOT NULL,
+    stock_code VARCHAR(16) NOT NULL,
+    trade_date DATE NOT NULL,
+    horizon_days INT NOT NULL,
+    baseline_rule_code VARCHAR(64) NULL,
+    baseline_action VARCHAR(32) NULL,
+    baseline_triggered TINYINT NOT NULL DEFAULT 0,
+    candidate_rule_code VARCHAR(64) NULL,
+    candidate_action VARCHAR(32) NULL,
+    candidate_triggered TINYINT NOT NULL DEFAULT 0,
+    realized_net_return DECIMAL(12,6) NULL,
+    realized_excess_return DECIMAL(12,6) NULL,
+    feature_fingerprint VARCHAR(128) NOT NULL,
+    label_fingerprint VARCHAR(128) NOT NULL,
+    evidence_json MEDIUMTEXT NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_conditional_rule_shadow_item
+        (shadow_observation_id, sample_id, horizon_days),
+    KEY idx_conditional_rule_shadow_item_triggered
+        (shadow_observation_id, candidate_triggered, baseline_triggered),
+    CONSTRAINT chk_conditional_rule_shadow_item_horizon CHECK (horizon_days IN (1, 2, 3, 5)),
+    CONSTRAINT fk_conditional_rule_shadow_item_parent
+        FOREIGN KEY (shadow_observation_id) REFERENCES ai_conditional_rule_shadow_observation (id),
+    CONSTRAINT fk_conditional_rule_shadow_item_sample
+        FOREIGN KEY (sample_id) REFERENCES ai_sample (id),
+    CONSTRAINT fk_conditional_rule_shadow_item_label
+        FOREIGN KEY (sample_label_id) REFERENCES ai_sample_label (id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_conditional_rule_governance_event (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    trade_rule_config_id BIGINT NOT NULL,
+    experiment_id BIGINT NULL,
+    shadow_observation_id BIGINT NULL,
+    event_key VARCHAR(192) NOT NULL,
+    event_type VARCHAR(48) NOT NULL,
+    decision_status VARCHAR(32) NOT NULL,
+    policy_version VARCHAR(64) NOT NULL,
+    actor_type VARCHAR(16) NOT NULL,
+    actor_user_id BIGINT NULL,
+    reason VARCHAR(1024) NOT NULL,
+    threshold_snapshot_json MEDIUMTEXT NOT NULL,
+    evidence_json MEDIUMTEXT NOT NULL,
+    occurred_at DATETIME(3) NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_conditional_rule_governance_event_key (event_key),
+    KEY idx_conditional_rule_governance_config
+        (user_id, trade_rule_config_id, occurred_at),
+    CONSTRAINT fk_conditional_rule_governance_config
+        FOREIGN KEY (user_id, trade_rule_config_id) REFERENCES ai_trade_rule_config (user_id, id),
+    CONSTRAINT fk_conditional_rule_governance_experiment
+        FOREIGN KEY (experiment_id) REFERENCES ai_conditional_rule_experiment (id),
+    CONSTRAINT fk_conditional_rule_governance_shadow
+        FOREIGN KEY (shadow_observation_id) REFERENCES ai_conditional_rule_shadow_observation (id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;

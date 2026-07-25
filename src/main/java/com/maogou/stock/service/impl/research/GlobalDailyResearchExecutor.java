@@ -373,9 +373,12 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         KlinePointResponse previous = detail.kline().stream()
                 .filter(point -> point != null && point.tradeDate() != null && point.tradeDate().isBefore(tradeDate))
                 .max(Comparator.comparing(KlinePointResponse::tradeDate)).orElse(null);
-        String observedName = item == null ? null : item.stockName;
-        boolean nameObserved = observedName != null && !observedName.isBlank()
-                && !observedName.trim().equals(item.stockCode);
+        StockQuoteResponse quote = detail.quote();
+        String observedName = firstUsableStockName(
+                quote == null ? null : quote.name(),
+                item == null ? null : item.stockName,
+                item == null ? null : item.stockCode);
+        boolean nameObserved = observedName != null && !observedName.isBlank();
         boolean st = nameObserved && observedName.toUpperCase(Locale.ROOT).contains("ST");
         BigDecimal limitRatio = nameObserved ? liveLimitRatio(item.stockCode, st) : null;
         BigDecimal limitUp = limitPrice(previous, limitRatio, true);
@@ -394,7 +397,6 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
                 ? (suspended || Integer.valueOf(1).equals(isLimitUp) ? 0 : 1) : null;
         Integer sellTradable = "READY".equals(qualityStatus)
                 ? (suspended || Integer.valueOf(1).equals(isLimitDown) ? 0 : 1) : null;
-        StockQuoteResponse quote = detail.quote();
         Map<String, Object> evidence = new LinkedHashMap<>();
         evidence.put("format", "MAOGOU_LIVE_SECURITY_STATE_V1");
         evidence.put("stockCode", item.stockCode);
@@ -617,22 +619,29 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
                 sourceIndex.get(observationKey("MARKET_BENCHMARK", null)), KlineSeriesSnapshot.class);
         String marketRegime = marketRegime(benchmarkSeries);
         List<AiResearchUniverseItem> items = includedItems(batch.universeSnapshotId);
-        List<AiResearchUniverseItem> readyItems = items.stream()
+        List<AiResearchUniverseItem> sourceReadyItems = items.stream()
                 .filter(item -> {
                     AiSourceObservation observation = observations.get(item.stockCode);
                     return observation != null && "READY".equals(observation.qualityStatus);
                 })
                 .toList();
-        Set<String> readyStockCodes = readyItems.stream()
+        Set<String> sourceReadyStockCodes = sourceReadyItems.stream()
                 .map(item -> item.stockCode)
                 .collect(java.util.stream.Collectors.toSet());
         List<AiSample> samples = new ArrayList<>();
         List<String> errors = new ArrayList<>();
-        for (AiResearchUniverseItem item : readyItems) {
+        Map<String, String> admissionExcluded = new LinkedHashMap<>();
+        for (AiResearchUniverseItem item : sourceReadyItems) {
             AiSourceObservation observation = observations.get(item.stockCode);
             try {
                 StockDetailResponse detail = objectMapper.readValue(
                         observation.payloadJson, StockDetailResponse.class);
+                FormalResearchAdmission admission = formalResearchAdmission(item, detail, context.tradeDate());
+                if (!admission.included()) {
+                    admissionExcluded.put(item.stockCode, admission.reason()
+                            + "；数据提供方=" + normalize(observation.providerCode, "UNKNOWN"));
+                    continue;
+                }
                 IndustryMembershipService.Membership membership = readPayload(
                         sourceIndex.get(observationKey("INDUSTRY_MEMBERSHIP", item.stockCode)),
                         IndustryMembershipService.Membership.class);
@@ -652,13 +661,86 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         checkpoint.put("universeSnapshotId", batch.universeSnapshotId);
         checkpoint.put("dataBatchId", batchId);
         checkpoint.put("sampleIds", samples.stream().map(sample -> sample.id).toList());
-        checkpoint.put("sourceExcludedCount", Math.max(0, items.size() - readyItems.size()));
+        checkpoint.put("sourceExcludedCount", Math.max(0, items.size() - sourceReadyItems.size()));
         checkpoint.put("sourceExcludedStockCodes", items.stream()
-                .filter(item -> !readyStockCodes.contains(item.stockCode))
+                .filter(item -> !sourceReadyStockCodes.contains(item.stockCode))
                 .map(item -> item.stockCode)
                 .toList());
-        return success("BUILD_SAMPLES", readyItems.size(), samples.size(),
-                Math.max(0, readyItems.size() - samples.size()), checkpoint, batchId, errors);
+        checkpoint.put("admissionExcludedCount", admissionExcluded.size());
+        checkpoint.put("admissionExcluded", admissionExcluded);
+        int failed = Math.max(0, sourceReadyItems.size() - admissionExcluded.size() - samples.size());
+        return success("BUILD_SAMPLES", sourceReadyItems.size(), samples.size(),
+                failed, checkpoint, batchId, errors);
+    }
+
+    /**
+     * A source-ready response is not enough to become a formal sample. This gate keeps
+     * restricted, delisted-looking, suspended, unnamed and price-invalid securities out of all
+     * downstream factor, prediction and training paths while retaining the exclusion evidence.
+     */
+    private static FormalResearchAdmission formalResearchAdmission(
+            AiResearchUniverseItem item,
+            StockDetailResponse detail,
+            LocalDate tradeDate
+    ) {
+        StockQuoteResponse quote = detail == null ? null : detail.quote();
+        String code = item == null ? "" : normalize(item.stockCode, "");
+        String observedName = firstUsableStockName(
+                quote == null ? null : quote.name(),
+                item == null ? null : item.stockName,
+                code);
+        if (observedName == null) {
+            return FormalResearchAdmission.excluded("缺少可验证的证券名称，禁止仅凭股票代码推断正常上市");
+        }
+        String normalizedName = observedName.toUpperCase(Locale.ROOT);
+        if (normalizedName.contains("ST")) {
+            return FormalResearchAdmission.excluded("证券名称命中 ST 风险标识，已排除正式研究池");
+        }
+        if (normalizedName.contains("PT")) {
+            return FormalResearchAdmission.excluded("证券名称命中 PT 风险标识，已排除正式研究池");
+        }
+        if (observedName.contains("退")) {
+            return FormalResearchAdmission.excluded("证券名称包含退市标识，已排除正式研究池");
+        }
+        if (quote == null || quote.price() == null || quote.price().signum() <= 0) {
+            return FormalResearchAdmission.excluded("当前有效价格缺失，禁止进入正式研究池");
+        }
+        KlinePointResponse current = detail.kline() == null ? null : detail.kline().stream()
+                .filter(point -> point != null && tradeDate != null && tradeDate.equals(point.tradeDate()))
+                .findFirst().orElse(null);
+        if (current == null || current.close() == null || current.close().signum() <= 0) {
+            return FormalResearchAdmission.excluded("当日收盘 K 线缺失或无效，禁止进入正式研究池");
+        }
+        if (current.volume() == null || current.volume() <= 0L) {
+            return FormalResearchAdmission.excluded("当日无成交，无法确认可交易状态，已排除正式研究池");
+        }
+        return FormalResearchAdmission.allowed();
+    }
+
+    private static String firstUsableStockName(String first, String second, String stockCode) {
+        if (usableStockName(first, stockCode)) {
+            return first.trim();
+        }
+        if (usableStockName(second, stockCode)) {
+            return second.trim();
+        }
+        return null;
+    }
+
+    private static boolean usableStockName(String value, String stockCode) {
+        return value != null && !value.isBlank()
+                && !value.trim().equalsIgnoreCase(stockCode)
+                && !"未知股票".equals(value.trim());
+    }
+
+    private record FormalResearchAdmission(boolean included, String reason) {
+        private static FormalResearchAdmission allowed() {
+            return new FormalResearchAdmission(true, null);
+        }
+
+        private static FormalResearchAdmission excluded(String reason) {
+            return new FormalResearchAdmission(false, reason);
+        }
     }
 
     private StepOutcome matureSampleLabels(PipelineContext context) {

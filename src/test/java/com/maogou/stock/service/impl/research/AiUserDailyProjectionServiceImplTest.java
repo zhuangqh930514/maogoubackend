@@ -2,6 +2,8 @@ package com.maogou.stock.service.impl.research;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.maogou.stock.domain.entity.WatchStock;
+import com.maogou.stock.domain.entity.AiAnalysisReport;
+import com.maogou.stock.domain.enums.AnalysisStatus;
 import com.maogou.stock.domain.entity.research.AiDailyDecisionItem;
 import com.maogou.stock.domain.entity.research.AiDailyDecisionItemPrediction;
 import com.maogou.stock.domain.entity.research.AiDailyDecisionSnapshot;
@@ -10,6 +12,7 @@ import com.maogou.stock.domain.entity.research.AiPrediction;
 import com.maogou.stock.domain.entity.research.AiSample;
 import com.maogou.stock.mapper.TradeRecordMapper;
 import com.maogou.stock.mapper.WatchStockMapper;
+import com.maogou.stock.mapper.AiAnalysisReportMapper;
 import com.maogou.stock.mapper.research.AiDailyDecisionItemMapper;
 import com.maogou.stock.mapper.research.AiDailyDecisionItemPredictionMapper;
 import com.maogou.stock.mapper.research.AiDailyDecisionSnapshotMapper;
@@ -20,6 +23,7 @@ import com.maogou.stock.mapper.research.AiPredictionEvaluationMapper;
 import com.maogou.stock.mapper.research.AiPredictionMapper;
 import com.maogou.stock.mapper.research.AiSampleMapper;
 import com.maogou.stock.service.AiResearchDailyReportService;
+import com.maogou.stock.service.research.AiDailyDecisionPlanService;
 import com.maogou.stock.service.research.AiUserDailyProjectionService;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import org.junit.jupiter.api.Test;
@@ -35,6 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -127,6 +132,79 @@ class AiUserDailyProjectionServiceImplTest {
         assertThat(com.maogou.stock.security.AuthContext.currentUserId()).isEmpty();
     }
 
+    @Test
+    void linksAnAlignedFormalAiReportAndUsesItInTheDailyDecision() {
+        Fixture fixture = fixture(5L, true);
+        AiAnalysisReport report = new AiAnalysisReport();
+        report.id = 701L;
+        report.userId = 5L;
+        report.stockCode = "600519";
+        report.reportDate = LocalDate.of(2026, 7, 10);
+        report.sampleId = 31L;
+        report.strategyReleaseId = 91L;
+        report.status = AnalysisStatus.SUCCESS;
+        report.finalAction = "BUY";
+        report.calibratedConfidence = new BigDecimal("0.90");
+        report.riskScore = new BigDecimal("35");
+        when(fixture.analysisReportMapper.selectLatestSuccessfulForDailyDecision(
+                5L, LocalDate.of(2026, 7, 10), List.of("600519"))).thenReturn(List.of(report));
+
+        AiPredictionEvaluationMapper.StrategyEvaluationSummary summary =
+                new AiPredictionEvaluationMapper.StrategyEvaluationSummary();
+        summary.totalCount = 400L;
+        summary.assessedCount = 400L;
+        summary.correctCount = 280L;
+        when(fixture.evaluationMapper.selectDecisionEvidenceSummary(91L, LocalDate.of(2026, 7, 10)))
+                .thenReturn(summary);
+        AiPredictionEvaluationMapper.StockEvaluationSummary stockSummary =
+                new AiPredictionEvaluationMapper.StockEvaluationSummary();
+        stockSummary.stockCode = "600519";
+        stockSummary.totalCount = 400L;
+        stockSummary.correctCount = 280L;
+        when(fixture.evaluationMapper.selectDecisionEvidenceByStock(91L, LocalDate.of(2026, 7, 10)))
+                .thenReturn(List.of(stockSummary));
+
+        AiUserDailyProjectionService.ProjectionResult result = fixture.service.project(request(5L));
+
+        assertThat(result.items()).singleElement().satisfies(item -> {
+            assertThat(item.reportId).isEqualTo(701L);
+            assertThat(item.decisionSource).isEqualTo("RECONCILED_AI_REPORT");
+            assertThat(item.reasonSummary).contains("AI 报告动作");
+        });
+    }
+
+    @Test
+    void retryRebuildCreatesASupersedingSnapshotInsteadOfOverwritingTheOriginalDecision() {
+        Fixture fixture = fixture(5L, true);
+        AiDailyDecisionSnapshot previous = new AiDailyDecisionSnapshot();
+        previous.id = 999L;
+        previous.userId = 5L;
+        previous.tradeDate = LocalDate.of(2026, 7, 10);
+        previous.snapshotVersion = 1;
+        previous.isCurrent = 1;
+        previous.idempotencyKey = "USER_DAILY:5:2026-07-10:81";
+        when(fixture.snapshotMapper.selectByIdempotencyForShare(
+                5L, "USER_DAILY:5:2026-07-10:81")).thenReturn(previous);
+        when(fixture.snapshotMapper.selectCurrentForUpdate(5L, LocalDate.of(2026, 7, 10)))
+                .thenReturn(previous);
+        when(fixture.snapshotMapper.selectMaxVersionForUpdate(5L, LocalDate.of(2026, 7, 10)))
+                .thenReturn(1);
+
+        AiUserDailyProjectionService.ProjectionResult result = fixture.service.project(
+                new AiUserDailyProjectionService.ProjectionRequest(
+                        5L, LocalDate.of(2026, 7, 10), 81L, 444L,
+                        "USER_DAILY:5:2026-07-10:81", LocalDateTime.of(2026, 7, 10, 16, 30), true));
+
+        assertThat(result.snapshot().snapshotVersion).isEqualTo(2);
+        assertThat(result.snapshot().supersedesSnapshotId).isEqualTo(999L);
+        verify(fixture.snapshotMapper).retireCurrent(eq(999L), eq(5L), any());
+        ArgumentCaptor<AiResearchDailyReportService.GenerationRequest> requestCaptor =
+                ArgumentCaptor.forClass(AiResearchDailyReportService.GenerationRequest.class);
+        verify(fixture.dailyReportService).generate(requestCaptor.capture());
+        assertThat(requestCaptor.getValue().idempotencyKey())
+                .startsWith("USER_PROJECTION_REPORT:");
+    }
+
     private static Fixture fixture(Long userId, boolean includeT3) {
         return fixture(userId, includeT3, "贵州茅台");
     }
@@ -143,7 +221,9 @@ class AiUserDailyProjectionServiceImplTest {
         AiPredictionEvaluationMapper evaluationMapper = mock(AiPredictionEvaluationMapper.class);
         AiFactorValueMapper factorValueMapper = mock(AiFactorValueMapper.class);
         AiFactorPerformanceMapper factorPerformanceMapper = mock(AiFactorPerformanceMapper.class);
+        AiAnalysisReportMapper analysisReportMapper = mock(AiAnalysisReportMapper.class);
         AiResearchDailyReportService dailyReportService = mock(AiResearchDailyReportService.class);
+        AiDailyDecisionPlanService dailyDecisionPlanService = mock(AiDailyDecisionPlanService.class);
 
         AiPipelineRun run = new AiPipelineRun();
         run.id = 81L;
@@ -187,6 +267,8 @@ class AiUserDailyProjectionServiceImplTest {
         when(evaluationMapper.selectForDecisionEvidence(91L, run.tradeDate)).thenReturn(List.of());
         when(factorValueMapper.selectBySamples(anyList(), any())).thenReturn(List.of());
         when(factorPerformanceMapper.selectForSamplesBefore(anyList(), any())).thenReturn(List.of());
+        when(analysisReportMapper.selectLatestSuccessfulForDailyDecision(anyLong(), any(), anyList()))
+                .thenReturn(List.of());
 
         AtomicLong ids = new AtomicLong(1000);
         when(snapshotMapper.lockUser(anyLong())).thenAnswer(invocation -> invocation.getArgument(0));
@@ -202,13 +284,16 @@ class AiUserDailyProjectionServiceImplTest {
             return 1;
         });
         when(linkMapper.insert(any(AiDailyDecisionItemPrediction.class))).thenReturn(1);
+        when(dailyDecisionPlanService.initializeDeterministicPlans(anyLong(), any(), anyList()))
+                .thenReturn(new AiDailyDecisionPlanService.PlanBuildResult(3, 0, 0, List.of()));
 
         AiUserDailyProjectionService service = new AiUserDailyProjectionServiceImpl(
                 snapshotMapper, itemMapper, linkMapper, watchMapper, tradeMapper, runMapper,
                 sampleMapper, predictionMapper, evaluationMapper, factorValueMapper,
-                factorPerformanceMapper, new DecisionPolicyV1(), dailyReportService,
-                new ObjectMapper().findAndRegisterModules());
-        return new Fixture(service, snapshotMapper, itemMapper, watchMapper, dailyReportService);
+                factorPerformanceMapper, analysisReportMapper, new DecisionPolicyV1(), dailyReportService,
+                dailyDecisionPlanService, new ObjectMapper().findAndRegisterModules());
+        return new Fixture(service, snapshotMapper, itemMapper, watchMapper, evaluationMapper,
+                analysisReportMapper, dailyReportService);
     }
 
     private static AiPrediction prediction(Long id, Long sampleId, int horizon, String score, String risk) {
@@ -241,6 +326,8 @@ class AiUserDailyProjectionServiceImplTest {
             AiDailyDecisionSnapshotMapper snapshotMapper,
             AiDailyDecisionItemMapper itemMapper,
             WatchStockMapper watchMapper,
+            AiPredictionEvaluationMapper evaluationMapper,
+            AiAnalysisReportMapper analysisReportMapper,
             AiResearchDailyReportService dailyReportService
     ) {
     }

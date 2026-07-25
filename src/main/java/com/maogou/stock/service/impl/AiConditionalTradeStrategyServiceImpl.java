@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.maogou.stock.domain.entity.AiAnalysisReport;
+import com.maogou.stock.domain.entity.AiTradeFactorFeedback;
 import com.maogou.stock.domain.entity.AiTradePlanReview;
 import com.maogou.stock.domain.entity.AiTradeRuleConfig;
 import com.maogou.stock.domain.entity.AiTradeRulePerformance;
@@ -27,6 +28,7 @@ import com.maogou.stock.dto.market.KlineSeriesSnapshot;
 import com.maogou.stock.dto.market.StockDetailResponse;
 import com.maogou.stock.dto.market.StockQuoteResponse;
 import com.maogou.stock.mapper.AiAnalysisReportMapper;
+import com.maogou.stock.mapper.AiTradeFactorFeedbackMapper;
 import com.maogou.stock.mapper.AiTradePlanReviewMapper;
 import com.maogou.stock.mapper.AiTradeRuleConfigMapper;
 import com.maogou.stock.mapper.AiTradeRulePerformanceMapper;
@@ -57,6 +59,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -75,6 +78,7 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
     private final AiTradeRuleConfigMapper ruleConfigMapper;
     private final AiTradePlanReviewMapper reviewMapper;
     private final AiTradeRulePerformanceMapper rulePerformanceMapper;
+    private final AiTradeFactorFeedbackMapper factorFeedbackMapper;
     private final AiAnalysisReportMapper reportMapper;
     private final TradeRecordMapper tradeRecordMapper;
     private final AiSampleMapper sampleMapper;
@@ -94,6 +98,7 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
             AiTradeRuleConfigMapper ruleConfigMapper,
             AiTradePlanReviewMapper reviewMapper,
             AiTradeRulePerformanceMapper rulePerformanceMapper,
+            AiTradeFactorFeedbackMapper factorFeedbackMapper,
             AiAnalysisReportMapper reportMapper,
             TradeRecordMapper tradeRecordMapper,
             AiSampleMapper sampleMapper,
@@ -112,6 +117,7 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
         this.ruleConfigMapper = ruleConfigMapper;
         this.reviewMapper = reviewMapper;
         this.rulePerformanceMapper = rulePerformanceMapper;
+        this.factorFeedbackMapper = factorFeedbackMapper;
         this.reportMapper = reportMapper;
         this.tradeRecordMapper = tradeRecordMapper;
         this.sampleMapper = sampleMapper;
@@ -290,16 +296,29 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
         int pending = 0;
         int failed = 0;
         List<String> errors = new ArrayList<>();
+        KlineSeriesSnapshot benchmarkSeries = null;
+        String benchmarkIssue = null;
+        Map<String, KlineSeriesSnapshot> stockSeriesCache = new HashMap<>();
+        try {
+            benchmarkSeries = marketDataService.klineAt(
+                    AiResearchContract.BENCHMARK_SYMBOL, "day", 240, asOfDate.atTime(16, 0));
+        } catch (RuntimeException exception) {
+            benchmarkIssue = "步骤=VERIFY_CONDITIONAL_PLANS；股票=不适用；数据提供方=基准指数；原因="
+                    + rootMessage(exception);
+        }
         for (AiAnalysisReport report : reports) {
             try {
-                ReviewCounts counts = verifyReport(report, asOfDate);
+                ReviewCounts counts = verifyReport(
+                        report, asOfDate, benchmarkSeries, benchmarkIssue, stockSeriesCache);
                 processed += counts.processed;
                 verified += counts.verified;
                 noTrigger += counts.noTrigger;
                 pending += counts.pending;
             } catch (RuntimeException exception) {
                 failed++;
-                errors.add(report.stockCode + ": " + rootMessage(exception));
+                errors.add("步骤=VERIFY_CONDITIONAL_PLANS；股票=" + report.stockCode
+                        + "；数据提供方=正式行情/条件规则快照；原因=" + rootMessage(exception)
+                        + "；重试状态=下次自动流水线继续验证");
             }
         }
         if (verified > 0 || noTrigger > 0) {
@@ -308,10 +327,19 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
         return new ReviewRunResult(processed, verified, noTrigger, pending, failed, List.copyOf(errors));
     }
 
-    private ReviewCounts verifyReport(AiAnalysisReport report, LocalDate asOfDate) {
+    private ReviewCounts verifyReport(
+            AiAnalysisReport report,
+            LocalDate asOfDate,
+            KlineSeriesSnapshot benchmarkSeries,
+            String benchmarkIssue,
+            Map<String, KlineSeriesSnapshot> stockSeriesCache
+    ) {
         AiConditionalStrategyPayload original = readStrategy(report.conditionalStrategy);
-        KlineSeriesSnapshot snapshot = marketDataService.klineAt(
-                report.stockCode, "day", 180, asOfDate.atTime(16, 0));
+        KlineSeriesSnapshot snapshot = stockSeriesCache.get(report.stockCode);
+        if (snapshot == null) {
+            snapshot = marketDataService.klineAt(report.stockCode, "day", 180, asOfDate.atTime(16, 0));
+            stockSeriesCache.put(report.stockCode, snapshot);
+        }
         List<KlinePointResponse> klines = snapshot == null || snapshot.points() == null ? List.of()
                 : snapshot.points().stream()
                 .filter(item -> item != null && item.tradeDate() != null && item.close() != null)
@@ -341,11 +369,17 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
             processed++;
             KlinePointResponse trigger = klines.get(triggerIndex);
             KlinePointResponse outcome = klines.get(outcomeIndex);
-            StockDetailResponse triggerDetail = detailAt(report, klines.subList(0, triggerIndex + 1), trigger, triggerIndex == 0 ? null : klines.get(triggerIndex - 1));
+            StockDetailResponse triggerDetail = detailAt(
+                    report,
+                    klines.subList(0, triggerIndex + 1),
+                    trigger,
+                    triggerIndex == 0 ? null : klines.get(triggerIndex - 1),
+                    snapshot.source(),
+                    snapshot.fetchedAt());
             ResearchSnapshot research = researchSnapshot(report.userId, report.stockCode, trigger.tradeDate(), AiLearningPayloads.AnalysisLearningContext.empty());
             AiConditionalStrategyPayload current = ruleEngine.evaluate(new ConditionalTradeRuleEngine.EngineInput(
                     trigger.tradeDate(), trigger.tradeDate().atTime(15, 0), triggerDetail,
-                    original.position(), research.market, original.lineage(), original.ruleConfiguration(),
+                    positionAtPrice(original.position(), trigger.close()), research.market, original.lineage(), original.ruleConfiguration(),
                     research.factorEvidence, research.ruleWeights, research.limitations));
             AiConditionalStrategyPayload.HorizonPlan actualPlan = current.tradingPlans().stream()
                     .filter(item -> Objects.equals(item.horizonDays(), horizon)).findFirst().orElse(null);
@@ -386,8 +420,11 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
                 noTrigger++;
                 continue;
             }
-            OutcomeMetrics metrics = outcomeMetrics(trigger, outcome);
-            Boolean effective = actionEffective(triggeredRule.action(), metrics.postTriggerReturn,
+            BigDecimal transactionCostBps = transactionCostBps(original.ruleConfiguration(), triggeredRule.action());
+            OutcomeMetrics metrics = outcomeMetrics(trigger, outcome, triggeredRule.action(), transactionCostBps);
+            BenchmarkMetrics benchmark = benchmarkMetrics(
+                    benchmarkSeries, trigger.tradeDate(), outcome.tradeDate(), triggeredRule.action());
+            Boolean effective = actionEffective(triggeredRule.action(), metrics.netActionReturn,
                     threshold(original.ruleConfiguration(), "actionEffectivenessBufferPct"));
             BigDecimal score = reviewScore(triggeredRule.action(), metrics, effective);
             review.status = "VERIFIED";
@@ -397,23 +434,39 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
             review.postTriggerReturn = metrics.postTriggerReturn;
             review.maxFavorableReturn = metrics.maxFavorableReturn;
             review.maxAdverseReturn = metrics.maxAdverseReturn;
+            review.transactionCostBps = metrics.transactionCostBps;
+            review.netActionReturn = metrics.netActionReturn;
+            review.benchmarkReturn = benchmark.actionReturn;
+            review.excessReturn = benchmark.actionReturn == null ? null
+                    : metrics.netActionReturn.subtract(benchmark.actionReturn).setScale(4, RoundingMode.HALF_UP);
             review.actionEffective = effective == null ? null : effective ? 1 : 0;
             review.reviewScore = score;
-            review.actualMetricsJson = writeJson(Map.of(
-                    "triggerConditions", triggeredRule.triggerConditions(),
-                    "triggerDate", trigger.tradeDate(),
-                    "outcomeDate", outcome.tradeDate(),
-                    "postTriggerReturn", metrics.postTriggerReturn,
-                    "maxFavorableReturn", metrics.maxFavorableReturn,
-                    "maxAdverseReturn", metrics.maxAdverseReturn
-            ));
+            Map<String, Object> actualMetrics = new LinkedHashMap<>();
+            actualMetrics.put("triggerConditions", triggeredRule.triggerConditions());
+            actualMetrics.put("triggerDate", trigger.tradeDate());
+            actualMetrics.put("outcomeDate", outcome.tradeDate());
+            actualMetrics.put("stockKlineSource", safeSource(snapshot.source()));
+            actualMetrics.put("stockKlineFingerprint", snapshot.sourceFingerprint());
+            actualMetrics.put("postTriggerReturn", metrics.postTriggerReturn);
+            actualMetrics.put("maxFavorableReturn", metrics.maxFavorableReturn);
+            actualMetrics.put("maxAdverseReturn", metrics.maxAdverseReturn);
+            actualMetrics.put("transactionCostBps", metrics.transactionCostBps);
+            actualMetrics.put("netActionReturn", metrics.netActionReturn);
+            actualMetrics.put("benchmarkActionReturn", benchmark.actionReturn);
+            actualMetrics.put("benchmarkRawReturn", benchmark.rawReturn);
+            actualMetrics.put("benchmarkSource", benchmark.source);
+            actualMetrics.put("benchmarkIssue", benchmark.actionReturn == null ? benchmarkIssue : null);
+            actualMetrics.put("excessReturn", review.excessReturn);
+            review.actualMetricsJson = writeJson(actualMetrics);
             Map<String, Object> feedback = new LinkedHashMap<>();
             feedback.put("ruleCode", triggeredRule.ruleCode());
             feedback.put("factorEvidence", triggeredRule.factorEvidence());
             feedback.put("actionEffective", effective);
             feedback.put("reviewScore", score);
+            feedback.put("feedbackScope", "CANDIDATE_ONLY");
             review.feedbackJson = writeJson(feedback);
-            review.feedbackSummary = feedbackSummary(horizon, triggeredRule, metrics, effective);
+            review.feedbackSummary = feedbackSummary(
+                    horizon, triggeredRule, metrics, benchmark, review.excessReturn, effective);
             saveReview(review);
             verified++;
         }
@@ -681,18 +734,9 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
     }
 
     private Map<String, BigDecimal> learnedRuleWeights(Long userId, String regime) {
-        List<AiTradeRulePerformance> rows = rulePerformanceMapper.selectList(
-                new QueryWrapper<AiTradeRulePerformance>()
-                        .eq("user_id", userId)
-                        .orderByDesc("window_end_date")
-                        .orderByDesc("sample_count")
-                        .orderByDesc("last_evaluated_at"));
-        Map<String, BigDecimal> result = new LinkedHashMap<>();
-        String normalizedRegime = normalize(regime, "UNKNOWN");
-        rows.stream().filter(item -> normalizedRegime.equals(item.marketRegime))
-                .forEach(item -> result.putIfAbsent(item.ruleCode, item.learnedWeight));
-        rows.forEach(item -> result.putIfAbsent(item.ruleCode, item.learnedWeight));
-        return result;
+        // Conditional-plan outcomes are candidate-only evidence. A formal report must not
+        // change its signal strength because one user happened to finish a new review.
+        return Map.of();
     }
 
     private void refreshLearningFeedback(Long userId) {
@@ -734,9 +778,15 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
             performance.effectivenessRate = rate;
             performance.avgPostTriggerReturn = average(samples.stream().map(item -> item.postTriggerReturn).toList());
             performance.avgAdverseReturn = average(samples.stream().map(item -> item.maxAdverseReturn).toList());
+            performance.avgNetActionReturn = average(samples.stream().map(item -> item.netActionReturn).toList());
+            performance.avgExcessReturn = average(samples.stream().map(item -> item.excessReturn).toList());
+            performance.avgTransactionCostBps = average(samples.stream().map(item -> item.transactionCostBps).toList());
+            performance.wilsonLowerBound = wilsonLowerBound(effective, samples.size());
             performance.learnedWeight = clamp(new BigDecimal("50")
-                    .add(rate.subtract(new BigDecimal("50")).multiply(confidence)), BigDecimal.ZERO, ONE_HUNDRED);
+                    .add(performance.wilsonLowerBound.subtract(new BigDecimal("50")).multiply(confidence)),
+                    BigDecimal.ZERO, ONE_HUNDRED);
             performance.confidenceLevel = samples.size() < 10 ? "LOW_SAMPLE" : samples.size() < 30 ? "MEDIUM" : "HIGH";
+            performance.feedbackScope = "CANDIDATE_ONLY";
             performance.inputFingerprint = sha256(samples.stream()
                     .map(item -> String.valueOf(item.id))
                     .sorted()
@@ -745,6 +795,93 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
             performance.createdAt = now;
             performance.updatedAt = now;
             rulePerformanceMapper.upsert(performance);
+        }
+        refreshFactorFeedback(userId, rows, now);
+    }
+
+    private void refreshFactorFeedback(Long userId, List<AiTradePlanReview> reviews, LocalDateTime now) {
+        if (factorFeedbackMapper == null || reviews == null || reviews.isEmpty()) {
+            return;
+        }
+        Map<FactorFeedbackKey, List<FactorReviewObservation>> groups = new LinkedHashMap<>();
+        for (AiTradePlanReview review : reviews) {
+            for (FactorEvidenceSnapshot factor : factorEvidenceFrom(review)) {
+                FactorFeedbackKey key = new FactorFeedbackKey(
+                        review.tradeRuleConfigId,
+                        factor.factorCode,
+                        factor.factorName,
+                        factor.factorGroup,
+                        review.triggeredRuleCode,
+                        normalize(review.ruleType, "HORIZON_PLAN"),
+                        review.horizonDays,
+                        normalize(review.marketRegime, "UNKNOWN"));
+                groups.computeIfAbsent(key, ignored -> new ArrayList<>())
+                        .add(new FactorReviewObservation(review, factor));
+            }
+        }
+        for (Map.Entry<FactorFeedbackKey, List<FactorReviewObservation>> entry : groups.entrySet()) {
+            List<FactorReviewObservation> observations = entry.getValue();
+            List<AiTradePlanReview> samples = observations.stream()
+                    .map(FactorReviewObservation::review).toList();
+            int effective = (int) samples.stream()
+                    .filter(item -> Integer.valueOf(1).equals(item.actionEffective)).count();
+            AiTradeFactorFeedback feedback = new AiTradeFactorFeedback();
+            feedback.userId = userId;
+            feedback.tradeRuleConfigId = entry.getKey().tradeRuleConfigId;
+            feedback.factorCode = entry.getKey().factorCode;
+            feedback.factorName = entry.getKey().factorName;
+            feedback.factorGroup = entry.getKey().factorGroup;
+            feedback.ruleCode = entry.getKey().ruleCode;
+            feedback.ruleType = entry.getKey().ruleType;
+            feedback.horizonDays = entry.getKey().horizonDays;
+            feedback.marketRegime = entry.getKey().marketRegime;
+            feedback.windowStartDate = samples.stream().map(item -> item.reportDate)
+                    .filter(Objects::nonNull).min(Comparator.naturalOrder()).orElseThrow();
+            feedback.windowEndDate = samples.stream().map(item -> item.outcomeTradeDate)
+                    .filter(Objects::nonNull).max(Comparator.naturalOrder())
+                    .orElse(feedback.windowStartDate);
+            feedback.sampleCount = samples.size();
+            feedback.effectiveCount = effective;
+            feedback.effectivenessRate = percentage(effective, samples.size());
+            feedback.avgNetActionReturn = average(samples.stream().map(item -> item.netActionReturn).toList());
+            feedback.avgExcessReturn = average(samples.stream().map(item -> item.excessReturn).toList());
+            feedback.confidenceLevel = samples.size() < 10 ? "LOW_SAMPLE" : samples.size() < 30 ? "MEDIUM" : "HIGH";
+            feedback.feedbackScope = "CANDIDATE_ONLY";
+            feedback.inputFingerprint = sha256(samples.stream().map(item -> String.valueOf(item.id))
+                    .sorted().collect(Collectors.joining(",", entry.getKey().toString() + ":", "")));
+            feedback.lastEvaluatedAt = now;
+            feedback.createdAt = now;
+            feedback.updatedAt = now;
+            factorFeedbackMapper.upsert(feedback);
+        }
+    }
+
+    private List<FactorEvidenceSnapshot> factorEvidenceFrom(AiTradePlanReview review) {
+        if (review == null || review.feedbackJson == null || review.feedbackJson.isBlank()) {
+            return List.of();
+        }
+        try {
+            JsonNode factors = objectMapper.readTree(review.feedbackJson).path("factorEvidence");
+            if (!factors.isArray()) {
+                return List.of();
+            }
+            List<FactorEvidenceSnapshot> result = new ArrayList<>();
+            for (JsonNode factor : factors) {
+                if (!factor.path("hit").asBoolean(false)) {
+                    continue;
+                }
+                String code = factor.path("factorCode").asText("").trim();
+                if (code.isBlank()) {
+                    continue;
+                }
+                result.add(new FactorEvidenceSnapshot(
+                        code,
+                        nonBlank(factor.path("factorName").asText(null), code),
+                        nonBlank(factor.path("factorGroup").asText(null), "UNKNOWN")));
+            }
+            return List.copyOf(result);
+        } catch (JsonProcessingException exception) {
+            return List.of();
         }
     }
 
@@ -784,26 +921,94 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
             AiAnalysisReport report,
             List<KlinePointResponse> history,
             KlinePointResponse trigger,
-            KlinePointResponse previous
+            KlinePointResponse previous,
+            String source,
+            LocalDateTime fetchedAt
     ) {
         BigDecimal change = previous == null ? BigDecimal.ZERO : trigger.close().subtract(previous.close());
         BigDecimal percent = previous == null || previous.close().signum() == 0 ? BigDecimal.ZERO
                 : change.multiply(ONE_HUNDRED).divide(previous.close(), 4, RoundingMode.HALF_UP);
         StockQuoteResponse quote = new StockQuoteResponse(
                 report.stockCode, report.stockName, trigger.close(), change, percent, null,
-                "CN-A", "PERSISTED_KLINE_REVIEW", trigger.tradeDate().atTime(15, 0));
+                "CN-A", safeSource(source), fetchedAt == null ? trigger.tradeDate().atTime(15, 0) : fetchedAt);
         return new StockDetailResponse(quote, null, List.of(), List.copyOf(history), null, null);
     }
 
+    private static AiConditionalStrategyPayload.PositionContext positionAtPrice(
+            AiConditionalStrategyPayload.PositionContext original,
+            BigDecimal currentPrice
+    ) {
+        if (original == null) {
+            return new AiConditionalStrategyPayload.PositionContext(false, 0, null, currentPrice, null);
+        }
+        BigDecimal averageCost = original.averageCost();
+        BigDecimal profitRate = averageCost == null || averageCost.signum() == 0 || currentPrice == null
+                ? null : currentPrice.subtract(averageCost).multiply(ONE_HUNDRED)
+                .divide(averageCost, 4, RoundingMode.HALF_UP);
+        return new AiConditionalStrategyPayload.PositionContext(
+                original.holding(), original.quantity(), averageCost, currentPrice, profitRate);
+    }
+
+    private static BigDecimal transactionCostBps(
+            AiConditionalStrategyPayload.RuleConfiguration configuration,
+            String action
+    ) {
+        if (!List.of("BUY", "ADD", "REDUCE", "SELL", "STOP_LOSS", "TAKE_PROFIT").contains(action)) {
+            return BigDecimal.ZERO;
+        }
+        return thresholdOrDefault(configuration, "evaluationTransactionCostBps", new BigDecimal("20"));
+    }
+
+    private static BenchmarkMetrics benchmarkMetrics(
+            KlineSeriesSnapshot series,
+            LocalDate triggerDate,
+            LocalDate outcomeDate,
+            String action
+    ) {
+        if (series == null || series.points() == null) {
+            return new BenchmarkMetrics(null, null, null);
+        }
+        KlinePointResponse trigger = series.points().stream()
+                .filter(item -> item != null && triggerDate.equals(item.tradeDate())).findFirst().orElse(null);
+        KlinePointResponse outcome = series.points().stream()
+                .filter(item -> item != null && outcomeDate.equals(item.tradeDate())).findFirst().orElse(null);
+        if (trigger == null || outcome == null || trigger.close() == null || outcome.close() == null) {
+            return new BenchmarkMetrics(null, null, safeSource(series.source()));
+        }
+        BigDecimal raw = returnPct(trigger.close(), outcome.close());
+        return new BenchmarkMetrics(raw, defensiveAction(action) ? raw.negate() : raw, safeSource(series.source()));
+    }
+
     static OutcomeMetrics outcomeMetrics(KlinePointResponse trigger, KlinePointResponse outcome) {
+        return outcomeMetrics(trigger, outcome, "BUY", BigDecimal.ZERO);
+    }
+
+    static OutcomeMetrics outcomeMetrics(
+            KlinePointResponse trigger,
+            KlinePointResponse outcome,
+            String action,
+            BigDecimal transactionCostBps
+    ) {
         if (trigger == null || outcome == null || trigger.tradeDate() == null || outcome.tradeDate() == null
                 || !outcome.tradeDate().isAfter(trigger.tradeDate())) {
             throw new IllegalArgumentException("条件计划结果必须使用触发日后的下一可交易日数据");
         }
         BigDecimal post = returnPct(trigger.close(), outcome.close());
-        BigDecimal favorable = returnPct(trigger.close(), outcome.high());
-        BigDecimal adverse = returnPct(trigger.close(), outcome.low());
-        return new OutcomeMetrics(post, favorable, adverse);
+        boolean defensive = defensiveAction(action);
+        BigDecimal favorable = defensive
+                ? returnPct(trigger.close(), outcome.low()).negate()
+                : returnPct(trigger.close(), outcome.high());
+        BigDecimal adverse = defensive
+                ? returnPct(trigger.close(), outcome.high()).negate()
+                : returnPct(trigger.close(), outcome.low());
+        BigDecimal oriented = defensive ? post.negate() : post;
+        BigDecimal cost = transactionCostBps == null ? BigDecimal.ZERO : transactionCostBps;
+        BigDecimal netActionReturn = oriented.subtract(cost.divide(new BigDecimal("100"), 4, RoundingMode.HALF_UP));
+        return new OutcomeMetrics(post, favorable, adverse, cost, netActionReturn.setScale(4, RoundingMode.HALF_UP));
+    }
+
+    private static boolean defensiveAction(String action) {
+        return List.of("REDUCE", "SELL", "STOP_LOSS", "TAKE_PROFIT").contains(action);
     }
 
     static boolean entersActionPerformance(AiTradePlanReview review) {
@@ -814,13 +1019,13 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
                 && review.tradeRuleConfigId != null;
     }
 
-    private static Boolean actionEffective(String action, BigDecimal postReturn, BigDecimal buffer) {
-        if (action == null || postReturn == null) {
+    private static Boolean actionEffective(String action, BigDecimal netActionReturn, BigDecimal buffer) {
+        if (action == null || netActionReturn == null) {
             return null;
         }
         return switch (action) {
-            case "BUY", "ADD", "HOLD" -> postReturn.compareTo(buffer) > 0;
-            case "REDUCE", "SELL", "STOP_LOSS", "TAKE_PROFIT" -> postReturn.compareTo(buffer.negate()) < 0;
+            case "BUY", "ADD", "HOLD", "REDUCE", "SELL", "STOP_LOSS", "TAKE_PROFIT" ->
+                    netActionReturn.compareTo(buffer) > 0;
             default -> null;
         };
     }
@@ -829,12 +1034,8 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
         if (effective == null) {
             return new BigDecimal("50.0");
         }
-        BigDecimal oriented = switch (action) {
-            case "REDUCE", "SELL", "STOP_LOSS", "TAKE_PROFIT" -> metrics.postTriggerReturn.negate();
-            default -> metrics.postTriggerReturn;
-        };
-        BigDecimal score = new BigDecimal("50").add(oriented.multiply(new BigDecimal("7")));
-        if (metrics.maxAdverseReturn != null && !List.of("REDUCE", "SELL", "STOP_LOSS", "TAKE_PROFIT").contains(action)) {
+        BigDecimal score = new BigDecimal("50").add(metrics.netActionReturn.multiply(new BigDecimal("7")));
+        if (metrics.maxAdverseReturn != null) {
             score = score.add(metrics.maxAdverseReturn.multiply(new BigDecimal("2")));
         }
         return clamp(score, BigDecimal.ZERO, ONE_HUNDRED).setScale(1, RoundingMode.HALF_UP);
@@ -844,12 +1045,18 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
             int horizon,
             AiConditionalStrategyPayload.ConditionalRule rule,
             OutcomeMetrics metrics,
+            BenchmarkMetrics benchmark,
+            BigDecimal excessReturn,
             Boolean effective
     ) {
         String result = effective == null ? "仅记录条件触发，不纳入动作胜率"
                 : effective ? "动作在下一交易日验证有效" : "动作在下一交易日未验证有效";
+        String benchmarkSummary = benchmark == null || benchmark.actionReturn == null
+                ? "；基准数据暂不可用，未计算相对收益"
+                : "；相对基准 " + signed(excessReturn);
         return "T+" + horizon + " 触发“" + rule.state() + "”，执行 " + rule.action()
-                + "；触发后收益 " + signed(metrics.postTriggerReturn) + "，" + result;
+                + "；标的涨跌 " + signed(metrics.postTriggerReturn)
+                + "，策略净收益 " + signed(metrics.netActionReturn) + benchmarkSummary + "，" + result;
     }
 
     private AiConditionalStrategyPayload.ReviewResult reviewResult(AiTradePlanReview item) {
@@ -858,6 +1065,7 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
                 item.status, item.triggeredRuleCode, item.triggeredState, item.suggestedAction,
                 item.triggerPrice, item.outcomePrice, item.postTriggerReturn,
                 item.maxFavorableReturn, item.maxAdverseReturn,
+                item.transactionCostBps, item.netActionReturn, item.benchmarkReturn, item.excessReturn,
                 item.actionEffective == null ? null : item.actionEffective == 1,
                 item.reviewScore, item.feedbackSummary, item.evaluatedAt
         );
@@ -928,6 +1136,18 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
         return value;
     }
 
+    private static BigDecimal thresholdOrDefault(
+            AiConditionalStrategyPayload.RuleConfiguration configuration,
+            String key,
+            BigDecimal fallback
+    ) {
+        if (configuration == null || configuration.thresholds() == null) {
+            return fallback;
+        }
+        BigDecimal value = configuration.thresholds().get(key);
+        return value == null ? fallback : value;
+    }
+
     private static BigDecimal returnPct(BigDecimal base, BigDecimal value) {
         return base == null || value == null || base.signum() == 0 ? BigDecimal.ZERO
                 : value.subtract(base).multiply(ONE_HUNDRED).divide(base, 4, RoundingMode.HALF_UP);
@@ -946,6 +1166,20 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
                 .multiply(ONE_HUNDRED).divide(BigDecimal.valueOf(denominator), 2, RoundingMode.HALF_UP);
     }
 
+    private static BigDecimal wilsonLowerBound(int success, int total) {
+        if (total <= 0) {
+            return BigDecimal.ZERO;
+        }
+        double z = 1.96d;
+        double count = total;
+        double rate = (double) success / count;
+        double denominator = 1d + z * z / count;
+        double center = rate + z * z / (2d * count);
+        double margin = z * Math.sqrt((rate * (1d - rate) + z * z / (4d * count)) / count);
+        double lower = Math.max(0d, (center - margin) / denominator);
+        return BigDecimal.valueOf(lower * 100d).setScale(4, RoundingMode.HALF_UP);
+    }
+
     private static BigDecimal average(List<BigDecimal> values) {
         List<BigDecimal> filtered = values.stream().filter(Objects::nonNull).toList();
         return filtered.isEmpty() ? BigDecimal.ZERO : filtered.stream().reduce(BigDecimal.ZERO, BigDecimal::add)
@@ -962,6 +1196,14 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
 
     private static String normalize(String value, String fallback) {
         return value == null || value.isBlank() ? fallback : value.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private static String nonBlank(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value.trim();
+    }
+
+    private static String safeSource(String source) {
+        return nonBlank(source, "UNKNOWN_SOURCE");
     }
 
     private static boolean unusableSector(String value) {
@@ -1031,12 +1273,39 @@ public class AiConditionalTradeStrategyServiceImpl implements AiConditionalTrade
     static record OutcomeMetrics(
             BigDecimal postTriggerReturn,
             BigDecimal maxFavorableReturn,
-            BigDecimal maxAdverseReturn
+            BigDecimal maxAdverseReturn,
+            BigDecimal transactionCostBps,
+            BigDecimal netActionReturn
+    ) {
+    }
+
+    private record BenchmarkMetrics(
+            BigDecimal rawReturn,
+            BigDecimal actionReturn,
+            String source
     ) {
     }
 
     private record PerformanceKey(
             Long tradeRuleConfigId,
+            String ruleCode,
+            String ruleType,
+            Integer horizonDays,
+            String marketRegime
+    ) {
+    }
+
+    private record FactorEvidenceSnapshot(String factorCode, String factorName, String factorGroup) {
+    }
+
+    private record FactorReviewObservation(AiTradePlanReview review, FactorEvidenceSnapshot factor) {
+    }
+
+    private record FactorFeedbackKey(
+            Long tradeRuleConfigId,
+            String factorCode,
+            String factorName,
+            String factorGroup,
             String ruleCode,
             String ruleType,
             Integer horizonDays,

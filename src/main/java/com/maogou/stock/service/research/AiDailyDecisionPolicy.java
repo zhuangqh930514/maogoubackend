@@ -21,18 +21,25 @@ public interface AiDailyDecisionPolicy {
             String predictionAction,
             boolean holding,
             String unavailableReason,
-            BigDecimal llmConfidence
+            BigDecimal llmConfidence,
+            String reportAction
     ) {
         public Input withLlmConfidence(BigDecimal value) {
             return new Input(t1Signal, t2Signal, t3Signal, factorOosReliability,
                     strategyOosValidation, dataQuality, riskScore, outOfSampleCount,
-                    hardStop, predictionAction, holding, unavailableReason, value);
+                    hardStop, predictionAction, holding, unavailableReason, value, reportAction);
         }
 
         public Input withRiskScore(BigDecimal value) {
             return new Input(t1Signal, t2Signal, t3Signal, factorOosReliability,
                     strategyOosValidation, dataQuality, value, outOfSampleCount,
-                    hardStop, predictionAction, holding, unavailableReason, llmConfidence);
+                    hardStop, predictionAction, holding, unavailableReason, llmConfidence, reportAction);
+        }
+
+        public Input withReportAction(String value) {
+            return new Input(t1Signal, t2Signal, t3Signal, factorOosReliability,
+                    strategyOosValidation, dataQuality, riskScore, outOfSampleCount,
+                    hardStop, predictionAction, holding, unavailableReason, llmConfidence, value);
         }
     }
 

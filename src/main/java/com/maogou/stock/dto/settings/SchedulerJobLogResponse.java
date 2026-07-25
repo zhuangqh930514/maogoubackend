@@ -12,6 +12,10 @@ public record SchedulerJobLogResponse(
         Integer processedCount,
         Integer successCount,
         Integer failedCount,
-        String errorMessage
+        String currentStep,
+        Integer retryCount,
+        LocalDateTime nextRetryAt,
+        String errorMessage,
+        String errorDetail
 ) {
 }

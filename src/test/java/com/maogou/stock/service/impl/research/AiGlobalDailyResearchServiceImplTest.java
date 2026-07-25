@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.net.SocketTimeoutException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -117,7 +118,7 @@ class AiGlobalDailyResearchServiceImplTest {
     }
 
     @Test
-    void failedStepResumesWithoutRepeatingCompletedImmutableSteps() {
+    void recoverableFailedStepResumesWithoutRepeatingCompletedImmutableSteps() {
         Fixture fixture = fixture();
         Map<String, Integer> calls = new LinkedHashMap<>();
         when(fixture.executor.execute(anyString(), any())).thenAnswer(invocation -> {
@@ -130,8 +131,9 @@ class AiGlobalDailyResearchServiceImplTest {
         });
 
         AiGlobalDailyResearchService.PipelineResult failed = service(fixture).run(request());
-        assertThat(failed.run().status).isEqualTo("FAILED");
+        assertThat(failed.run().status).isEqualTo("FAILED_RECOVERABLE");
         assertThat(failed.run().currentStep).isEqualTo("COMPUTE_FACTORS");
+        assertThat(failed.run().nextRetryAt).isNotNull();
 
         AiGlobalDailyResearchService.PipelineResult recovered = service(fixture).run(request());
 
@@ -141,6 +143,31 @@ class AiGlobalDailyResearchServiceImplTest {
         assertThat(calls.get("COMPUTE_FACTORS")).isEqualTo(2);
         assertThat(recovered.steps()).filteredOn(step -> "COMPUTE_FACTORS".equals(step.stepKey))
                 .singleElement().extracting(step -> step.retryCount).isEqualTo(1);
+    }
+
+    @Test
+    void finalFailureDoesNotRetryAutomaticallyAfterTheConfiguredBudgetIsExhausted() {
+        Fixture fixture = fixture();
+        when(fixture.executor.execute(anyString(), any())).thenAnswer(invocation -> {
+            if ("FETCH_SOURCE_DATA".equals(invocation.getArgument(0))) {
+                throw new IllegalStateException("market source read timed out",
+                        new SocketTimeoutException("market source read timed out"));
+            }
+            return success(invocation.getArgument(0), null);
+        });
+        AiGlobalDailyResearchService service = new AiGlobalDailyResearchServiceImpl(
+                fixture.runMapper, fixture.stepMapper, fixture.executor,
+                Duration.ofMinutes(2), Duration.ofSeconds(20), 0,
+                Duration.ofSeconds(1), Duration.ofSeconds(1));
+
+        AiGlobalDailyResearchService.PipelineResult failed = service.run(request());
+        assertThat(failed.run().status).isEqualTo("FAILED_FINAL");
+        assertThat(failed.run().nextRetryAt).isNull();
+        assertThat(failed.run().errorDetail).contains("步骤=FETCH_SOURCE_DATA", "股票代码=不适用", "数据提供方=内部研究服务");
+
+        AiGlobalDailyResearchService.PipelineResult unchanged = service.run(request());
+        assertThat(unchanged.run().status).isEqualTo("FAILED_FINAL");
+        verify(fixture.executor).execute(org.mockito.ArgumentMatchers.eq("FETCH_SOURCE_DATA"), any());
     }
 
     @Test

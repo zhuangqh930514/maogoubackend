@@ -17,10 +17,13 @@ import org.slf4j.LoggerFactory;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 @Service
@@ -29,6 +32,7 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
     private static final Logger log = LoggerFactory.getLogger(AutoClosePipelineServiceImpl.class);
     private static final int USER_PAGE_SIZE = 100;
     private static final int RECOVERY_BATCH_SIZE = 10;
+    private static final Duration STALE_RUN_GRACE = Duration.ofMinutes(30);
 
     private final AiModelConfigMapper configMapper;
     private final TradingCalendarService tradingCalendarService;
@@ -83,34 +87,36 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
             return;
         }
         try {
+            LocalDateTime now = LocalDateTime.now();
+            recoverStalePipelines(now);
             List<AiPipelineRun> due = pipelineRunMapper.selectDueGlobalDailyRuns(
-                    LocalDateTime.now(), RECOVERY_BATCH_SIZE);
-            if (due == null || due.isEmpty()) {
-                return;
+                    now, RECOVERY_BATCH_SIZE);
+            if (due != null) {
+                for (AiPipelineRun run : due) {
+                    if (run == null) {
+                        continue;
+                    }
+                    if (run.tradeDate == null || !tradingCalendarService.isTradingDay(run.tradeDate)) {
+                        abandonInvalidWaitingRun(run);
+                        continue;
+                    }
+                    try {
+                        AiGlobalDailyResearchService.PipelineResult result = dailyResearchService.run(
+                                new AiGlobalDailyResearchService.PipelineRequest(
+                                        run.tradeDate,
+                                        run.strategyReleaseId,
+                                        run.modelVersionId,
+                                        run.idempotencyKey,
+                                        run.inputFingerprint,
+                                        run.startedAt == null ? LocalDateTime.now() : run.startedAt));
+                        handleGlobalResult(result, enabledConfigs());
+                    } catch (RuntimeException exception) {
+                        log.warn("waiting global research recovery failed, runId={}, error={}",
+                                run.id, rootMessage(exception), exception);
+                    }
+                }
             }
-            for (AiPipelineRun run : due) {
-                if (run == null) {
-                    continue;
-                }
-                if (run.tradeDate == null || !tradingCalendarService.isTradingDay(run.tradeDate)) {
-                    abandonInvalidWaitingRun(run);
-                    continue;
-                }
-                try {
-                    AiGlobalDailyResearchService.PipelineResult result = dailyResearchService.run(
-                            new AiGlobalDailyResearchService.PipelineRequest(
-                                    run.tradeDate,
-                                    run.strategyReleaseId,
-                                    run.modelVersionId,
-                                    run.idempotencyKey,
-                                    run.inputFingerprint,
-                                    run.startedAt == null ? LocalDateTime.now() : run.startedAt));
-                    handleGlobalResult(result, enabledConfigs());
-                } catch (RuntimeException exception) {
-                    log.warn("waiting global research recovery failed, runId={}, error={}",
-                            run.id, rootMessage(exception), exception);
-                }
-            }
+            retryDueUserProjectionReports(now);
         } finally {
             running.set(false);
         }
@@ -136,18 +142,10 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
             AiGlobalDailyResearchService.PipelineResult result = startGlobalRun(tradeDate, startedAt);
             AiPipelineRun run = result.run();
             if (!isSuccessful(run.status)) {
-                updateConfigStatus(config, run.status, message(run), run.finishedAt != null);
                 throw new IllegalStateException(message(run));
             }
             projectUser(config, run);
         } catch (RuntimeException exception) {
-            if (!isConcurrentRun(exception)) {
-                AiModelConfig config = configMapper.selectOne(new QueryWrapper<AiModelConfig>()
-                        .eq("user_id", userId).eq("deleted", 0).last("LIMIT 1"));
-                if (config != null && !"FAILED".equals(config.autoClosePipelineLastStatus)) {
-                    updateConfigStatus(config, "FAILED", rootMessage(exception), true);
-                }
-            }
             throw exception;
         } finally {
             running.set(false);
@@ -179,9 +177,8 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
         }
         AiPipelineRun run = result.run();
         if (!isSuccessful(run.status)) {
-            for (AiModelConfig config : configs) {
-                updateConfigStatus(config, run.status, message(run), run.finishedAt != null);
-            }
+            log.warn("global daily research did not complete, runId={}, status={}, message={}",
+                    run.id, run.status, message(run));
             return;
         }
         for (AiModelConfig config : configs) {
@@ -206,11 +203,7 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
                             globalRun.id,
                             null,
                             idempotencyKey));
-            boolean finished = isSuccessful(accepted.status()) || "FAILED".equals(accepted.status());
-            updateConfigStatus(config, accepted.status(),
-                    "用户日报投影流水线 #" + accepted.pipelineRunId() + " 已提交", finished);
         } catch (RuntimeException exception) {
-            updateConfigStatus(config, "FAILED", rootMessage(exception), true);
             log.warn("user daily projection submission failed, userId={}, globalRunId={}",
                     config.userId, globalRun.id, exception);
         }
@@ -242,6 +235,103 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
         }
     }
 
+    private void recoverStalePipelines(LocalDateTime now) {
+        List<AiPipelineRun> stale = pipelineRunMapper.selectStaleRunning(
+                now.minus(STALE_RUN_GRACE), now, RECOVERY_BATCH_SIZE);
+        if (stale == null || stale.isEmpty()) {
+            return;
+        }
+        for (AiPipelineRun run : stale) {
+            if (run == null || run.id == null) {
+                continue;
+            }
+            String message = "任务超过 30 分钟未续租，已自动回收";
+            String detail = message + "；任务类型=" + run.pipelineType + "；运行ID=" + run.id
+                    + "；最后步骤=" + nullToEmpty(run.currentStep)
+                    + "；最后更新时间=" + run.updatedAt;
+            if (pipelineRunMapper.recoverStaleRunning(
+                    run.id, now.minus(STALE_RUN_GRACE), now, message, detail) != 1) {
+                continue;
+            }
+            log.warn("recovered stale pipeline run, runId={}, type={}, ownerUserId={}",
+                    run.id, run.pipelineType, run.ownerUserId);
+            retryRecoveredGlobalDailyRun(run);
+            retryRecoveredUserProjection(run);
+        }
+    }
+
+    private void retryRecoveredGlobalDailyRun(AiPipelineRun run) {
+        if (!"GLOBAL_DAILY_RESEARCH".equals(run.pipelineType)
+                || run.tradeDate == null || run.idempotencyKey == null || run.idempotencyKey.isBlank()
+                || run.inputFingerprint == null || run.inputFingerprint.isBlank()) {
+            return;
+        }
+        try {
+            dailyResearchService.run(new AiGlobalDailyResearchService.PipelineRequest(
+                    run.tradeDate, run.strategyReleaseId, run.modelVersionId,
+                    run.idempotencyKey, run.inputFingerprint,
+                    run.startedAt == null ? LocalDateTime.now() : run.startedAt));
+        } catch (RuntimeException exception) {
+            log.warn("recovered global daily retry submission failed, runId={}, error={}",
+                    run.id, rootMessage(exception));
+        }
+    }
+
+    private void retryRecoveredUserProjection(AiPipelineRun run) {
+        if (!"USER_DAILY_PROJECTION".equals(run.pipelineType)
+                || run.ownerUserId == null || run.parentRunId == null) {
+            return;
+        }
+        AiPipelineRun parent = pipelineRunMapper.selectById(run.parentRunId);
+        if (parent == null || !isSuccessful(parent.status) || parent.tradeDate == null) {
+            return;
+        }
+        try {
+            operationsService.runUserProjection(run.ownerUserId, new ResearchLabPayloads.ActionRequest(
+                    parent.tradeDate, null, null, parent.strategyReleaseId, parent.modelVersionId,
+                    parent.id, run.ownerUserId, run.idempotencyKey));
+        } catch (RuntimeException exception) {
+            log.warn("recovered user projection retry submission failed, runId={}, userId={}, error={}",
+                    run.id, run.ownerUserId, rootMessage(exception));
+        }
+    }
+
+    private void retryDueUserProjectionReports(LocalDateTime now) {
+        List<AiPipelineRun> due = pipelineRunMapper.selectDueUserProjectionRetries(now, RECOVERY_BATCH_SIZE);
+        if (due == null || due.isEmpty()) {
+            return;
+        }
+        Set<Long> enabledUsers = new HashSet<>();
+        for (AiModelConfig config : enabledConfigs()) {
+            if (config != null && config.userId != null) {
+                enabledUsers.add(config.userId);
+            }
+        }
+        for (AiPipelineRun run : due) {
+            if (run == null || run.ownerUserId == null) {
+                continue;
+            }
+            if (!enabledUsers.contains(run.ownerUserId)) {
+                String message = "用户已关闭每日自动投研，已暂停失败报告的自动重试";
+                pipelineRunMapper.pauseUserProjectionRetry(run.id, now, message,
+                        message + "；运行ID=" + run.id + "；用户=" + run.ownerUserId);
+                continue;
+            }
+            AiPipelineRun parent = run.parentRunId == null ? null : pipelineRunMapper.selectById(run.parentRunId);
+            if (parent == null || !isSuccessful(parent.status) || parent.tradeDate == null) {
+                continue;
+            }
+            try {
+                operationsService.runUserProjection(run.ownerUserId, new ResearchLabPayloads.ActionRequest(
+                        parent.tradeDate, null, null, parent.strategyReleaseId, parent.modelVersionId,
+                        parent.id, run.ownerUserId, run.idempotencyKey));
+            } catch (RuntimeException exception) {
+                log.warn("daily report retry submission failed, runId={}, userId={}, error={}",
+                        run.id, run.ownerUserId, rootMessage(exception));
+            }
+        }
+    }
+
     private void abandonInvalidWaitingRun(AiPipelineRun run) {
         LocalDate expected = tradingCalendarService.latestExpectedKlineDate(LocalDateTime.now());
         run.status = "FAILED";
@@ -256,25 +346,12 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
                 run.id, run.tradeDate, expected);
     }
 
-    private void updateConfigStatus(
-            AiModelConfig config,
-            String status,
-            String message,
-            boolean finished
-    ) {
-        LocalDateTime now = LocalDateTime.now();
-        config.autoClosePipelineLastStatus = status;
-        config.autoClosePipelineLastMessage = trimMessage(message);
-        config.autoClosePipelineLastRunAt = now;
-        if (finished) {
-            config.autoClosePipelineLastFinishedAt = now;
-        }
-        config.updatedAt = now;
-        configMapper.updateById(config);
-    }
-
     private static boolean isSuccessful(String status) {
         return "SUCCESS".equals(status) || "PARTIAL_SUCCESS".equals(status);
+    }
+
+    private static String nullToEmpty(String value) {
+        return value == null ? "" : value;
     }
 
     private static String message(AiPipelineRun run) {
@@ -283,14 +360,11 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
         }
         return switch (String.valueOf(run.status)) {
             case "WAITING_SOURCE" -> "等待完整收盘数据，系统将按持久化重试时间恢复";
+            case "FAILED_RECOVERABLE" -> "全局日研究遇到可恢复故障，系统将按持久化重试时间恢复";
+            case "FAILED_FINAL" -> "全局日研究已达到自动恢复上限，需要检查失败详情";
             case "FAILED" -> "全局日研究流水线执行失败";
             default -> "全局日研究流水线状态：" + run.status;
         };
-    }
-
-    private static boolean isConcurrentRun(Throwable throwable) {
-        String message = rootMessage(throwable);
-        return message.contains("其他实例") || message.contains("租约");
     }
 
     private static String rootMessage(Throwable throwable) {

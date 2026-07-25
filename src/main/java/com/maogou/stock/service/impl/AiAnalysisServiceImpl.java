@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.maogou.stock.domain.entity.AiAnalysisReport;
 import com.maogou.stock.domain.entity.AiModelConfig;
+import com.maogou.stock.domain.entity.research.AiDailyDecisionItem;
 import com.maogou.stock.domain.entity.research.AiPrediction;
 import com.maogou.stock.domain.entity.research.AiSample;
 import com.maogou.stock.domain.entity.research.AiStrategyRelease;
@@ -24,9 +25,11 @@ import com.maogou.stock.dto.market.StockDetailResponse;
 import com.maogou.stock.dto.watchlist.WatchStockResponse;
 import com.maogou.stock.exception.FormalResearchSampleUnavailableException;
 import com.maogou.stock.infrastructure.ai.LocalAiClient;
+import com.maogou.stock.infrastructure.ai.AiModelRateLimitException;
 import com.maogou.stock.mapper.AiAnalysisReportMapper;
 import com.maogou.stock.mapper.WatchStockMapper;
 import com.maogou.stock.mapper.research.AiPredictionMapper;
+import com.maogou.stock.mapper.research.AiDailyDecisionItemMapper;
 import com.maogou.stock.mapper.research.AiSampleMapper;
 import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
 import com.maogou.stock.security.AuthContext;
@@ -57,6 +60,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -93,6 +98,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
     private final WatchStockMapper watchStockMapper;
     private final AiSampleMapper sampleMapper;
     private final AiPredictionMapper predictionMapper;
+    private final AiDailyDecisionItemMapper dailyDecisionItemMapper;
     private final AiStrategyReleaseMapper strategyReleaseMapper;
     private final MarketDataService marketDataService;
     private final WatchlistService watchlistService;
@@ -109,6 +115,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             WatchStockMapper watchStockMapper,
             AiSampleMapper sampleMapper,
             AiPredictionMapper predictionMapper,
+            AiDailyDecisionItemMapper dailyDecisionItemMapper,
             AiStrategyReleaseMapper strategyReleaseMapper,
             MarketDataService marketDataService,
             WatchlistService watchlistService,
@@ -124,6 +131,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         this.watchStockMapper = watchStockMapper;
         this.sampleMapper = sampleMapper;
         this.predictionMapper = predictionMapper;
+        this.dailyDecisionItemMapper = dailyDecisionItemMapper;
         this.strategyReleaseMapper = strategyReleaseMapper;
         this.marketDataService = marketDataService;
         this.watchlistService = watchlistService;
@@ -280,9 +288,48 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             reviews = Map.of();
         }
         Map<Long, List<AiConditionalStrategyPayload.ReviewResult>> reviewMap = reviews == null ? Map.of() : reviews;
+        List<Long> reportIds = reports.stream().map(item -> item.id).filter(Objects::nonNull).distinct().toList();
+        List<AiDailyDecisionItem> currentDailyItems = reportIds.isEmpty() || dailyDecisionItemMapper == null ? List.of()
+                : dailyDecisionItemMapper.selectCurrentByReportIds(userId, reportIds);
+        Map<Long, AiDailyDecisionItem> dailyDecisions = currentDailyItems == null ? Map.of()
+                : currentDailyItems.stream()
+                .filter(item -> item != null && item.reportId != null)
+                .collect(Collectors.toMap(item -> item.reportId, Function.identity(), (left, right) -> left));
+        boolean singleReport = reports.size() == 1;
         return reports.stream()
-                .map(item -> AiAnalysisReportResponse.from(item, reviewMap.getOrDefault(item.id, List.of())))
+                .map(item -> {
+                    AiDailyDecisionItem decision = dailyDecisions.get(item.id);
+                    if (decision == null && singleReport && dailyDecisionItemMapper != null
+                            && item.stockCode != null && !item.stockCode.isBlank() && item.reportDate != null) {
+                        decision = dailyDecisionItemMapper.selectCurrentByStockAndTradeDate(
+                                userId, item.stockCode, item.reportDate);
+                    }
+                    return AiAnalysisReportResponse.from(item, reviewMap.getOrDefault(item.id, List.of()),
+                            dailyDecision(decision));
+                })
                 .toList();
+    }
+
+    private static AiAnalysisReportResponse.DailyDecision dailyDecision(AiDailyDecisionItem item) {
+        if (item == null) {
+            return null;
+        }
+        return new AiAnalysisReportResponse.DailyDecision(
+                item.id,
+                item.tradeDate,
+                item.finalAction,
+                item.category,
+                item.systemScore,
+                item.riskScore,
+                item.riskLevel,
+                item.decisionSource,
+                item.decisionPolicyVersion,
+                item.reasonSummary,
+                item.freshnessStatus,
+                item.dataQualityComponent,
+                item.outOfSampleCount,
+                item.confidenceLevel,
+                item.unavailableReason);
     }
 
     private AiAnalysisReportResponse reportResponse(AiAnalysisReport report) {
@@ -338,6 +385,13 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                         : marketDataService.stockDetailForAnalysis(code));
         AnalysisFreshness freshness = validateAnalysisFreshness(detail);
         FormalAnalysisContext formalContext = loadFormalContext(detail.quote().code(), tradeDate);
+        if (!forceRefresh) {
+            AiAnalysisReport reusable = reusableReport(
+                    userId, detail.quote().code(), tradeDate, formalContext.sample().id, formalContext.release().id);
+            if (reusable != null) {
+                return reportResponse(reusable);
+            }
+        }
         AiLearningPayloads.AnalysisLearningContext learningContext = formalContext.conditionalContext();
         List<NewsFlashResponse> realtimeNews = ExternalIoTransactionGuard.call(
                 "股票分析资讯调用",
@@ -410,6 +464,25 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             log.warn("initialize conditional trade reviews failed, reportId={}, message={}", report.id, exception.getMessage());
         }
         return reportResponse(report);
+    }
+
+    private AiAnalysisReport reusableReport(
+            Long userId,
+            String stockCode,
+            LocalDate tradeDate,
+            Long sampleId,
+            Long strategyReleaseId
+    ) {
+        List<AiAnalysisReport> reports = reportMapper.selectLatestSuccessfulForDailyDecision(
+                userId, tradeDate, List.of(stockCode));
+        if (reports == null || reports.isEmpty()) {
+            return null;
+        }
+        return reports.stream()
+                .filter(report -> Objects.equals(report.sampleId, sampleId)
+                        && Objects.equals(report.strategyReleaseId, strategyReleaseId))
+                .max(Comparator.comparing(report -> report.reportVersion == null ? 0 : report.reportVersion))
+                .orElse(null);
     }
 
     @Override
@@ -695,6 +768,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 if (!shouldRetry(lastException) || attempt >= MAX_ANALYSIS_ATTEMPTS) {
                     throw lastException;
                 }
+                waitBeforeRetry(lastException, attempt);
             }
         }
         throw lastException == null ? new IllegalStateException("AI 分析失败") : lastException;
@@ -716,6 +790,10 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
     }
 
     private Exception wrapRetryableException(Exception ex, String rawResponse) {
+        AiModelRateLimitException rateLimit = findRateLimitException(ex);
+        if (rateLimit != null) {
+            return new AnalysisAttemptException(rateLimit.getMessage(), rawResponse, rateLimit);
+        }
         if (ex instanceof JsonProcessingException) {
             String normalized = stripCodeFence(rawResponse);
             if (looksTruncatedJson(normalized)) {
@@ -747,7 +825,32 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 || message.contains("缺少必要字段")
                 || message.contains("超时")
                 || message.contains("网络不可达")
-                || message.contains("模型服务异常");
+                || message.contains("模型服务异常")
+                || findRateLimitException(ex) != null;
+    }
+
+    private void waitBeforeRetry(Exception exception, int attempt) {
+        AiModelRateLimitException rateLimit = findRateLimitException(exception);
+        long exponentialDelay = Math.min(15_000L, 1_000L << Math.max(0, attempt - 1));
+        long delay = rateLimit == null ? exponentialDelay
+                : Math.min(30_000L, Math.max(exponentialDelay, rateLimit.retryAfterMillis()));
+        try {
+            Thread.sleep(delay);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AnalysisAttemptException("模型重试等待被中断", "", interrupted);
+        }
+    }
+
+    private static AiModelRateLimitException findRateLimitException(Throwable exception) {
+        Throwable current = exception;
+        while (current != null) {
+            if (current instanceof AiModelRateLimitException rateLimit) {
+                return rateLimit;
+            }
+            current = current.getCause();
+        }
+        return null;
     }
 
     private boolean looksTruncatedJson(String raw) {
@@ -1513,7 +1616,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         }
         String normalizedDecision = normalizeDecisionText(decision.decision());
         if (normalizedDecision.isBlank()) {
-            normalizedDecision = inferDecision(rawText, buySellPoints);
+            return fallbackDecisionFromText(rawText, buySellPoints);
         }
         String direction = normalizeDirection(decision.targetDirection());
         if (direction.isBlank()) {
@@ -1551,24 +1654,6 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 "模型未完整输出 decision 字段，系统已降级为观察，不允许进入每日推荐关注。",
                 fallbackFactors(rawText)
         );
-    }
-
-    private String inferDecision(String rawText, AiAnalysisResultPayload.BuySellPointsPayload buySellPoints) {
-        String actionText = buySellPoints == null ? "" : normalizeText(buySellPoints.action(), buySellPoints.positionSuggestion());
-        String text = normalizeText(actionText, rawText);
-        if (containsAny(text, "卖出", "清仓")) {
-            return "SELL";
-        }
-        if (containsAny(text, "减仓", "控制仓位", "降低仓位")) {
-            return "REDUCE";
-        }
-        if (containsAny(text, "买入", "低吸", "加仓", "突破")) {
-            return "BUY";
-        }
-        if (containsAny(text, "观察", "等待")) {
-            return "WATCH";
-        }
-        return "HOLD";
     }
 
     private List<AiAnalysisResultPayload.FactorPayload> fallbackFactors(String rawText) {

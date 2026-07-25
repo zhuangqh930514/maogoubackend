@@ -51,6 +51,11 @@ public class SecurityConfig {
                                 "/api/ai/research-lab/actions/import-training-dataset",
                                 "/api/ai/research-lab/actions/import-historical-trading-state",
                                 "/api/ai/research-lab/actions/import-historical-industry-bars",
+                                "/api/ai/research-lab/actions/run-conditional-rule-walk-forward",
+                                "/api/ai/research-lab/actions/run-conditional-rule-shadow",
+                                "/api/ai/research-lab/conditional-rules/candidates",
+                                "/api/ai/research-lab/conditional-rules/shadow/*/approve",
+                                "/api/ai/research-lab/conditional-rules/shadow/*/reject",
                                 "/api/ai/research-lab/strategies/*/promote",
                                 "/api/ai/research-lab/strategies/*/reject",
                                 "/api/ai/research-lab/strategies/*/rollback")

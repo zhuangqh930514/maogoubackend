@@ -2,6 +2,7 @@ package com.maogou.stock.service.impl.research;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.maogou.stock.config.AppProperties;
 import com.maogou.stock.domain.entity.research.AiPipelineRun;
 import com.maogou.stock.domain.entity.research.AiStrategyRelease;
 import com.maogou.stock.dto.research.ResearchLabPayloads;
@@ -10,7 +11,11 @@ import com.maogou.stock.mapper.research.AiPipelineStepMapper;
 import com.maogou.stock.mapper.research.AiStrategyGovernanceEventMapper;
 import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
 import com.maogou.stock.service.TradingCalendarService;
+import com.maogou.stock.service.AiConditionalTradeStrategyService;
 import com.maogou.stock.service.research.AiGlobalDailyResearchService;
+import com.maogou.stock.service.research.AiDailyReportGenerationService;
+import com.maogou.stock.service.research.AiDailyDecisionPlanService;
+import com.maogou.stock.service.research.AiConditionalRuleGovernanceService;
 import com.maogou.stock.service.research.AiHistoricalBootstrapService;
 import com.maogou.stock.service.research.AiHistoricalEvidenceImportService;
 import com.maogou.stock.service.research.AiLabelVerificationCoordinator;
@@ -119,6 +124,15 @@ class AiResearchOperationsServiceImplTest {
         AiLabelVerificationCoordinator labelCoordinator = mock(AiLabelVerificationCoordinator.class);
         AiWeeklyEvolutionRunner weeklyRunner = mock(AiWeeklyEvolutionRunner.class);
         AiMonthlyTrainingRunner trainingRunner = mock(AiMonthlyTrainingRunner.class);
+        AiDailyReportGenerationService dailyReportGenerationService = mock(AiDailyReportGenerationService.class);
+        AiConditionalTradeStrategyService conditionalTradeStrategyService = mock(AiConditionalTradeStrategyService.class);
+        when(conditionalTradeStrategyService.verifyMatured(any(), any())).thenReturn(
+                new AiConditionalTradeStrategyService.ReviewRunResult(0, 0, 0, 0, 0, java.util.List.of()));
+        AiConditionalRuleGovernanceService conditionalRuleGovernanceService =
+                mock(AiConditionalRuleGovernanceService.class);
+        AiDailyDecisionPlanService dailyDecisionPlanService = mock(AiDailyDecisionPlanService.class);
+        when(dailyDecisionPlanService.verifyMatured(any(), any())).thenReturn(
+                new AiDailyDecisionPlanService.PlanReviewRunResult(0, 0, 0, 0, 0, java.util.List.of()));
         AiUserDailyProjectionService projectionService = mock(AiUserDailyProjectionService.class);
         AiStrategyGovernanceService governanceService = mock(AiStrategyGovernanceService.class);
         TaskExecutor taskExecutor = Runnable::run;
@@ -136,8 +150,13 @@ class AiResearchOperationsServiceImplTest {
                 labelCoordinator,
                 weeklyRunner,
                 trainingRunner,
+                dailyReportGenerationService,
+                conditionalTradeStrategyService,
+                conditionalRuleGovernanceService,
+                dailyDecisionPlanService,
                 projectionService,
                 governanceService,
+                new AppProperties(),
                 taskExecutor,
                 transactionTemplate,
                 new ObjectMapper());

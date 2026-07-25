@@ -17,13 +17,45 @@ public interface AiPipelineRunMapper extends BaseMapper<AiPipelineRun> {
             FROM ai_pipeline_run
             WHERE scope_type = 'GLOBAL'
               AND pipeline_type = 'GLOBAL_DAILY_RESEARCH'
-              AND status = 'WAITING_SOURCE'
+              AND status IN ('WAITING_SOURCE', 'FAILED_RECOVERABLE')
               AND next_retry_at IS NOT NULL
               AND next_retry_at <= #{now}
             ORDER BY next_retry_at, id
             LIMIT #{limit}
             """)
     List<AiPipelineRun> selectDueGlobalDailyRuns(
+            @Param("now") LocalDateTime now,
+            @Param("limit") int limit
+    );
+
+    @Select("""
+            SELECT *
+            FROM ai_pipeline_run
+            WHERE scope_type = 'USER'
+              AND pipeline_type = 'USER_DAILY_PROJECTION'
+              AND status = 'PARTIAL_SUCCESS'
+              AND next_retry_at IS NOT NULL
+              AND next_retry_at <= #{now}
+            ORDER BY next_retry_at, id
+            LIMIT #{limit}
+            """)
+    List<AiPipelineRun> selectDueUserProjectionRetries(
+            @Param("now") LocalDateTime now,
+            @Param("limit") int limit
+    );
+
+    @Select("""
+            SELECT *
+            FROM ai_pipeline_run
+            WHERE status = 'RUNNING'
+              AND finished_at IS NULL
+              AND updated_at <= #{staleBefore}
+              AND (lease_until IS NULL OR lease_until < #{now})
+            ORDER BY updated_at, id
+            LIMIT #{limit}
+            """)
+    List<AiPipelineRun> selectStaleRunning(
+            @Param("staleBefore") LocalDateTime staleBefore,
             @Param("now") LocalDateTime now,
             @Param("limit") int limit
     );
@@ -59,7 +91,7 @@ public interface AiPipelineRunMapper extends BaseMapper<AiPipelineRun> {
             UPDATE ai_pipeline_run
             SET execution_owner = #{owner}, lease_until = #{leaseUntil}, updated_at = #{now}
             WHERE id = #{id}
-              AND status NOT IN ('SUCCESS', 'PARTIAL_SUCCESS')
+              AND status NOT IN ('SUCCESS', 'PARTIAL_SUCCESS', 'FAILED_FINAL')
               AND (execution_owner IS NULL OR lease_until IS NULL OR lease_until < #{now})
             """)
     int claimExecution(
@@ -118,7 +150,8 @@ public interface AiPipelineRunMapper extends BaseMapper<AiPipelineRun> {
 
     @Update("""
             UPDATE ai_pipeline_run
-            SET status = 'FAILED', execution_owner = NULL, lease_until = NULL,
+            SET status = 'FAILED_RECOVERABLE', execution_owner = NULL, lease_until = NULL,
+                next_retry_at = #{now},
                 error_message = #{message}, error_detail = #{detail},
                 finished_at = #{now}, updated_at = #{now}
             WHERE id = #{id}
@@ -130,6 +163,44 @@ public interface AiPipelineRunMapper extends BaseMapper<AiPipelineRun> {
     int recoverStaleRunning(
             @Param("id") Long id,
             @Param("staleBefore") LocalDateTime staleBefore,
+            @Param("now") LocalDateTime now,
+            @Param("message") String message,
+            @Param("detail") String detail
+    );
+
+    @Update("""
+            UPDATE ai_pipeline_run
+            SET status = 'PENDING', execution_owner = NULL, lease_until = NULL,
+                next_retry_at = NULL, current_step = 'RETRY_PENDING',
+                retry_count = retry_count + 1, finished_at = NULL,
+                error_message = #{message}, error_detail = #{detail}, updated_at = #{now}
+            WHERE id = #{id}
+              AND scope_type = 'USER'
+              AND pipeline_type = 'USER_DAILY_PROJECTION'
+              AND status = 'PARTIAL_SUCCESS'
+              AND next_retry_at IS NOT NULL
+              AND next_retry_at <= #{now}
+              AND retry_count < #{maxAttempts}
+            """)
+    int resetDueUserProjectionRetry(
+            @Param("id") Long id,
+            @Param("now") LocalDateTime now,
+            @Param("maxAttempts") int maxAttempts,
+            @Param("message") String message,
+            @Param("detail") String detail
+    );
+
+    @Update("""
+            UPDATE ai_pipeline_run
+            SET next_retry_at = NULL, error_message = #{message}, error_detail = #{detail}, updated_at = #{now}
+            WHERE id = #{id}
+              AND scope_type = 'USER'
+              AND pipeline_type = 'USER_DAILY_PROJECTION'
+              AND status = 'PARTIAL_SUCCESS'
+              AND next_retry_at IS NOT NULL
+            """)
+    int pauseUserProjectionRetry(
+            @Param("id") Long id,
             @Param("now") LocalDateTime now,
             @Param("message") String message,
             @Param("detail") String detail

@@ -30,7 +30,9 @@ class ResearchLabControllerTest {
                 "/datasets", "/datasets/{id}", "/models", "/models/{id}",
                 "/walk-forward", "/walk-forward/{id}", "/backtests", "/backtests/{id}",
                 "/strategies", "/strategies/{id}", "/shadow-evaluations",
-                "/governance-events", "/pipeline-runs", "/pipeline-runs/{id}");
+                "/governance-events", "/conditional-rules/configs",
+                "/conditional-rules/experiments", "/conditional-rules/shadow-observations",
+                "/conditional-rules/governance-events", "/pipeline-runs", "/pipeline-runs/{id}");
         Set<String> actual = new LinkedHashSet<>();
         for (Method method : ResearchLabController.class.getDeclaredMethods()) {
             GetMapping mapping = method.getAnnotation(GetMapping.class);

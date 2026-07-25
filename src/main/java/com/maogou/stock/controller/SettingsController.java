@@ -81,7 +81,8 @@ public class SettingsController {
         AppProperties.Scheduler scheduler = properties.getScheduler();
         Long userId = AuthContext.currentUserIdOrDefault();
         AiResearchDailyReportService.ReportView latestDailyReport = aiResearchDailyReportService.latestOrNull(userId);
-        PipelineStatusView pipelineStatus = latestPipelineStatus(userId, entity);
+        PipelineStatusView pipelineStatus = latestPipelineStatus(userId, entity.autoClosePipelineEnabled != null
+                && entity.autoClosePipelineEnabled == 1);
         return ApiResponse.ok(new SchedulerStatusResponse(
                 scheduler.isEnabled(),
                 scheduler.getNewsFixedRateMs(),
@@ -120,26 +121,27 @@ public class SettingsController {
         ));
     }
 
-    private PipelineStatusView latestPipelineStatus(Long userId, AiModelConfig config) {
-        PipelineStatusView configured = new PipelineStatusView(
-                nullToEmpty(config.autoClosePipelineLastStatus),
-                nullToEmpty(config.autoClosePipelineLastMessage),
-                config.autoClosePipelineLastRunAt,
-                config.autoClosePipelineLastFinishedAt);
+    private PipelineStatusView latestPipelineStatus(Long userId, boolean automationEnabled) {
         AiPipelineRun latest = pipelineRunMapper.selectOne(new QueryWrapper<AiPipelineRun>()
                 .eq("scope_type", "USER")
                 .eq("owner_user_id", userId)
                 .eq("pipeline_type", "USER_DAILY_PROJECTION")
                 .orderByDesc("created_at", "id")
                 .last("LIMIT 1"));
-        if (latest == null || isBefore(latest.updatedAt, latest.finishedAt, configured.finishedAt(), configured.startedAt())) {
-            return configured;
+        if (latest != null) {
+            return pipelineStatusView(latest, "用户投研日报投影流水线");
         }
-        return new PipelineStatusView(
-                nullToEmpty(latest.status),
-                pipelineRunMessage(latest),
-                latest.startedAt == null ? latest.createdAt : latest.startedAt,
-                latest.finishedAt);
+        AiPipelineRun global = pipelineRunMapper.selectOne(new QueryWrapper<AiPipelineRun>()
+                .eq("scope_type", "GLOBAL")
+                .eq("pipeline_type", "GLOBAL_DAILY_RESEARCH")
+                .orderByDesc("created_at", "id")
+                .last("LIMIT 1"));
+        if (global != null) {
+            return pipelineStatusView(global, "全局日度研究流水线");
+        }
+        return automationEnabled
+                ? new PipelineStatusView("IDLE", "等待下一个交易日 16:00 自动运行", null, null)
+                : new PipelineStatusView("DISABLED", "每日自动收盘投研流水线已关闭", null, null);
     }
 
     @GetMapping("/scheduler/job-logs")
@@ -165,7 +167,11 @@ public class SettingsController {
                         item.processedCount,
                         item.successCount,
                         item.failedCount,
-                        item.errorMessage
+                        item.currentStep,
+                        item.retryCount,
+                        item.nextRetryAt,
+                        item.errorMessage,
+                        item.errorDetail
                 ))
                 .toList());
     }
@@ -213,26 +219,30 @@ public class SettingsController {
         return value == null ? "" : value;
     }
 
-    private static boolean isBefore(
-            LocalDateTime first,
-            LocalDateTime second,
-            LocalDateTime configuredFinishedAt,
-            LocalDateTime configuredStartedAt
-    ) {
-        LocalDateTime pipelineAt = first == null ? second : first;
-        LocalDateTime configuredAt = configuredFinishedAt == null ? configuredStartedAt : configuredFinishedAt;
-        return pipelineAt == null || configuredAt != null && pipelineAt.isBefore(configuredAt);
+    private static PipelineStatusView pipelineStatusView(AiPipelineRun run, String pipelineName) {
+        return new PipelineStatusView(
+                nullToEmpty(run.status),
+                pipelineRunMessage(run, pipelineName),
+                run.startedAt == null ? run.createdAt : run.startedAt,
+                run.finishedAt);
     }
 
-    private static String pipelineRunMessage(AiPipelineRun run) {
+    private static String pipelineRunMessage(AiPipelineRun run, String pipelineName) {
         if (run.errorMessage != null && !run.errorMessage.isBlank()) {
             return run.errorMessage;
         }
         return switch (nullToEmpty(run.status)) {
-            case "SUCCESS" -> "用户投研日报投影流水线 #" + run.id + " 已完成";
-            case "PARTIAL_SUCCESS" -> "用户投研日报投影流水线 #" + run.id + " 部分完成";
-            case "RUNNING", "PENDING" -> "用户投研日报投影流水线 #" + run.id + " 正在执行";
-            default -> "用户投研日报投影流水线 #" + run.id + " 状态：" + nullToEmpty(run.status);
+            case "SUCCESS" -> pipelineName + " #" + run.id + " 已完成";
+            case "PARTIAL_SUCCESS" -> run.nextRetryAt == null
+                    ? pipelineName + " #" + run.id + " 部分完成"
+                    : pipelineName + " #" + run.id + " 已生成日报，失败的个股报告将在 "
+                    + formatDateTime(run.nextRetryAt) + " 自动重试";
+            case "WAITING_SOURCE" -> pipelineName + " #" + run.id + " 正在等待完整收盘数据，系统会自动重试";
+            case "FAILED_RECOVERABLE" -> pipelineName + " #" + run.id + " 已识别为可恢复故障，系统正在自动重试";
+            case "FAILED_FINAL" -> pipelineName + " #" + run.id + " 自动恢复已停止，请查看任务日志中的具体原因";
+            case "RUNNING", "PENDING" -> pipelineName + " #" + run.id + " 正在执行";
+            case "FAILED" -> pipelineName + " #" + run.id + " 执行失败，请查看任务日志";
+            default -> pipelineName + " #" + run.id + " 状态：" + nullToEmpty(run.status);
         };
     }
 

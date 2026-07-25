@@ -8,10 +8,14 @@ import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.Duration;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -21,10 +25,16 @@ public class LocalAiClient {
 
     private final RestTemplateBuilder restTemplateBuilder;
     private final AppProperties properties;
+    private final AiModelRequestLimiter requestLimiter;
 
-    public LocalAiClient(RestTemplateBuilder restTemplateBuilder, AppProperties properties) {
+    public LocalAiClient(
+            RestTemplateBuilder restTemplateBuilder,
+            AppProperties properties,
+            AiModelRequestLimiter requestLimiter
+    ) {
         this.restTemplateBuilder = restTemplateBuilder;
         this.properties = properties;
+        this.requestLimiter = requestLimiter;
     }
 
     public String chat(String prompt, AiModelConfig config) {
@@ -61,11 +71,18 @@ public class LocalAiClient {
                 .setConnectTimeout(Duration.ofSeconds(10))
                 .setReadTimeout(Duration.ofMillis(Math.max(1000, timeoutMs)))
                 .build();
-        JsonNode response = restTemplate.postForObject(
-                chatCompletionsUrl(baseUrl),
-                new HttpEntity<>(body, headers),
-                JsonNode.class
-        );
+        JsonNode response;
+        try (AiModelRequestLimiter.Permit ignored = requestLimiter.acquire(config)) {
+            response = restTemplate.postForObject(
+                    chatCompletionsUrl(baseUrl),
+                    new HttpEntity<>(body, headers),
+                    JsonNode.class
+            );
+        } catch (HttpClientErrorException.TooManyRequests exception) {
+            Duration retryAfter = retryAfter(exception.getResponseHeaders());
+            requestLimiter.recordRateLimit(config, retryAfter, exception);
+            throw requestLimiter.cooldownException(config, retryAfter, exception);
+        }
         JsonNode content = response == null ? null : response.at("/choices/0/message/content");
         if (content == null || content.isMissingNode()) {
             JsonNode text = response == null ? null : response.at("/choices/0/text");
@@ -101,5 +118,25 @@ public class LocalAiClient {
     private static String normalizeAuthorization(String apiKey) {
         String trimmed = apiKey.trim();
         return trimmed.regionMatches(true, 0, "Bearer ", 0, 7) ? trimmed : "Bearer " + trimmed;
+    }
+
+    private static Duration retryAfter(HttpHeaders headers) {
+        if (headers == null) {
+            return Duration.ZERO;
+        }
+        String value = headers.getFirst(HttpHeaders.RETRY_AFTER);
+        if (value == null || value.isBlank()) {
+            return Duration.ZERO;
+        }
+        try {
+            return Duration.ofSeconds(Math.max(0L, Long.parseLong(value.trim())));
+        } catch (NumberFormatException ignored) {
+            try {
+                Instant retryAt = ZonedDateTime.parse(value, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant();
+                return Duration.ofMillis(Math.max(0L, retryAt.toEpochMilli() - System.currentTimeMillis()));
+            } catch (RuntimeException invalidHeader) {
+                return Duration.ZERO;
+            }
+        }
     }
 }

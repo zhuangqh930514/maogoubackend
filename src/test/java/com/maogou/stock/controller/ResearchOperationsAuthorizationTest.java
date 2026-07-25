@@ -8,6 +8,7 @@ import com.maogou.stock.mapper.UserAccountMapper;
 import com.maogou.stock.security.AuthPrincipal;
 import com.maogou.stock.security.ResearchOperatorAuthorizer;
 import com.maogou.stock.service.research.AiHistoricalIndustryBarImportService;
+import com.maogou.stock.service.research.AiConditionalRuleGovernanceService;
 import com.maogou.stock.service.research.AiResearchOperationsService;
 import com.maogou.stock.service.research.AiModelPackageImportService;
 import com.maogou.stock.service.research.AiTrainingDatasetPackageImportService;
@@ -160,9 +161,11 @@ class ResearchOperationsAuthorizationTest {
         AiHistoricalTradingStateImportService historicalStateImporter = mock(AiHistoricalTradingStateImportService.class);
         AiHistoricalIndustryBarImportService historicalIndustryBarImporter =
                 mock(AiHistoricalIndustryBarImportService.class);
+        AiConditionalRuleGovernanceService conditionalRuleGovernanceService =
+                mock(AiConditionalRuleGovernanceService.class);
         ResearchOperationsController controller = new ResearchOperationsController(
                 operations, modelPackageImporter, trainingDatasetImporter, historicalStateImporter,
-                historicalIndustryBarImporter, authorizer);
+                historicalIndustryBarImporter, conditionalRuleGovernanceService, authorizer);
         MockMvc mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();

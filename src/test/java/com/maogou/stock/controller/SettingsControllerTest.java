@@ -104,6 +104,15 @@ class SettingsControllerTest {
                         "markdown",
                         LocalDateTime.of(2026, 7, 13, 16, 11)
                 ));
+        AiPipelineRun latestPipeline = new AiPipelineRun();
+        latestPipeline.id = 8999L;
+        latestPipeline.scopeType = "USER";
+        latestPipeline.ownerUserId = 5L;
+        latestPipeline.pipelineType = "USER_DAILY_PROJECTION";
+        latestPipeline.status = "SUCCESS";
+        latestPipeline.startedAt = LocalDateTime.of(2026, 7, 13, 16, 0);
+        latestPipeline.finishedAt = LocalDateTime.of(2026, 7, 13, 16, 12);
+        when(pipelineRunMapper.selectOne(any(QueryWrapper.class))).thenReturn(latestPipeline);
 
         SettingsController controller = new SettingsController(
                 modelConfigService,
@@ -180,6 +189,43 @@ class SettingsControllerTest {
     }
 
     @Test
+    void schedulerStatusFallsBackToTheActualGlobalRunWhenUserProjectionDoesNotExist() {
+        ModelConfigService modelConfigService = mock(ModelConfigService.class);
+        AiPipelineRunMapper pipelineRunMapper = mock(AiPipelineRunMapper.class);
+        TradingCalendarService tradingCalendarService = mock(TradingCalendarService.class);
+        AiResearchDailyReportService reportService = mock(AiResearchDailyReportService.class);
+        AutoClosePipelineService pipelineService = mock(AutoClosePipelineService.class);
+        AiModelConfig entity = new AiModelConfig();
+        entity.autoClosePipelineEnabled = 1;
+        entity.autoClosePipelineLastStatus = "SUCCESS";
+        entity.autoClosePipelineLastMessage = "历史遗留状态";
+        when(modelConfigService.currentEntity()).thenReturn(entity);
+        when(modelConfigService.current()).thenReturn(new ModelConfigResponse(
+                "http://localhost:11434/v1", "qwen3.6", "***", 60000,
+                BigDecimal.valueOf(0.2), 2048, 30, "15:30", "全部自选股", "prompt"));
+        when(tradingCalendarService.nextTradingDateTime(any(), eq(16), eq(0)))
+                .thenReturn(LocalDateTime.of(2026, 7, 16, 16, 0));
+        AiPipelineRun global = new AiPipelineRun();
+        global.id = 88L;
+        global.scopeType = "GLOBAL";
+        global.pipelineType = "GLOBAL_DAILY_RESEARCH";
+        global.status = "WAITING_SOURCE";
+        global.startedAt = LocalDateTime.of(2026, 7, 15, 16, 0);
+        when(pipelineRunMapper.selectOne(any(QueryWrapper.class))).thenReturn(null, global);
+
+        SettingsController controller = new SettingsController(
+                modelConfigService, pipelineRunMapper, new AppProperties(),
+                tradingCalendarService, reportService, pipelineService);
+
+        SchedulerStatusResponse response = AuthContext.callAs(
+                5L, () -> controller.schedulerStatus().data());
+
+        assertThat(response.autoClosePipelineLastStatus()).isEqualTo("WAITING_SOURCE");
+        assertThat(response.autoClosePipelineLastMessage()).contains("全局日度研究流水线 #88")
+                .contains("等待完整收盘数据");
+    }
+
+    @Test
     void manualClosePipelineEndpointRunsTheSameBackendPipeline() {
         ModelConfigService modelConfigService = mock(ModelConfigService.class);
         AiPipelineRunMapper pipelineRunMapper = mock(AiPipelineRunMapper.class);
@@ -231,6 +277,9 @@ class SettingsControllerTest {
             assertThat(item.jobName()).isEqualTo("用户投研日报投影");
             assertThat(item.jobType()).isEqualTo("USER_DAILY_PROJECTION");
             assertThat(item.status()).isEqualTo("SUCCESS");
+            assertThat(item.currentStep()).isNull();
+            assertThat(item.retryCount()).isNull();
+            assertThat(item.nextRetryAt()).isNull();
         });
         @SuppressWarnings("unchecked")
         ArgumentCaptor<QueryWrapper<AiPipelineRun>> queryCaptor =

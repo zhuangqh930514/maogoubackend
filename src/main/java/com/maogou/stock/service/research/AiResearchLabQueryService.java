@@ -50,6 +50,18 @@ public interface AiResearchLabQueryService {
 
     ResearchLabPayloads.PageResult<ResearchLabPayloads.EvidenceItem> governanceEvents(ResearchLabPayloads.QueryFilter filter);
 
+    ResearchLabPayloads.PageResult<ResearchLabPayloads.EvidenceItem> conditionalRuleExperiments(
+            ResearchLabPayloads.QueryFilter filter, Long userId);
+
+    ResearchLabPayloads.PageResult<ResearchLabPayloads.EvidenceItem> conditionalRuleConfigs(
+            ResearchLabPayloads.QueryFilter filter, Long userId);
+
+    ResearchLabPayloads.PageResult<ResearchLabPayloads.EvidenceItem> conditionalRuleShadowObservations(
+            ResearchLabPayloads.QueryFilter filter, Long userId);
+
+    ResearchLabPayloads.PageResult<ResearchLabPayloads.EvidenceItem> conditionalRuleGovernanceEvents(
+            ResearchLabPayloads.QueryFilter filter, Long userId);
+
     ResearchLabPayloads.PageResult<ResearchLabPayloads.EvidenceItem> pipelineRuns(ResearchLabPayloads.QueryFilter filter);
 
     ResearchLabPayloads.Detail pipelineRun(Long id, Long authenticatedUserId);

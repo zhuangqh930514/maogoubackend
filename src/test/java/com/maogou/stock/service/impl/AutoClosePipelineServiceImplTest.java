@@ -37,7 +37,8 @@ class AutoClosePipelineServiceImplTest {
         assertThatThrownBy(() -> AuthContext.runAs(5L, fixture.service::runCurrentUserNow))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("pipeline storage unavailable");
-        assertThat(fixture.config.autoClosePipelineLastStatus).isEqualTo("FAILED");
+        assertThat(fixture.config.autoClosePipelineLastStatus).isNull();
+        verify(fixture.configMapper, never()).updateById(org.mockito.ArgumentMatchers.<AiModelConfig>any());
     }
 
     @Test
@@ -111,6 +112,129 @@ class AutoClosePipelineServiceImplTest {
         assertThat(waiting.errorMessage).contains("2026-07-17");
     }
 
+    @Test
+    void recoveryMarksStaleUserProjectionAndResubmitsItAgainstTheOriginalGlobalRun() {
+        Fixture fixture = fixture();
+        AiPipelineRun stale = new AiPipelineRun();
+        stale.id = 193L;
+        stale.scopeType = "USER";
+        stale.ownerUserId = 5L;
+        stale.parentRunId = 191L;
+        stale.pipelineType = "USER_DAILY_PROJECTION";
+        stale.tradeDate = LocalDate.of(2026, 7, 17);
+        stale.idempotencyKey = "SCHEDULED:USER_DAILY:5:2026-07-17";
+        stale.currentStep = "PROJECT_USER_DAILY";
+        stale.updatedAt = LocalDateTime.now().minusHours(2);
+
+        AiPipelineRun parent = new AiPipelineRun();
+        parent.id = 191L;
+        parent.status = "SUCCESS";
+        parent.tradeDate = stale.tradeDate;
+        parent.strategyReleaseId = 91L;
+        parent.modelVersionId = 92L;
+
+        when(fixture.pipelineRunMapper.selectStaleRunning(any(), any(), anyInt())).thenReturn(List.of(stale));
+        when(fixture.pipelineRunMapper.recoverStaleRunning(any(), any(), any(), any(), any()))
+                .thenReturn(1);
+        when(fixture.pipelineRunMapper.selectById(191L)).thenReturn(parent);
+        when(fixture.pipelineRunMapper.selectDueGlobalDailyRuns(any(), anyInt())).thenReturn(List.of());
+
+        fixture.service.retryWaitingPipelines();
+
+        verify(fixture.pipelineRunMapper).recoverStaleRunning(
+                org.mockito.ArgumentMatchers.eq(193L), any(), any(),
+                org.mockito.ArgumentMatchers.contains("自动回收"),
+                org.mockito.ArgumentMatchers.contains("PROJECT_USER_DAILY"));
+        verify(fixture.operationsService).runUserProjection(
+                org.mockito.ArgumentMatchers.eq(5L),
+                org.mockito.ArgumentMatchers.argThat(request -> request.parentPipelineRunId().equals(191L)
+                        && request.idempotencyKey().equals(stale.idempotencyKey)));
+    }
+
+    @Test
+    void recoveryResubmitsStaleGlobalDailyResearchUsingItsOriginalInput() {
+        Fixture fixture = fixture();
+        AiPipelineRun stale = new AiPipelineRun();
+        stale.id = 74L;
+        stale.scopeType = "GLOBAL";
+        stale.pipelineType = "GLOBAL_DAILY_RESEARCH";
+        stale.tradeDate = LocalDate.of(2026, 7, 17);
+        stale.strategyReleaseId = 91L;
+        stale.modelVersionId = 92L;
+        stale.idempotencyKey = "SCHEDULED:GLOBAL_DAILY:2026-07-17";
+        stale.inputFingerprint = "persisted-input";
+        stale.startedAt = LocalDateTime.of(2026, 7, 17, 16, 0);
+        stale.currentStep = "COMPUTE_FACTORS";
+        stale.updatedAt = LocalDateTime.now().minusHours(2);
+
+        when(fixture.pipelineRunMapper.selectStaleRunning(any(), any(), anyInt())).thenReturn(List.of(stale));
+        when(fixture.pipelineRunMapper.recoverStaleRunning(any(), any(), any(), any(), any()))
+                .thenReturn(1);
+        when(fixture.pipelineRunMapper.selectDueGlobalDailyRuns(any(), anyInt())).thenReturn(List.of());
+
+        fixture.service.retryWaitingPipelines();
+
+        verify(fixture.dailyResearchService).run(new AiGlobalDailyResearchService.PipelineRequest(
+                stale.tradeDate, stale.strategyReleaseId, stale.modelVersionId,
+                stale.idempotencyKey, stale.inputFingerprint, stale.startedAt));
+    }
+
+    @Test
+    void dueUserReportRetryIsSubmittedAgainstTheOriginalCompletedGlobalRun() {
+        Fixture fixture = fixture();
+        AiPipelineRun retry = new AiPipelineRun();
+        retry.id = 299L;
+        retry.scopeType = "USER";
+        retry.ownerUserId = 5L;
+        retry.parentRunId = 191L;
+        retry.pipelineType = "USER_DAILY_PROJECTION";
+        retry.idempotencyKey = "SCHEDULED:USER_DAILY:5:2026-07-17";
+        retry.status = "PARTIAL_SUCCESS";
+
+        AiPipelineRun parent = new AiPipelineRun();
+        parent.id = 191L;
+        parent.status = "SUCCESS";
+        parent.tradeDate = LocalDate.of(2026, 7, 17);
+        parent.strategyReleaseId = 91L;
+        parent.modelVersionId = 92L;
+
+        fixture.config.autoClosePipelineEnabled = 1;
+        when(fixture.pipelineRunMapper.selectDueGlobalDailyRuns(any(), anyInt())).thenReturn(List.of());
+        when(fixture.pipelineRunMapper.selectDueUserProjectionRetries(any(), anyInt())).thenReturn(List.of(retry));
+        when(fixture.configMapper.selectEnabledAutomationConfigsAfter(eq(0L), anyInt()))
+                .thenReturn(List.of(fixture.config));
+        when(fixture.pipelineRunMapper.selectById(191L)).thenReturn(parent);
+
+        fixture.service.retryWaitingPipelines();
+
+        verify(fixture.operationsService).runUserProjection(eq(5L),
+                org.mockito.ArgumentMatchers.argThat(request -> request.parentPipelineRunId().equals(191L)
+                        && request.tradeDate().equals(parent.tradeDate)
+                        && request.idempotencyKey().equals(retry.idempotencyKey)));
+    }
+
+    @Test
+    void dueUserReportRetryIsPausedWhenTheUserDisabledDailyAutomation() {
+        Fixture fixture = fixture();
+        AiPipelineRun retry = new AiPipelineRun();
+        retry.id = 300L;
+        retry.scopeType = "USER";
+        retry.ownerUserId = 5L;
+        retry.pipelineType = "USER_DAILY_PROJECTION";
+        retry.status = "PARTIAL_SUCCESS";
+
+        when(fixture.pipelineRunMapper.selectDueGlobalDailyRuns(any(), anyInt())).thenReturn(List.of());
+        when(fixture.pipelineRunMapper.selectDueUserProjectionRetries(any(), anyInt())).thenReturn(List.of(retry));
+        when(fixture.configMapper.selectEnabledAutomationConfigsAfter(eq(0L), anyInt())).thenReturn(List.of());
+
+        fixture.service.retryWaitingPipelines();
+
+        verify(fixture.pipelineRunMapper).pauseUserProjectionRetry(
+                eq(300L), any(), org.mockito.ArgumentMatchers.contains("已暂停"),
+                org.mockito.ArgumentMatchers.contains("用户=5"));
+        verify(fixture.operationsService, never()).runUserProjection(any(), any());
+    }
+
     private static Fixture fixture() {
         AiModelConfigMapper configMapper = mock(AiModelConfigMapper.class);
         TradingCalendarService calendarService = mock(TradingCalendarService.class);
@@ -129,14 +253,17 @@ class AutoClosePipelineServiceImplTest {
         AutoClosePipelineServiceImpl service = new AutoClosePipelineServiceImpl(
                 configMapper, calendarService, dailyResearchService, preparationService,
                 operationsService, pipelineRunMapper);
-        return new Fixture(config, calendarService, dailyResearchService, preparationService, pipelineRunMapper, service);
+        return new Fixture(configMapper, config, calendarService, dailyResearchService, preparationService,
+                operationsService, pipelineRunMapper, service);
     }
 
     private record Fixture(
+            AiModelConfigMapper configMapper,
             AiModelConfig config,
             TradingCalendarService calendarService,
             AiGlobalDailyResearchService dailyResearchService,
             AiGlobalResearchPreparationService preparationService,
+            AiResearchOperationsService operationsService,
             AiPipelineRunMapper pipelineRunMapper,
             AutoClosePipelineServiceImpl service
     ) {

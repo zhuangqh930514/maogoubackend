@@ -145,6 +145,20 @@ class AiConditionalTradeStrategyServiceImplTest {
     }
 
     @Test
+    void defensiveActionUsesDirectionAdjustedReturnAndDeductsConfiguredCosts() {
+        KlinePointResponse trigger = kline(LocalDate.of(2026, 7, 14), "10", "10.5", "9.8");
+        KlinePointResponse nextDay = kline(LocalDate.of(2026, 7, 15), "9.5", "10.2", "9.0");
+
+        var metrics = AiConditionalTradeStrategyServiceImpl.outcomeMetrics(
+                trigger, nextDay, "SELL", new java.math.BigDecimal("20"));
+
+        assertThat(metrics.postTriggerReturn()).isEqualByComparingTo("-5.0000");
+        assertThat(metrics.maxFavorableReturn()).isEqualByComparingTo("10.0000");
+        assertThat(metrics.maxAdverseReturn()).isEqualByComparingTo("-2.0000");
+        assertThat(metrics.netActionReturn()).isEqualByComparingTo("4.8000");
+    }
+
+    @Test
     void unifiedSeedCapitalRiskAliasMapsToEngineFundComponent() throws Exception {
         ObjectMapper mapper = new ObjectMapper();
         var normalized = service(
@@ -180,6 +194,7 @@ class AiConditionalTradeStrategyServiceImplTest {
         return new AiConditionalTradeStrategyServiceImpl(
                 null,
                 reviewMapper,
+                null,
                 null,
                 reportMapper,
                 null,
