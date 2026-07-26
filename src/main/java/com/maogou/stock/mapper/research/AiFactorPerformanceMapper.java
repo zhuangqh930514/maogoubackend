@@ -109,7 +109,7 @@ public interface AiFactorPerformanceMapper extends BaseMapper<AiFactorPerformanc
                 #{sampleId}
               </foreach>
               AND fv.hit = 1 AND fv.missing = 0
-              AND fp.horizon_trading_days = 3
+              AND fp.horizon_trading_days IN (1, 2, 3)
               AND fp.is_current = 1
               AND fp.window_end_date &lt; #{tradeDate}
             ORDER BY fp.window_end_date DESC, fp.evaluated_at DESC
@@ -118,5 +118,23 @@ public interface AiFactorPerformanceMapper extends BaseMapper<AiFactorPerformanc
     List<AiFactorPerformance> selectForSamplesBefore(
             @Param("sampleIds") List<Long> sampleIds,
             @Param("tradeDate") LocalDate tradeDate
+    );
+
+    @Select("""
+            SELECT fp.*, d.factor_code AS factor_code, d.factor_name AS factor_name,
+                   d.factor_version AS factor_version
+            FROM ai_factor_performance fp
+            INNER JOIN ai_factor_definition d ON d.id = fp.factor_definition_id
+            WHERE d.factor_version = #{factorVersion}
+              AND fp.horizon_trading_days IN (1, 2, 3)
+              AND fp.is_current = 1
+              AND fp.window_end_date < #{asOfDate}
+              AND fp.confidence_level <> 'LOW_SAMPLE'
+              AND COALESCE(fp.drift_status, 'UNKNOWN') <> 'CRITICAL'
+            ORDER BY fp.horizon_trading_days, d.factor_code, fp.window_end_date DESC, fp.evaluated_at DESC, fp.id DESC
+            """)
+    List<AiFactorPerformance> selectEligibleCandidateSnapshot(
+            @Param("factorVersion") String factorVersion,
+            @Param("asOfDate") LocalDate asOfDate
     );
 }

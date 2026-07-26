@@ -17,6 +17,7 @@ class AiPredictionMapperAnnotationTest {
         for (String methodName : List.of(
                 "selectByIdempotencyKeysForShare",
                 "selectUnevaluatedCandidates",
+                "selectDueDailyUnevaluatedCandidates",
                 "selectForDailyDecision",
                 "selectForAnalysis")) {
             Method method = java.util.Arrays.stream(AiPredictionMapper.class.getMethods())
@@ -37,6 +38,15 @@ class AiPredictionMapperAnnotationTest {
                 .contains("FORCE INDEX (idx_prediction_evaluation_candidates)")
                 .contains("FORCE INDEX (idx_label_evaluation_candidate)")
                 .contains("FORCE INDEX (idx_evaluation_version_prediction)")
+                .doesNotContain("SELECT p.*");
+        Method dueMethod = java.util.Arrays.stream(AiPredictionMapper.class.getMethods())
+                .filter(candidate -> "selectDueDailyUnevaluatedCandidates".equals(candidate.getName()))
+                .findFirst().orElseThrow();
+        String dueSql = String.join("\n", dueMethod.getAnnotation(Select.class).value());
+        assertThat(dueSql)
+                .contains("l.label_available_at <= #{tradeDate}")
+                .contains("p.horizon_trading_days IN (1, 2, 3)")
+                .contains("p.trade_date DESC")
                 .doesNotContain("SELECT p.*");
         assertThatCode(() -> new MybatisConfiguration().addMapper(AiPredictionMapper.class))
                 .doesNotThrowAnyException();

@@ -89,6 +89,7 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
         try {
             LocalDateTime now = LocalDateTime.now();
             recoverStalePipelines(now);
+            finalizeRecoverableRunsRequiringManualRestart(now);
             List<AiPipelineRun> due = pipelineRunMapper.selectDueGlobalDailyRuns(
                     now, RECOVERY_BATCH_SIZE);
             if (due != null) {
@@ -256,8 +257,47 @@ public class AutoClosePipelineServiceImpl implements AutoClosePipelineService {
             }
             log.warn("recovered stale pipeline run, runId={}, type={}, ownerUserId={}",
                     run.id, run.pipelineType, run.ownerUserId);
-            retryRecoveredGlobalDailyRun(run);
-            retryRecoveredUserProjection(run);
+            if ("GLOBAL_DAILY_RESEARCH".equals(run.pipelineType)) {
+                retryRecoveredGlobalDailyRun(run);
+            } else if ("USER_DAILY_PROJECTION".equals(run.pipelineType)) {
+                retryRecoveredUserProjection(run);
+            } else {
+                finalizeRecoverableRunRequiringManualRestart(run, now);
+            }
+        }
+    }
+
+    /**
+     * Daily research and user projections carry a fully reconstructable immutable input. Other
+     * manual research tasks can be expensive and may have user-selected ranges or checkpoints.
+     * Retrying those blindly on the scheduler can compete with the closing pipeline or rerun a
+     * different experiment, so they are terminalized with their original evidence intact.
+     */
+    private void finalizeRecoverableRunsRequiringManualRestart(LocalDateTime now) {
+        List<AiPipelineRun> candidates = pipelineRunMapper.selectRecoverableRunsRequiringManualRestart(
+                now, RECOVERY_BATCH_SIZE);
+        if (candidates == null || candidates.isEmpty()) {
+            return;
+        }
+        for (AiPipelineRun run : candidates) {
+            finalizeRecoverableRunRequiringManualRestart(run, now);
+        }
+    }
+
+    private void finalizeRecoverableRunRequiringManualRestart(AiPipelineRun run, LocalDateTime now) {
+        if (run == null || run.id == null) {
+            return;
+        }
+        String message = "任务中断后无法安全自动重放，已停止自动恢复，请在高级研究中重新发起";
+        String detail = message + "；任务类型=" + nullToEmpty(run.pipelineType)
+                + "；运行ID=" + run.id
+                + "；最后步骤=" + nullToEmpty(run.currentStep)
+                + "；原始失败原因=" + nullToEmpty(run.errorMessage)
+                + "；既有样本、步骤 checkpoint 和失败证据均已保留";
+        if (pipelineRunMapper.finalizeRecoverableRunRequiringManualRestart(
+                run.id, now, message, detail) == 1) {
+            log.warn("terminalized non-replayable recovered pipeline run, runId={}, type={}",
+                    run.id, run.pipelineType);
         }
     }
 

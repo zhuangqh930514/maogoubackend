@@ -58,6 +58,7 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
     private static final int PENDING_FILTER_SCAN_MULTIPLIER = 4;
     private static final int LABEL_BATCH_SIZE = 500;
     private static final int EVALUATION_BATCH_SIZE = 2000;
+    private static final int DAILY_DUE_LOOKBACK_DAYS = 16;
     private static final List<Integer> HORIZONS = List.of(1, 2, 3, 5);
 
     private final AiPredictionMapper predictionMapper;
@@ -428,14 +429,49 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
     ) {
         requireTime(tradeDate, evaluatedAt, "预测评价");
         requireLimit(candidateLimit);
+        return evaluateCandidates(tradeDate, evaluatedAt, candidateLimit, false, "EVALUATE_PREDICTIONS");
+    }
+
+    @Override
+    public VerificationResult evaluateDueDailyPredictions(
+            LocalDate tradeDate,
+            LocalDateTime evaluatedAt,
+            int candidateLimit
+    ) {
+        requireTime(tradeDate, evaluatedAt, "到期预测评价");
+        requireLimit(candidateLimit);
+        return evaluateCandidates(tradeDate, evaluatedAt, candidateLimit, true, "EVALUATE_DUE_DAILY_PREDICTIONS");
+    }
+
+    @Override
+    public VerificationResult evaluateHistoricalBacklog(
+            LocalDate tradeDate,
+            LocalDateTime evaluatedAt,
+            int candidateLimit
+    ) {
+        requireTime(tradeDate, evaluatedAt, "历史预测回填");
+        requireLimit(candidateLimit);
+        return evaluateCandidates(tradeDate, evaluatedAt, candidateLimit, false, "EVALUATE_HISTORICAL_BACKLOG");
+    }
+
+    private VerificationResult evaluateCandidates(
+            LocalDate tradeDate,
+            LocalDateTime evaluatedAt,
+            int candidateLimit,
+            boolean dueDailyOnly,
+            String operation
+    ) {
         int processed = 0;
         List<AiPredictionEvaluation> evaluations = new ArrayList<>();
         List<String> errors = new ArrayList<>();
         while (processed < candidateLimit) {
             int limit = Math.min(EVALUATION_BATCH_SIZE, candidateLimit - processed);
-            List<AiPrediction> predictions = predictionMapper.selectUnevaluatedCandidates(
-                    tradeDate, AiResearchContract.LABEL_VERSION,
-                    AiPredictionEvaluationServiceImpl.VERSION, limit);
+            List<AiPrediction> predictions = dueDailyOnly
+                    ? predictionMapper.selectDueDailyUnevaluatedCandidates(
+                            tradeDate, DAILY_DUE_LOOKBACK_DAYS, AiResearchContract.LABEL_VERSION,
+                            AiPredictionEvaluationServiceImpl.VERSION, limit)
+                    : predictionMapper.selectUnevaluatedCandidates(tradeDate, AiResearchContract.LABEL_VERSION,
+                            AiPredictionEvaluationServiceImpl.VERSION, limit);
             if (predictions == null || predictions.isEmpty()) {
                 break;
             }
@@ -457,10 +493,10 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
             evaluations.addAll(stored);
         }
         if (processed == 0) {
-            return empty("EVALUATE_PREDICTIONS", tradeDate);
+            return empty(operation, tradeDate);
         }
         return new VerificationResult(processed, evaluations.size(), errors.size(), errors,
-                sha256("EVALUATE|" + tradeDate + "|"
+                sha256(operation + "|" + tradeDate + "|"
                         + evaluations.stream().map(value -> String.valueOf(value.id)).toList()
                         + "|" + errors));
     }

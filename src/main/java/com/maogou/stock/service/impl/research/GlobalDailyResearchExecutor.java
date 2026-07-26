@@ -9,6 +9,7 @@ import com.maogou.stock.domain.entity.research.AiFactorValue;
 import com.maogou.stock.domain.entity.research.AiPrediction;
 import com.maogou.stock.domain.entity.research.AiResearchUniverseItem;
 import com.maogou.stock.domain.entity.research.AiResearchUniverseSnapshot;
+import com.maogou.stock.domain.entity.research.AiStrategyRelease;
 import com.maogou.stock.domain.entity.research.AiSample;
 import com.maogou.stock.domain.entity.research.AiSourceObservation;
 import com.maogou.stock.dto.market.KlinePointResponse;
@@ -23,6 +24,7 @@ import com.maogou.stock.mapper.research.AiResearchUniverseItemMapper;
 import com.maogou.stock.mapper.research.AiResearchUniverseSnapshotMapper;
 import com.maogou.stock.mapper.research.AiSampleMapper;
 import com.maogou.stock.mapper.research.AiSourceObservationMapper;
+import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
 import com.maogou.stock.service.MarketDataService;
 import com.maogou.stock.service.research.AiFactorEngine;
 import com.maogou.stock.service.research.AiGlobalDailyResearchExecutor;
@@ -36,8 +38,10 @@ import com.maogou.stock.service.research.AiSecurityDailyStateService;
 import com.maogou.stock.service.research.BenchmarkSeriesService;
 import com.maogou.stock.service.research.ExternalIoTransactionGuard;
 import com.maogou.stock.service.research.IndustryMembershipService;
+import com.maogou.stock.service.research.AiLearningCoverageService;
 import com.maogou.stock.service.research.NewsSentimentFeatureService;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -88,6 +92,8 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
     private final AiSecurityDailyStateService securityDailyStateService;
     private final NewsSentimentFeatureService newsSentimentFeatureService;
     private final ObjectMapper objectMapper;
+    private final AiLearningCoverageService learningCoverageService;
+    private final AiStrategyReleaseMapper strategyReleaseMapper;
 
     public GlobalDailyResearchExecutor(
             AiResearchUniverseService universeService,
@@ -109,6 +115,35 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
             NewsSentimentFeatureService newsSentimentFeatureService,
             ObjectMapper objectMapper
     ) {
+        this(universeService, universeSnapshotMapper, universeItemMapper, dataBatchMapper, observationMapper,
+                sampleMapper, sampleSnapshotService, marketDataService, factorEngine, predictionEngine,
+                labelCoordinator, resilientMarketDataClient, benchmarkSeriesService, industryMembershipService,
+                industryDailyBarService, securityDailyStateService, newsSentimentFeatureService, objectMapper, null, null);
+    }
+
+    @Autowired
+    public GlobalDailyResearchExecutor(
+            AiResearchUniverseService universeService,
+            AiResearchUniverseSnapshotMapper universeSnapshotMapper,
+            AiResearchUniverseItemMapper universeItemMapper,
+            AiDataBatchMapper dataBatchMapper,
+            AiSourceObservationMapper observationMapper,
+            AiSampleMapper sampleMapper,
+            AiSampleSnapshotService sampleSnapshotService,
+            MarketDataService marketDataService,
+            AiFactorEngine factorEngine,
+            AiPredictionEngine predictionEngine,
+            AiLabelVerificationCoordinator labelCoordinator,
+            ResearchMarketDataClient resilientMarketDataClient,
+            BenchmarkSeriesService benchmarkSeriesService,
+            IndustryMembershipService industryMembershipService,
+            AiIndustryDailyBarService industryDailyBarService,
+            AiSecurityDailyStateService securityDailyStateService,
+            NewsSentimentFeatureService newsSentimentFeatureService,
+            ObjectMapper objectMapper,
+            AiLearningCoverageService learningCoverageService,
+            AiStrategyReleaseMapper strategyReleaseMapper
+    ) {
         this.universeService = universeService;
         this.universeSnapshotMapper = universeSnapshotMapper;
         this.universeItemMapper = universeItemMapper;
@@ -127,6 +162,8 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         this.securityDailyStateService = securityDailyStateService;
         this.newsSentimentFeatureService = newsSentimentFeatureService;
         this.objectMapper = objectMapper;
+        this.learningCoverageService = learningCoverageService;
+        this.strategyReleaseMapper = strategyReleaseMapper;
     }
 
     @Override
@@ -142,9 +179,8 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
                     context, "MATURE_HISTORICAL_SAMPLE_LABELS", HISTORICAL_FINALIZE_BATCH_SIZE);
             case "COMPUTE_FACTORS" -> computeFactors(context);
             case "GENERATE_PREDICTIONS" -> generatePredictions(context);
-            case "EVALUATE_PREDICTIONS" -> evaluatePredictions(context);
-            case "EVALUATE_HISTORICAL_PREDICTIONS" -> evaluatePredictions(
-                    context, "EVALUATE_HISTORICAL_PREDICTIONS", HISTORICAL_FINALIZE_BATCH_SIZE);
+            case "EVALUATE_PREDICTIONS", "EVALUATE_DUE_DAILY_PREDICTIONS" -> evaluateDueDailyPredictions(context);
+            case "EVALUATE_HISTORICAL_PREDICTIONS" -> evaluateHistoricalPredictions(context);
             default -> throw new IllegalArgumentException("未知全局日研究步骤：" + stepKey);
         };
         context.checkpointLease();
@@ -884,26 +920,68 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
                     context.modelVersionId() == null ? "RULE_BASELINE" : "CHAMPION",
                     context.startedAt())));
         }
+        List<AiPrediction> shadowPredictions = generateShadowPredictions(context, inputs);
+        predictions.addAll(shadowPredictions);
         Map<String, Object> checkpoint = Map.of(
                 "dataBatchId", batchId,
                 "sampleCount", samples.size(),
                 "predictionCount", predictions.size(),
+                "shadowPredictionCount", shadowPredictions.size(),
                 "horizons", PREDICTION_HORIZONS);
         return success("GENERATE_PREDICTIONS", samples.size() * PREDICTION_HORIZONS.size(),
                 predictions.size(), Math.max(0, samples.size() * PREDICTION_HORIZONS.size() - predictions.size()),
                 checkpoint, batchId, List.of());
     }
 
-    private StepOutcome evaluatePredictions(PipelineContext context) {
-        return evaluatePredictions(context, "EVALUATE_PREDICTIONS", null);
+    /** Challenger predictions are immutable same-sample evidence only, never a user decision input. */
+    private List<AiPrediction> generateShadowPredictions(
+            PipelineContext context,
+            List<AiPredictionEngine.PredictionInput> inputs
+    ) {
+        if (strategyReleaseMapper == null || context.strategyReleaseId() == null || inputs.isEmpty()) {
+            return List.of();
+        }
+        AiStrategyRelease champion = strategyReleaseMapper.selectById(context.strategyReleaseId());
+        if (champion == null || champion.researchUniverseId == null || champion.modelFamily == null) {
+            return List.of();
+        }
+        List<AiStrategyRelease> challengers = strategyReleaseMapper.selectShadowChallengers(
+                champion.researchUniverseId, champion.modelFamily);
+        if (challengers == null || challengers.isEmpty()) {
+            return List.of();
+        }
+        List<AiPrediction> results = new ArrayList<>();
+        for (AiStrategyRelease challenger : challengers) {
+            if (challenger == null || challenger.id == null || challenger.modelVersionId == null) {
+                continue;
+            }
+            for (Integer horizon : PREDICTION_HORIZONS) {
+                context.checkpointLease();
+                results.addAll(predictionEngine.predictAndStore(new AiPredictionEngine.PredictionBatch(
+                        inputs, challenger.id, challenger.modelVersionId, horizon,
+                        Math.max(3, Math.min(10, inputs.size())), "CHALLENGER_SHADOW", context.startedAt())));
+            }
+        }
+        return List.copyOf(results);
     }
 
-    private StepOutcome evaluatePredictions(PipelineContext context, String stepKey, Integer candidateLimit) {
-        AiLabelVerificationCoordinator.VerificationResult result =
-                candidateLimit == null
-                        ? labelCoordinator.evaluatePredictions(context.tradeDate(), LocalDateTime.now())
-                        : labelCoordinator.evaluatePredictions(
-                                context.tradeDate(), LocalDateTime.now(), candidateLimit);
+    private StepOutcome evaluateDueDailyPredictions(PipelineContext context) {
+        AiLabelVerificationCoordinator.VerificationResult result = labelCoordinator.evaluateDueDailyPredictions(
+                context.tradeDate(), LocalDateTime.now(), HISTORICAL_FINALIZE_BATCH_SIZE);
+        if (learningCoverageService != null) {
+            learningCoverageService.recordDueEvaluation(context.pipelineRunId(), context.tradeDate(), result,
+                    LocalDateTime.now());
+        }
+        return evaluationOutcome("EVALUATE_DUE_DAILY_PREDICTIONS", result);
+    }
+
+    private StepOutcome evaluateHistoricalPredictions(PipelineContext context) {
+        AiLabelVerificationCoordinator.VerificationResult result = labelCoordinator.evaluateHistoricalBacklog(
+                context.tradeDate(), LocalDateTime.now(), HISTORICAL_FINALIZE_BATCH_SIZE);
+        return evaluationOutcome("EVALUATE_HISTORICAL_PREDICTIONS", result);
+    }
+
+    private StepOutcome evaluationOutcome(String stepKey, AiLabelVerificationCoordinator.VerificationResult result) {
         Map<String, Object> checkpoint = Map.of(
                 "evaluationCount", result.successCount(),
                 "failedCount", result.failedCount(),

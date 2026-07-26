@@ -34,6 +34,14 @@ public class AiDailyDecisionPlanReview {
     public String actualMetricsJson;
     public String feedbackJson;
     public String feedbackSummary;
+    public LocalDateTime triggerCheckedAt;
+    public LocalDateTime outcomeCheckedAt;
+    public String triggerSourceProvider;
+    public String triggerSourceFingerprint;
+    public String outcomeSourceProvider;
+    public String outcomeSourceFingerprint;
+    public Integer retryCount;
+    public LocalDateTime nextRetryAt;
     public LocalDateTime evaluatedAt;
     public LocalDateTime createdAt;
     public LocalDateTime updatedAt;

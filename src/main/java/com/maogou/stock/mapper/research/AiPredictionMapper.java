@@ -80,6 +80,42 @@ public interface AiPredictionMapper extends BaseMapper<AiPrediction> {
             @Param("limit") int limit
     );
 
+    /**
+     * The daily lane must never be starved by an old backfill. Labels are already
+     * mature here, so their own available-at time is the authoritative due signal.
+     */
+    @Select("""
+            SELECT p.id, p.sample_id, p.horizon_trading_days AS horizonDays,
+                   p.action, p.action_bucket, p.target_direction, p.expected_return,
+                   p.probability_up, p.probability_down, p.input_fingerprint
+            FROM ai_prediction p FORCE INDEX (idx_prediction_evaluation_candidates)
+            INNER JOIN ai_sample_label l FORCE INDEX (idx_label_evaluation_candidate)
+              ON l.sample_id = p.sample_id
+             AND l.horizon_trading_days = p.horizon_trading_days
+             AND l.label_version = #{labelVersion}
+             AND l.label_status = 'MATURED'
+             AND l.is_current = 1
+             AND l.label_available_at <= #{tradeDate}
+            LEFT JOIN ai_prediction_evaluation e
+              FORCE INDEX (idx_evaluation_version_prediction)
+              ON e.prediction_id = p.id
+             AND e.sample_label_id = l.id
+             AND e.evaluation_version = #{evaluationVersion}
+            WHERE p.trade_date < #{tradeDate}
+              AND p.trade_date >= DATE_SUB(#{tradeDate}, INTERVAL #{lookbackDays} DAY)
+              AND p.horizon_trading_days IN (1, 2, 3)
+              AND e.id IS NULL
+            ORDER BY l.label_available_at ASC, p.horizon_trading_days ASC, p.trade_date DESC, p.id
+            LIMIT #{limit}
+            """)
+    List<AiPrediction> selectDueDailyUnevaluatedCandidates(
+            @Param("tradeDate") LocalDate tradeDate,
+            @Param("lookbackDays") int lookbackDays,
+            @Param("labelVersion") String labelVersion,
+            @Param("evaluationVersion") String evaluationVersion,
+            @Param("limit") int limit
+    );
+
     @Select("""
             <script>
             SELECT p.*, p.horizon_trading_days AS horizonDays FROM ai_prediction p

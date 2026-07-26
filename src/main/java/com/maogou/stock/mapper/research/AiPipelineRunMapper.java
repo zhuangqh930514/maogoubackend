@@ -60,6 +60,21 @@ public interface AiPipelineRunMapper extends BaseMapper<AiPipelineRun> {
             @Param("limit") int limit
     );
 
+    @Select("""
+            SELECT *
+            FROM ai_pipeline_run
+            WHERE status = 'FAILED_RECOVERABLE'
+              AND next_retry_at IS NOT NULL
+              AND next_retry_at <= #{now}
+              AND pipeline_type NOT IN ('GLOBAL_DAILY_RESEARCH', 'USER_DAILY_PROJECTION')
+            ORDER BY next_retry_at, id
+            LIMIT #{limit}
+            """)
+    List<AiPipelineRun> selectRecoverableRunsRequiringManualRestart(
+            @Param("now") LocalDateTime now,
+            @Param("limit") int limit
+    );
+
     @Insert("""
             INSERT INTO ai_pipeline_run (
                 scope_type, owner_user_id, parent_run_id, data_batch_id, strategy_release_id,
@@ -163,6 +178,23 @@ public interface AiPipelineRunMapper extends BaseMapper<AiPipelineRun> {
     int recoverStaleRunning(
             @Param("id") Long id,
             @Param("staleBefore") LocalDateTime staleBefore,
+            @Param("now") LocalDateTime now,
+            @Param("message") String message,
+            @Param("detail") String detail
+    );
+
+    @Update("""
+            UPDATE ai_pipeline_run
+            SET status = 'FAILED_FINAL', execution_owner = NULL, lease_until = NULL,
+                next_retry_at = NULL, current_step = 'RECOVERY_MANUAL_REQUIRED',
+                error_message = #{message}, error_detail = #{detail},
+                finished_at = #{now}, updated_at = #{now}
+            WHERE id = #{id}
+              AND status = 'FAILED_RECOVERABLE'
+              AND pipeline_type NOT IN ('GLOBAL_DAILY_RESEARCH', 'USER_DAILY_PROJECTION')
+            """)
+    int finalizeRecoverableRunRequiringManualRestart(
+            @Param("id") Long id,
             @Param("now") LocalDateTime now,
             @Param("message") String message,
             @Param("detail") String detail

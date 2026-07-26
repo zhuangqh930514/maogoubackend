@@ -22,6 +22,24 @@ public interface AiLabelVerificationCoordinator {
             int candidateLimit
     );
 
+    /** Processes only recently due T+1/T+2/T+3 predictions for the daily SLA. */
+    default VerificationResult evaluateDueDailyPredictions(
+            LocalDate tradeDate,
+            LocalDateTime evaluatedAt,
+            int candidateLimit
+    ) {
+        return evaluatePredictions(tradeDate, evaluatedAt, candidateLimit);
+    }
+
+    /** Historical work is intentionally separate from the daily due lane. */
+    default VerificationResult evaluateHistoricalBacklog(
+            LocalDate tradeDate,
+            LocalDateTime evaluatedAt,
+            int candidateLimit
+    ) {
+        return evaluatePredictions(tradeDate, evaluatedAt, candidateLimit);
+    }
+
     record VerificationResult(
             int processedCount,
             int successCount,

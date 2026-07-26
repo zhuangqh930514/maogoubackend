@@ -3,12 +3,14 @@ package com.maogou.stock.service.impl.research;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.maogou.stock.config.AppProperties;
 import com.maogou.stock.domain.entity.research.AiModelVersion;
 import com.maogou.stock.domain.entity.research.AiStrategyRelease;
 import com.maogou.stock.domain.entity.research.AiTrainingDataset;
 import com.maogou.stock.domain.entity.research.AiTrainingSourceSummary;
 import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
+import com.maogou.stock.mapper.research.AiFactorPerformanceMapper;
 import com.maogou.stock.mapper.research.AiTrainingDatasetItemMapper;
 import com.maogou.stock.service.research.AiResearchCycleResult;
 import com.maogou.stock.service.research.AiResearchContract;
@@ -19,6 +21,7 @@ import com.maogou.stock.service.research.AiTrainingReadinessService;
 import com.maogou.stock.service.research.ExternalIoTransactionGuard;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -53,6 +56,7 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
     private final AiModelTrainer modelTrainer;
     private final AiStrategyReleaseMapper strategyReleaseMapper;
     private final ObjectMapper objectMapper;
+    private final AiFactorPerformanceMapper factorPerformanceMapper;
 
     public AiMonthlyTrainingServiceImpl(
             AppProperties properties,
@@ -63,6 +67,21 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
             AiStrategyReleaseMapper strategyReleaseMapper,
             ObjectMapper objectMapper
     ) {
+        this(properties, datasetItemMapper, readinessService, datasetService, modelTrainer,
+                strategyReleaseMapper, objectMapper, null);
+    }
+
+    @Autowired
+    public AiMonthlyTrainingServiceImpl(
+            AppProperties properties,
+            AiTrainingDatasetItemMapper datasetItemMapper,
+            AiTrainingReadinessService readinessService,
+            AiTrainingDatasetService datasetService,
+            AiModelTrainer modelTrainer,
+            AiStrategyReleaseMapper strategyReleaseMapper,
+            ObjectMapper objectMapper,
+            AiFactorPerformanceMapper factorPerformanceMapper
+    ) {
         this.properties = properties;
         this.datasetItemMapper = datasetItemMapper;
         this.readinessService = readinessService;
@@ -70,6 +89,7 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
         this.modelTrainer = modelTrainer;
         this.strategyReleaseMapper = strategyReleaseMapper;
         this.objectMapper = objectMapper;
+        this.factorPerformanceMapper = factorPerformanceMapper;
     }
 
     @Override
@@ -151,7 +171,7 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
                     "模型已注册为 CANDIDATE，样本外质量门未通过，不创建 Challenger");
         }
         AiStrategyRelease challenger = createOrGetChallenger(
-                champion.researchUniverseId, model, metrics.toString(), triggeredAt);
+                champion.researchUniverseId, model, metrics.toString(), factorSnapshot(triggeredAt), triggeredAt);
         return new AiResearchCycleResult(
                 "SUCCESS", dataset.rowCount, 1, 0,
                 "已生成 VALIDATED 模型和 SHADOW Challenger #" + challenger.id);
@@ -274,6 +294,7 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
             Long researchUniverseId,
             AiModelVersion model,
             String metricsJson,
+            String factorSnapshotJson,
             LocalDateTime now
     ) {
         AiStrategyRelease existing = strategyReleaseMapper.selectOne(new QueryWrapper<AiStrategyRelease>()
@@ -303,9 +324,7 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
         challenger.status = "SHADOW";
         challenger.releaseRole = "CHALLENGER";
         challenger.configJson = "{\"engine\":\"ONNX\",\"policyVersion\":\"DECISION_V2.1\"}";
-        challenger.factorSnapshotJson = "{\"factorVersion\":\""
-                + AiResearchContract.FACTOR_VERSION + "\",\"featureVersion\":\""
-                + model.featureVersion + "\"}";
+        challenger.factorSnapshotJson = factorSnapshotJson;
         challenger.validationMetricsJson = metricsJson;
         challenger.promotionReason = "月度训练质量门通过，进入影子验证，禁止自动晋级";
         challenger.shadowStartedAt = now;
@@ -324,6 +343,60 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
                 return concurrent;
             }
             throw exception;
+        }
+    }
+
+    /**
+     * Candidate-only weight snapshot. It is frozen with the Challenger so later
+     * factor reruns cannot rewrite historical Shadow evidence.
+     */
+    private String factorSnapshot(LocalDateTime asOf) {
+        if (factorPerformanceMapper == null) {
+            return writeJson(java.util.Map.of(
+                    "factorVersion", AiResearchContract.FACTOR_VERSION,
+                    "asOf", asOf,
+                    "status", "NO_FACTOR_SNAPSHOT_AVAILABLE"));
+        }
+        List<com.maogou.stock.domain.entity.research.AiFactorPerformance> rows =
+                factorPerformanceMapper.selectEligibleCandidateSnapshot(
+                        AiResearchContract.FACTOR_VERSION, asOf.toLocalDate());
+        java.util.Map<String, java.util.List<java.util.Map<String, Object>>> byHorizon = new java.util.LinkedHashMap<>();
+        for (var row : rows == null ? List.<com.maogou.stock.domain.entity.research.AiFactorPerformance>of() : rows) {
+            if (row == null || row.factorCode == null || row.horizonDays == null) {
+                continue;
+            }
+            String key = "T" + row.horizonDays;
+            java.util.List<java.util.Map<String, Object>> values = byHorizon.computeIfAbsent(key,
+                    ignored -> new java.util.ArrayList<>());
+            if (values.stream().anyMatch(value -> row.factorCode.equals(value.get("factorCode")))) {
+                continue;
+            }
+            java.math.BigDecimal reliability = row.wilsonLowerBound == null ? java.math.BigDecimal.ZERO
+                    : row.wilsonLowerBound.max(java.math.BigDecimal.ZERO).min(java.math.BigDecimal.ONE);
+            java.math.BigDecimal rankIc = row.rankIc == null ? java.math.BigDecimal.ZERO : row.rankIc.abs();
+            values.add(java.util.Map.of(
+                    "factorCode", row.factorCode,
+                    "factorPerformanceId", row.id,
+                    "candidateWeight", reliability.multiply(java.math.BigDecimal.ONE.add(rankIc))
+                            .setScale(6, java.math.RoundingMode.HALF_UP),
+                    "sampleCount", row.sampleCount == null ? 0 : row.sampleCount,
+                    "wilsonLowerBound", reliability,
+                    "rankIc", row.rankIc == null ? java.math.BigDecimal.ZERO : row.rankIc,
+                    "marketRegime", row.marketRegime == null ? "UNKNOWN" : row.marketRegime,
+                    "windowEndDate", row.windowEndDate == null ? "" : row.windowEndDate.toString()));
+        }
+        return writeJson(java.util.Map.of(
+                "factorVersion", AiResearchContract.FACTOR_VERSION,
+                "asOf", asOf,
+                "status", byHorizon.isEmpty() ? "INSUFFICIENT_EVIDENCE" : "CANDIDATE_ONLY",
+                "horizons", byHorizon));
+    }
+
+    private String writeJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("候选因子快照序列化失败", exception);
         }
     }
 

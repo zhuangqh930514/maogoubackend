@@ -32,6 +32,14 @@ public class AiDailyDecisionPlan {
     public String sourceProvider;
     public LocalDateTime sourceAsOf;
     public String unavailableReason;
+    public LocalDateTime triggerCheckedAt;
+    public LocalDateTime outcomeCheckedAt;
+    public String triggerSourceProvider;
+    public String triggerSourceFingerprint;
+    public String outcomeSourceProvider;
+    public String outcomeSourceFingerprint;
+    public Integer retryCount;
+    public LocalDateTime nextRetryAt;
     public LocalDateTime createdAt;
     public LocalDateTime updatedAt;
 }

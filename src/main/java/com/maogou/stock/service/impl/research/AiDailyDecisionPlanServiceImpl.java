@@ -247,9 +247,10 @@ public class AiDailyDecisionPlanServiceImpl implements AiDailyDecisionPlanServic
             return new PlanReviewRunResult(0, 0, 0, 0, 0, List.of());
         }
         List<AiDailyDecisionPlan> plans = planMapper.selectList(new QueryWrapper<AiDailyDecisionPlan>()
-                .eq("user_id", userId).eq("status", "PENDING")
-                .isNotNull("outcome_trade_date").le("outcome_trade_date", asOfDate)
-                .orderByAsc("outcome_trade_date", "id").last("LIMIT " + REVIEW_LIMIT));
+                .eq("user_id", userId)
+                .in("status", List.of("PENDING", "PENDING_TRIGGER", "TRIGGERED_WAIT_OUTCOME", "FAILED_RETRYABLE"))
+                .isNotNull("target_trade_date").le("target_trade_date", asOfDate)
+                .orderByAsc("target_trade_date", "id").last("LIMIT " + REVIEW_LIMIT));
         if (plans == null || plans.isEmpty()) {
             return new PlanReviewRunResult(0, 0, 0, 0, 0, List.of());
         }
@@ -270,6 +271,11 @@ public class AiDailyDecisionPlanServiceImpl implements AiDailyDecisionPlanServic
                 pending += outcome.pending;
             } catch (RuntimeException exception) {
                 failed++;
+                plan.status = "FAILED_RETRYABLE";
+                plan.retryCount = (plan.retryCount == null ? 0 : plan.retryCount) + 1;
+                plan.nextRetryAt = LocalDateTime.now().plusMinutes(Math.min(60, 5 * plan.retryCount));
+                plan.updatedAt = LocalDateTime.now();
+                planMapper.updateById(plan);
                 errors.add(error("VERIFY_DAILY_DECISION_PLAN", plan.stockCode,
                         "正式日K/条件规则快照", rootMessage(exception), "下一次自动流水线继续验证"));
             }
@@ -288,7 +294,8 @@ public class AiDailyDecisionPlanServiceImpl implements AiDailyDecisionPlanServic
     private void refreshCandidateFeedback(Long userId) {
         List<AiDailyDecisionPlanReview> reviews = reviewMapper.selectList(
                         new QueryWrapper<AiDailyDecisionPlanReview>().eq("user_id", userId)
-                                .eq("status", "VERIFIED").isNotNull("action_effective")
+                                .in("status", List.of("VERIFIED", "VERIFIED_EFFECTIVE", "VERIFIED_INEFFECTIVE"))
+                                .isNotNull("action_effective")
                                 .orderByAsc("evaluated_at"));
         if (reviews == null || reviews.isEmpty()) {
             return;
@@ -425,7 +432,8 @@ public class AiDailyDecisionPlanServiceImpl implements AiDailyDecisionPlanServic
     ) {
         AiDailyDecisionPlanReview existing = reviewMapper.selectOne(new QueryWrapper<AiDailyDecisionPlanReview>()
                 .eq("user_id", plan.userId).eq("decision_plan_id", plan.id).last("LIMIT 1"));
-        if (existing != null && List.of("VERIFIED", "NO_ACTION").contains(existing.status)) {
+        if (existing != null && List.of("VERIFIED", "VERIFIED_EFFECTIVE", "VERIFIED_INEFFECTIVE",
+                "NO_ACTION", "NO_TRIGGER", "DATA_UNAVAILABLE", "FAILED_FINAL").contains(existing.status)) {
             return ReviewOutcome.empty();
         }
         AiDailyDecisionPlanPayload original = readPlan(plan.planJson);
@@ -438,11 +446,10 @@ public class AiDailyDecisionPlanServiceImpl implements AiDailyDecisionPlanServic
         int entry = indexOnOrBefore(klines, plan.tradeDate);
         int triggerIndex = entry < 0 ? -1 : entry + plan.horizonDays;
         int outcomeIndex = triggerIndex + 1;
-        if (entry < 0 || outcomeIndex >= klines.size()) {
+        if (entry < 0 || triggerIndex >= klines.size()) {
             return new ReviewOutcome(0, 0, 0, 1);
         }
         KlinePointResponse trigger = klines.get(triggerIndex);
-        KlinePointResponse outcome = klines.get(outcomeIndex);
         AiConditionalStrategyPayload evaluated = evaluateAt(original, klines.subList(0, triggerIndex + 1), trigger,
                 triggerIndex == 0 ? null : klines.get(triggerIndex - 1));
         AiConditionalStrategyPayload.HorizonPlan horizon = evaluated.tradingPlans().stream()
@@ -451,13 +458,13 @@ public class AiDailyDecisionPlanServiceImpl implements AiDailyDecisionPlanServic
                 .filter(AiConditionalStrategyPayload.ConditionalRule::matched).findFirst().orElse(null);
         AiDailyDecisionPlanReview review = existing == null ? newReview(plan) : existing;
         review.triggerTradeDate = trigger.tradeDate();
-        review.outcomeTradeDate = outcome.tradeDate();
         review.triggerPrice = trigger.close();
-        review.outcomePrice = outcome.close();
-        review.evaluatedAt = LocalDateTime.now();
-        review.updatedAt = review.evaluatedAt;
+        review.triggerCheckedAt = LocalDateTime.now();
+        review.triggerSourceProvider = series.source();
+        review.triggerSourceFingerprint = series.sourceFingerprint();
+        review.updatedAt = review.triggerCheckedAt;
         if (triggered == null || !actionable(plan.officialAction)) {
-            review.status = "NO_ACTION";
+            review.status = triggered == null ? "NO_TRIGGER" : "NO_ACTION";
             review.triggeredRuleCode = triggered == null ? null : triggered.ruleCode();
             review.triggeredState = triggered == null ? "NO_COMPLETE_RULE_MATCH" : triggered.state();
             review.suggestedAction = plan.officialAction;
@@ -469,21 +476,46 @@ public class AiDailyDecisionPlanServiceImpl implements AiDailyDecisionPlanServic
                     "stockKlineSource", series.source(),
                     "stockKlineFingerprint", series.sourceFingerprint(),
                     "triggerDate", trigger.tradeDate(),
-                    "outcomeDate", outcome.tradeDate(),
                     "officialAction", plan.officialAction,
                     "triggeredRule", triggered == null ? "NO_COMPLETE_RULE_MATCH" : triggered.ruleCode()));
             saveReview(review);
-            plan.status = "NO_ACTION";
+            plan.status = triggered == null ? "NO_TRIGGER" : "NO_ACTION";
+            plan.triggerCheckedAt = review.triggerCheckedAt;
+            plan.triggerSourceProvider = series.source();
+            plan.triggerSourceFingerprint = series.sourceFingerprint();
             plan.updatedAt = review.updatedAt;
             planMapper.updateById(plan);
             return new ReviewOutcome(1, 0, 1, 0);
         }
+        review.triggeredRuleCode = triggered.ruleCode();
+        review.triggeredState = triggered.state();
+        review.suggestedAction = plan.officialAction;
+        plan.triggerCheckedAt = review.triggerCheckedAt;
+        plan.triggerSourceProvider = series.source();
+        plan.triggerSourceFingerprint = series.sourceFingerprint();
+        if (outcomeIndex >= klines.size()) {
+            review.status = "TRIGGERED_WAIT_OUTCOME";
+            review.feedbackSummary = "T+" + plan.horizonDays + " 条件已触发，等待下一交易日验证动作效果";
+            saveReview(review);
+            plan.status = "TRIGGERED_WAIT_OUTCOME";
+            plan.updatedAt = review.updatedAt;
+            planMapper.updateById(plan);
+            return new ReviewOutcome(1, 0, 0, 1);
+        }
+        KlinePointResponse outcome = klines.get(outcomeIndex);
+        review.outcomeTradeDate = outcome.tradeDate();
+        review.outcomePrice = outcome.close();
+        review.outcomeCheckedAt = LocalDateTime.now();
+        review.outcomeSourceProvider = series.source();
+        review.outcomeSourceFingerprint = series.sourceFingerprint();
+        review.evaluatedAt = review.outcomeCheckedAt;
+        review.updatedAt = review.outcomeCheckedAt;
         ActionMetrics metrics = metrics(trigger, outcome, plan.officialAction, transactionCost(original));
         BigDecimal benchmarkReturn = benchmarkReturn(benchmark, trigger.tradeDate(), outcome.tradeDate(), plan.officialAction);
         BigDecimal excess = benchmarkReturn == null ? null
                 : metrics.netActionReturn.subtract(benchmarkReturn).setScale(4, RoundingMode.HALF_UP);
         boolean effective = metrics.netActionReturn.compareTo(BigDecimal.ZERO) > 0;
-        review.status = "VERIFIED";
+        review.status = effective ? "VERIFIED_EFFECTIVE" : "VERIFIED_INEFFECTIVE";
         review.triggeredRuleCode = triggered.ruleCode();
         review.triggeredState = triggered.state();
         review.suggestedAction = plan.officialAction;
@@ -517,7 +549,10 @@ public class AiDailyDecisionPlanServiceImpl implements AiDailyDecisionPlanServic
                 + actionLabel(plan.officialAction) + "；策略净收益 " + signed(metrics.netActionReturn)
                 + (excess == null ? "；基准不可用，未计算相对收益" : "；相对基准 " + signed(excess));
         saveReview(review);
-        plan.status = "VERIFIED";
+        plan.status = review.status;
+        plan.outcomeCheckedAt = review.outcomeCheckedAt;
+        plan.outcomeSourceProvider = series.source();
+        plan.outcomeSourceFingerprint = series.sourceFingerprint();
         plan.updatedAt = review.updatedAt;
         planMapper.updateById(plan);
         return new ReviewOutcome(1, 1, 0, 0);
@@ -543,6 +578,47 @@ public class AiDailyDecisionPlanServiceImpl implements AiDailyDecisionPlanServic
                         (left, right) -> right, LinkedHashMap::new));
         return plans.stream().collect(Collectors.groupingBy(item -> item.decisionItemId,
                 LinkedHashMap::new, Collectors.mapping(item -> toView(item, reviews.get(item.id)), Collectors.toList())));
+    }
+
+    @Override
+    public List<PriorReviewSummary> priorReviewSummaries(Long userId, LocalDate targetTradeDate) {
+        if (userId == null || userId <= 0 || targetTradeDate == null) {
+            return List.of();
+        }
+        List<AiDailyDecisionPlan> plans = planMapper.selectList(new QueryWrapper<AiDailyDecisionPlan>()
+                .eq("user_id", userId).eq("target_trade_date", targetTradeDate)
+                .in("horizon_days", List.of(1, 2, 3)));
+        if (plans == null || plans.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, AiDailyDecisionPlanReview> reviews = reviewMapper.selectList(
+                        new QueryWrapper<AiDailyDecisionPlanReview>().eq("user_id", userId)
+                                .in("decision_plan_id", plans.stream().map(item -> item.id).toList()))
+                .stream().collect(Collectors.toMap(item -> item.decisionPlanId, item -> item,
+                        (left, right) -> right, LinkedHashMap::new));
+        return plans.stream().collect(Collectors.groupingBy(item -> item.horizonDays,
+                LinkedHashMap::new, Collectors.collectingAndThen(Collectors.toList(), values -> {
+                    int triggerChecked = (int) values.stream().filter(item -> item.triggerCheckedAt != null
+                            || List.of("NO_TRIGGER", "NO_ACTION", "TRIGGERED_WAIT_OUTCOME", "VERIFIED_EFFECTIVE",
+                            "VERIFIED_INEFFECTIVE", "VERIFIED").contains(item.status)).count();
+                    int effective = (int) values.stream().filter(item -> {
+                        AiDailyDecisionPlanReview review = reviews.get(item.id);
+                        return review != null && ("VERIFIED_EFFECTIVE".equals(review.status)
+                                || ("VERIFIED".equals(review.status) && Integer.valueOf(1).equals(review.actionEffective)));
+                    }).count();
+                    int ineffective = (int) values.stream().filter(item -> {
+                        AiDailyDecisionPlanReview review = reviews.get(item.id);
+                        return review != null && ("VERIFIED_INEFFECTIVE".equals(review.status)
+                                || ("VERIFIED".equals(review.status) && Integer.valueOf(0).equals(review.actionEffective)));
+                    }).count();
+                    int noTrigger = (int) values.stream().filter(item -> "NO_TRIGGER".equals(item.status)).count();
+                    int unavailable = (int) values.stream().filter(item -> "UNAVAILABLE".equals(item.status)
+                            || "DATA_UNAVAILABLE".equals(item.status)).count();
+                    int retryable = (int) values.stream().filter(item -> "FAILED_RETRYABLE".equals(item.status)
+                            || "PENDING_TRIGGER".equals(item.status) || "TRIGGERED_WAIT_OUTCOME".equals(item.status)).count();
+                    return new PriorReviewSummary(values.get(0).horizonDays, values.size(), triggerChecked, effective,
+                            ineffective, noTrigger, unavailable, retryable);
+                }))).values().stream().sorted(java.util.Comparator.comparing(PriorReviewSummary::horizonDays)).toList();
     }
 
     private AiResearchDailyReportPayloads.DecisionPlan toView(

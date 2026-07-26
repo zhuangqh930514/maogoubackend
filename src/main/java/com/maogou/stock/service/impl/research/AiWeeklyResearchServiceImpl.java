@@ -53,6 +53,8 @@ import java.util.stream.Collectors;
 @Service
 public class AiWeeklyResearchServiceImpl implements AiWeeklyEvolutionRunner {
 
+    private static final List<Integer> CORE_HORIZONS = List.of(1, 2, 3);
+    // Model Shadow and portfolio governance keep one stable primary horizon.
     private static final int HORIZON_DAYS = 3;
     private static final long RANDOM_SEED = 930514L;
 
@@ -174,7 +176,8 @@ public class AiWeeklyResearchServiceImpl implements AiWeeklyEvolutionRunner {
         int performanceCount = 0;
         List<String> errors = new ArrayList<>();
         for (String regime : regimes) {
-            for (AiFactorDefinition definition : definitions) {
+            for (Integer horizonDays : CORE_HORIZONS) {
+                for (AiFactorDefinition definition : definitions) {
                 if (definition == null || definition.id == null) {
                     continue;
                 }
@@ -182,11 +185,11 @@ public class AiWeeklyResearchServiceImpl implements AiWeeklyEvolutionRunner {
                 try {
                     sources = factorMapper.selectPerformanceSources(
                             definition.id, AiResearchContract.FACTOR_VERSION,
-                            AiResearchContract.LABEL_VERSION, HORIZON_DAYS, regime,
+                            AiResearchContract.LABEL_VERSION, horizonDays, regime,
                             baselineStart, windowEnd, now);
                 } catch (RuntimeException exception) {
                     processed++;
-                    errors.add(factorFailure(definition, regime, exception));
+                    errors.add(factorFailure(definition, regime, horizonDays, exception));
                     continue;
                 }
                 if (sources == null || sources.isEmpty()) {
@@ -212,7 +215,7 @@ public class AiWeeklyResearchServiceImpl implements AiWeeklyEvolutionRunner {
                 try {
                     AiFactorPerformanceService.EvaluationResult result = factorPerformanceService.evaluateAndStore(
                             new AiFactorPerformanceService.PerformanceBatch(
-                                    AiResearchContract.FACTOR_VERSION, HORIZON_DAYS,
+                                    AiResearchContract.FACTOR_VERSION, horizonDays,
                                     regime, "ROLLING_60D", windowStart, windowEnd,
                                     current, baseline, "FACTOR_DRIFT_V2_1",
                                     new AiFactorPerformanceService.DriftThresholds(
@@ -224,8 +227,9 @@ public class AiWeeklyResearchServiceImpl implements AiWeeklyEvolutionRunner {
                         performanceCount += result.performances().size();
                     }
                 } catch (RuntimeException exception) {
-                    errors.add(factorFailure(definition, regime, exception));
+                    errors.add(factorFailure(definition, regime, horizonDays, exception));
                 }
+            }
             }
         }
         return new FactorEvaluationSummary(processed, success, performanceCount, List.copyOf(errors));
@@ -234,10 +238,11 @@ public class AiWeeklyResearchServiceImpl implements AiWeeklyEvolutionRunner {
     private static String factorFailure(
             AiFactorDefinition definition,
             String regime,
+            Integer horizonDays,
             RuntimeException exception
     ) {
         String factorCode = definition.factorCode == null ? "#" + definition.id : definition.factorCode;
-        return "因子 " + factorCode + " / " + regime + "：" + rootMessage(exception);
+        return "因子 " + factorCode + " / T+" + horizonDays + " / " + regime + "：" + rootMessage(exception);
     }
 
     private static AiFactorPerformanceService.Observation observation(

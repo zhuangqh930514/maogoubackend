@@ -213,6 +213,54 @@ class AutoClosePipelineServiceImplTest {
     }
 
     @Test
+    void recoveryTerminalizesInterruptedHistoricalBootstrapInsteadOfLeavingItRecoverableForever() {
+        Fixture fixture = fixture();
+        AiPipelineRun stale = new AiPipelineRun();
+        stale.id = 74L;
+        stale.scopeType = "GLOBAL";
+        stale.pipelineType = "GLOBAL_HISTORICAL_BOOTSTRAP";
+        stale.tradeDate = LocalDate.of(2026, 7, 17);
+        stale.currentStep = "MATURE_HISTORICAL_SAMPLE_LABELS";
+        stale.errorMessage = "历史训练运行中断";
+        stale.updatedAt = LocalDateTime.now().minusHours(2);
+
+        when(fixture.pipelineRunMapper.selectStaleRunning(any(), any(), anyInt())).thenReturn(List.of(stale));
+        when(fixture.pipelineRunMapper.recoverStaleRunning(any(), any(), any(), any(), any()))
+                .thenReturn(1);
+        when(fixture.pipelineRunMapper.selectDueGlobalDailyRuns(any(), anyInt())).thenReturn(List.of());
+
+        fixture.service.retryWaitingPipelines();
+
+        verify(fixture.pipelineRunMapper).finalizeRecoverableRunRequiringManualRestart(
+                eq(74L), any(), org.mockito.ArgumentMatchers.contains("无法安全自动重放"),
+                org.mockito.ArgumentMatchers.contains("MATURE_HISTORICAL_SAMPLE_LABELS"));
+        verify(fixture.dailyResearchService, never()).run(any());
+        verify(fixture.operationsService, never()).runUserProjection(any(), any());
+    }
+
+    @Test
+    void recoveryTerminalizesPreviouslyRecoveredNonReplayableRuns() {
+        Fixture fixture = fixture();
+        AiPipelineRun recovered = new AiPipelineRun();
+        recovered.id = 75L;
+        recovered.scopeType = "GLOBAL";
+        recovered.pipelineType = "GLOBAL_MONTHLY_TRAINING";
+        recovered.currentStep = "RUN_TRAINING";
+        recovered.errorMessage = "模型训练超时";
+
+        when(fixture.pipelineRunMapper.selectStaleRunning(any(), any(), anyInt())).thenReturn(List.of());
+        when(fixture.pipelineRunMapper.selectRecoverableRunsRequiringManualRestart(any(), anyInt()))
+                .thenReturn(List.of(recovered));
+        when(fixture.pipelineRunMapper.selectDueGlobalDailyRuns(any(), anyInt())).thenReturn(List.of());
+
+        fixture.service.retryWaitingPipelines();
+
+        verify(fixture.pipelineRunMapper).finalizeRecoverableRunRequiringManualRestart(
+                eq(75L), any(), org.mockito.ArgumentMatchers.contains("无法安全自动重放"),
+                org.mockito.ArgumentMatchers.contains("模型训练超时"));
+    }
+
+    @Test
     void dueUserReportRetryIsSubmittedAgainstTheOriginalCompletedGlobalRun() {
         Fixture fixture = fixture();
         AiPipelineRun retry = new AiPipelineRun();

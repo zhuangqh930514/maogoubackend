@@ -99,10 +99,13 @@ class AiWeeklyResearchServiceImplTest {
         assertThat(result.status()).isEqualTo("SUCCESS");
         ArgumentCaptor<AiFactorPerformanceService.PerformanceBatch> batch =
                 ArgumentCaptor.forClass(AiFactorPerformanceService.PerformanceBatch.class);
-        verify(fixture.factorPerformanceService).evaluateAndStore(batch.capture());
-        assertThat(batch.getValue().observations()).hasSize(20_020);
-        assertThat(batch.getValue().baselineObservations()).hasSize(19_980);
-        assertThat(batch.getValue().observations()).allMatch(
+        verify(fixture.factorPerformanceService, times(3)).evaluateAndStore(batch.capture());
+        assertThat(batch.getAllValues()).allSatisfy(value -> {
+            assertThat(value.horizonDays()).isIn(1, 2, 3);
+            assertThat(value.observations()).hasSize(20_020);
+            assertThat(value.baselineObservations()).hasSize(19_980);
+        });
+        assertThat(batch.getAllValues().get(0).observations()).allMatch(
                 item -> item.sample().featureSnapshot == null
                         && item.factor().evidenceJson == null
                         && item.label().policySnapshotJson == null
@@ -143,9 +146,9 @@ class AiWeeklyResearchServiceImplTest {
 
         assertThat(result.status()).isEqualTo("PARTIAL_SUCCESS");
         assertThat(result.message()).contains("MOMENTUM_RETURN_5D", "first factor failed");
-        assertThat(result.successCount()).isEqualTo(1);
+        assertThat(result.successCount()).isEqualTo(5);
         assertThat(result.failedCount()).isEqualTo(1);
-        verify(fixture.factorPerformanceService, times(2)).evaluateAndStore(any());
+        verify(fixture.factorPerformanceService, times(6)).evaluateAndStore(any());
     }
 
     @Test
@@ -334,12 +337,14 @@ class AiWeeklyResearchServiceImplTest {
         assertThat(result.status()).isEqualTo("SUCCESS");
         ArgumentCaptor<AiFactorPerformanceService.PerformanceBatch> factorBatch =
                 ArgumentCaptor.forClass(AiFactorPerformanceService.PerformanceBatch.class);
-        verify(fixture.factorPerformanceService).evaluateAndStore(factorBatch.capture());
-        assertThat(factorBatch.getValue().factorVersion()).isEqualTo(AiResearchContract.FACTOR_VERSION);
-        assertThat(factorBatch.getValue().horizonDays()).isEqualTo(3);
-        assertThat(factorBatch.getValue().observations()).hasSize(35);
-        assertThat(factorBatch.getValue().baselineObservations()).isEmpty();
-        assertThat(factorBatch.getValue().windowEndDate()).isEqualTo(LocalDate.of(2026, 6, 4));
+        verify(fixture.factorPerformanceService, times(3)).evaluateAndStore(factorBatch.capture());
+        assertThat(factorBatch.getAllValues()).allSatisfy(value -> {
+            assertThat(value.factorVersion()).isEqualTo(AiResearchContract.FACTOR_VERSION);
+            assertThat(value.horizonDays()).isIn(1, 2, 3);
+            assertThat(value.observations()).hasSize(35);
+            assertThat(value.baselineObservations()).isEmpty();
+            assertThat(value.windowEndDate()).isEqualTo(LocalDate.of(2026, 6, 4));
+        });
         ArgumentCaptor<AiWalkForwardService.WalkForwardRequest> walkRequest =
                 ArgumentCaptor.forClass(AiWalkForwardService.WalkForwardRequest.class);
         verify(fixture.walkForwardService).runAndStore(walkRequest.capture());

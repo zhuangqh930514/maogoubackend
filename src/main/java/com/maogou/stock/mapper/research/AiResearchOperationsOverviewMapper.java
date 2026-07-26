@@ -97,6 +97,13 @@ public interface AiResearchOperationsOverviewMapper {
             FROM user_account u
             WHERE u.status = 'ACTIVE'
               AND COALESCE(u.deleted, 0) = 0
+              AND EXISTS (
+                    SELECT 1
+                    FROM ai_model_config config
+                    WHERE config.user_id = u.id
+                      AND COALESCE(config.deleted, 0) = 0
+                      AND COALESCE(config.auto_close_pipeline_enabled, 0) = 1
+              )
               AND (
                     EXISTS (
                         SELECT 1 FROM watch_stock w
@@ -118,6 +125,13 @@ public interface AiResearchOperationsOverviewMapper {
             FROM user_account u
             WHERE u.status = 'ACTIVE'
               AND COALESCE(u.deleted, 0) = 0
+              AND EXISTS (
+                    SELECT 1
+                    FROM ai_model_config config
+                    WHERE config.user_id = u.id
+                      AND COALESCE(config.deleted, 0) = 0
+                      AND COALESCE(config.auto_close_pipeline_enabled, 0) = 1
+              )
               AND (
                     EXISTS (
                         SELECT 1 FROM watch_stock w
@@ -158,6 +172,13 @@ public interface AiResearchOperationsOverviewMapper {
             FROM user_account u
             WHERE u.status = 'ACTIVE'
               AND COALESCE(u.deleted, 0) = 0
+              AND EXISTS (
+                    SELECT 1
+                    FROM ai_model_config config
+                    WHERE config.user_id = u.id
+                      AND COALESCE(config.deleted, 0) = 0
+                      AND COALESCE(config.auto_close_pipeline_enabled, 0) = 1
+              )
               AND (
                     EXISTS (
                         SELECT 1 FROM watch_stock w
@@ -207,9 +228,16 @@ public interface AiResearchOperationsOverviewMapper {
                 ON report.user_id = u.id
                AND report.trade_date = day.trade_date
                AND report.is_current = 1
-               AND report.report_status = 'READY'
+               AND report.report_status IN ('READY', 'PARTIAL_READY')
             WHERE u.status = 'ACTIVE'
               AND COALESCE(u.deleted, 0) = 0
+              AND EXISTS (
+                    SELECT 1
+                    FROM ai_model_config config
+                    WHERE config.user_id = u.id
+                      AND COALESCE(config.deleted, 0) = 0
+                      AND COALESCE(config.auto_close_pipeline_enabled, 0) = 1
+              )
               AND (
                     EXISTS (
                         SELECT 1 FROM watch_stock w

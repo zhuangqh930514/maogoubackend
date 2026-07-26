@@ -102,8 +102,34 @@ public final class AiResearchDailyReportPayloads {
             List<StockCard> holdingRisks,
             List<StockCard> unavailable,
             List<FactorCard> keyFactors,
-            InsightSummary insightSummary
+            InsightSummary insightSummary,
+            List<PriorVerification> priorVerifications,
+            List<LearningChange> learningChanges
     ) {
+        public ReportContent(
+                Freshness freshness, PipelineSummary pipeline, StrategyPerformance strategyPerformance,
+                List<StockCard> recommendations, List<StockCard> watches, List<StockCard> avoids,
+                List<StockCard> holdingRisks, List<StockCard> unavailable, List<FactorCard> keyFactors,
+                InsightSummary insightSummary
+        ) {
+            this(freshness, pipeline, strategyPerformance, recommendations, watches, avoids, holdingRisks,
+                    unavailable, keyFactors, insightSummary, List.of(), List.of());
+        }
+    }
+
+    public record PriorVerification(
+            Integer horizonDays,
+            Integer dueCount,
+            Integer triggerCheckedCount,
+            Integer effectiveCount,
+            Integer ineffectiveCount,
+            Integer noTriggerCount,
+            Integer unavailableCount,
+            Integer retryableCount
+    ) {
+    }
+
+    public record LearningChange(String type, String message, String evidenceLevel) {
     }
 
     public record StockCard(

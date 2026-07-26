@@ -46,8 +46,8 @@ public class AiGlobalDailyResearchServiceImpl implements AiGlobalDailyResearchSe
             "BUILD_SAMPLES",
             "MATURE_SAMPLE_LABELS",
             "COMPUTE_FACTORS",
-            "GENERATE_PREDICTIONS",
-            "EVALUATE_PREDICTIONS"
+            "EVALUATE_DUE_DAILY_PREDICTIONS",
+            "GENERATE_PREDICTIONS"
     );
 
     private final AiPipelineRunMapper runMapper;

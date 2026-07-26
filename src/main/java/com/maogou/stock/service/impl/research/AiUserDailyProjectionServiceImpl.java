@@ -175,9 +175,11 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
                 .collect(Collectors.groupingBy(value -> value.sampleId, LinkedHashMap::new, Collectors.toList()));
         List<AiFactorPerformance> factorPerformance = sampleIds.isEmpty()
                 ? List.of() : safeList(factorPerformanceMapper.selectForSamplesBefore(sampleIds, request.tradeDate()));
-        Map<Long, AiFactorPerformance> factorPerformanceByDefinition = factorPerformance.stream()
-                .filter(performance -> performance != null && performance.factorDefinitionId != null)
-                .collect(Collectors.toMap(performance -> performance.factorDefinitionId, Function.identity(),
+        Map<FactorPerformanceKey, AiFactorPerformance> factorPerformanceByDefinition = factorPerformance.stream()
+                .filter(performance -> performance != null && performance.factorDefinitionId != null
+                        && CORE_HORIZONS.contains(performance.horizonDays))
+                .collect(Collectors.toMap(performance -> new FactorPerformanceKey(
+                                performance.factorDefinitionId, performance.horizonDays), Function.identity(),
                         AiUserDailyProjectionServiceImpl::latestPerformance, LinkedHashMap::new));
         Map<String, AiAnalysisReport> reportsByStock = loadCurrentReports(
                 request.userId(), request.tradeDate(), universe.stockCodes());
@@ -281,24 +283,29 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
             boolean holding,
             AiAnalysisReport report,
             Long strategyReleaseId,
-            Map<Long, AiFactorPerformance> factorPerformanceByDefinition
+            Map<FactorPerformanceKey, AiFactorPerformance> factorPerformanceByDefinition
     ) {
         String unavailable = availabilityReason(sample, predictions);
         AiPrediction primary = predictions.get(3);
         boolean reportAligned = alignedReport(report, sample, strategyReleaseId, request.tradeDate());
         BigDecimal reportRisk = reportAligned ? report.riskScore : null;
         BigDecimal risk = max(primary == null ? null : primary.riskScore, reportRisk);
-        StockEvaluationEvidence stockEvidence = evidence.forStock(stockCode);
-        BigDecimal factorReliability = factorReliability(factors, factorPerformanceByDefinition);
+        StockEvaluationEvidence stockEvidence = evidence.forStock(stockCode, 3);
+        BigDecimal t1FactorReliability = factorReliability(factors, factorPerformanceByDefinition, 1);
+        BigDecimal t2FactorReliability = factorReliability(factors, factorPerformanceByDefinition, 2);
+        BigDecimal t3FactorReliability = factorReliability(factors, factorPerformanceByDefinition, 3);
+        BigDecimal factorReliability = weighted(t1FactorReliability, t2FactorReliability, t3FactorReliability);
         boolean hardStop = primary != null && ("SELL".equals(primary.action)
                 || containsIgnoreCase(primary.reasonJson, "HARD_STOP"));
         AiDailyDecisionPolicy.Decision decision = decisionPolicy.decide(new AiDailyDecisionPolicy.Input(
-                signal(predictions.get(1)), signal(predictions.get(2)), signal(primary),
+                calibratedSignal(signal(predictions.get(1)), evidence.forStock(stockCode, 1), t1FactorReliability),
+                calibratedSignal(signal(predictions.get(2)), evidence.forStock(stockCode, 2), t2FactorReliability),
+                calibratedSignal(signal(primary), evidence.forStock(stockCode, 3), t3FactorReliability),
                 factorReliability, evidence.strategyValidation(),
                 sample == null || sample.dataQualityScore == null
                         ? null : sample.dataQualityScore.divide(new BigDecimal("100"), 8, RoundingMode.HALF_UP),
                 risk,
-                stockEvidence.outOfSampleCount(),
+                evidence.minimumOutOfSampleCount(stockCode),
                 hardStop,
                 primary == null ? null : primary.action,
                 holding,
@@ -514,39 +521,63 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
     }
 
     private EvaluationEvidence loadEvaluationEvidence(Long strategyReleaseId, LocalDate tradeDate) {
-        AiPredictionEvaluationMapper.StrategyEvaluationSummary summary =
-                evaluationMapper.selectDecisionEvidenceSummary(strategyReleaseId, tradeDate);
-        List<AiPredictionEvaluationMapper.StockEvaluationSummary> stockSummaries =
-                safeList(evaluationMapper.selectDecisionEvidenceByStock(strategyReleaseId, tradeDate));
-        long assessed = summary == null || summary.assessedCount == null ? 0L : summary.assessedCount;
-        long correct = summary == null || summary.correctCount == null ? 0L : summary.correctCount;
-        BigDecimal overall = assessed == 0 ? null : percentage(correct, assessed);
-        Map<String, StockEvaluationEvidence> byStock = stockSummaries.stream()
-                .filter(value -> value != null && value.stockCode != null
-                        && value.totalCount != null && value.totalCount > 0)
-                .collect(Collectors.toMap(
-                        value -> value.stockCode,
-                        value -> new StockEvaluationEvidence(
-                                Math.toIntExact(value.totalCount),
-                                percentage(value.correctCount == null ? 0L : value.correctCount,
-                                        value.totalCount),
-                                "STOCK"),
-                        (left, right) -> right,
-                        LinkedHashMap::new));
-        BigDecimal strategy = overall == null ? new BigDecimal("0.50")
-                : overall.divide(new BigDecimal("100"), 8, RoundingMode.HALF_UP);
-        return new EvaluationEvidence(Math.toIntExact(assessed), overall, byStock, strategy);
+        Map<Integer, HorizonEvaluationEvidence> byHorizon = new LinkedHashMap<>();
+        Map<Integer, AiPredictionEvaluationMapper.HorizonStrategyEvaluationSummary> summaries = safeList(
+                evaluationMapper.selectDecisionEvidenceSummaryByHorizon(strategyReleaseId, tradeDate)).stream()
+                .filter(value -> value != null && CORE_HORIZONS.contains(value.horizonDays))
+                .collect(Collectors.toMap(value -> value.horizonDays, Function.identity(), (left, right) -> right));
+        Map<Integer, List<AiPredictionEvaluationMapper.HorizonStockEvaluationSummary>> stockSummaries = safeList(
+                evaluationMapper.selectDecisionEvidenceByStockAndHorizon(strategyReleaseId, tradeDate)).stream()
+                .filter(value -> value != null && CORE_HORIZONS.contains(value.horizonDays))
+                .collect(Collectors.groupingBy(value -> value.horizonDays));
+        // Compatibility only for reports created while the horizon summaries are being backfilled.
+        // New production rows always take the independent-horizon path below.
+        if (summaries.isEmpty() && stockSummaries.isEmpty()) {
+            AiPredictionEvaluationMapper.StrategyEvaluationSummary legacy =
+                    evaluationMapper.selectDecisionEvidenceSummary(strategyReleaseId, tradeDate);
+            List<AiPredictionEvaluationMapper.StockEvaluationSummary> legacyStocks = safeList(
+                    evaluationMapper.selectDecisionEvidenceByStock(strategyReleaseId, tradeDate));
+            long assessed = legacy == null || legacy.assessedCount == null ? 0L : legacy.assessedCount;
+            long correct = legacy == null || legacy.correctCount == null ? 0L : legacy.correctCount;
+            BigDecimal overall = assessed == 0 ? null : percentage(correct, assessed);
+            Map<String, StockEvaluationEvidence> fallbackStocks = legacyStocks.stream()
+                    .filter(value -> value != null && value.stockCode != null
+                            && value.totalCount != null && value.totalCount > 0)
+                    .collect(Collectors.toMap(value -> value.stockCode, value -> new StockEvaluationEvidence(
+                            Math.toIntExact(value.totalCount), percentage(
+                            value.correctCount == null ? 0L : value.correctCount, value.totalCount), "TRANSITION_STRATEGY_FALLBACK"),
+                            (left, right) -> right, LinkedHashMap::new));
+            for (Integer horizon : CORE_HORIZONS) {
+                byHorizon.put(horizon, new HorizonEvaluationEvidence(Math.toIntExact(assessed), overall, fallbackStocks));
+            }
+            return new EvaluationEvidence(byHorizon);
+        }
+        for (Integer horizon : CORE_HORIZONS) {
+            AiPredictionEvaluationMapper.HorizonStrategyEvaluationSummary summary = summaries.get(horizon);
+            long assessed = summary == null || summary.assessedCount == null ? 0L : summary.assessedCount;
+            long correct = summary == null || summary.correctCount == null ? 0L : summary.correctCount;
+            BigDecimal overall = assessed == 0 ? null : percentage(correct, assessed);
+            Map<String, StockEvaluationEvidence> byStock = safeList(stockSummaries.get(horizon)).stream()
+                    .filter(value -> value.stockCode != null && value.totalCount != null && value.totalCount > 0)
+                    .collect(Collectors.toMap(value -> value.stockCode, value -> new StockEvaluationEvidence(
+                            Math.toIntExact(value.totalCount), percentage(
+                            value.correctCount == null ? 0L : value.correctCount, value.totalCount), "STOCK_T" + horizon),
+                            (left, right) -> right, LinkedHashMap::new));
+            byHorizon.put(horizon, new HorizonEvaluationEvidence(Math.toIntExact(assessed), overall, byStock));
+        }
+        return new EvaluationEvidence(byHorizon);
     }
 
     private static BigDecimal factorReliability(
             List<AiFactorValue> values,
-            Map<Long, AiFactorPerformance> performanceByDefinition
+            Map<FactorPerformanceKey, AiFactorPerformance> performanceByDefinition,
+            int horizonDays
     ) {
         return values.stream()
                 .filter(value -> value != null && value.factorDefinitionId != null)
                 .filter(value -> value.hit != null && value.hit == 1)
                 .filter(value -> value.missing == null || value.missing == 0)
-                .map(value -> performanceByDefinition.get(value.factorDefinitionId))
+                .map(value -> performanceByDefinition.get(new FactorPerformanceKey(value.factorDefinitionId, horizonDays)))
                 .filter(Objects::nonNull)
                 .map(item -> item.wilsonLowerBound).filter(Objects::nonNull)
                 .map(AiUserDailyProjectionServiceImpl::normalizeRate)
@@ -555,7 +586,7 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
                         .filter(value -> value != null && value.factorDefinitionId != null)
                         .filter(value -> value.hit != null && value.hit == 1)
                         .filter(value -> value.missing == null || value.missing == 0)
-                        .map(value -> performanceByDefinition.get(value.factorDefinitionId))
+                        .map(value -> performanceByDefinition.get(new FactorPerformanceKey(value.factorDefinitionId, horizonDays)))
                         .filter(Objects::nonNull)
                         .map(item -> item.wilsonLowerBound).filter(Objects::nonNull).count()),
                         8, RoundingMode.HALF_UP))
@@ -586,6 +617,27 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
         return probability.multiply(new BigDecimal("0.75"))
                 .add(returnSignal.multiply(new BigDecimal("0.25")))
                 .setScale(8, RoundingMode.HALF_UP);
+    }
+
+    /** Applies only evidence known before today's close; missing evidence stays neutral. */
+    private static BigDecimal calibratedSignal(
+            BigDecimal predictionSignal,
+            StockEvaluationEvidence evidence,
+            BigDecimal factorReliability
+    ) {
+        if (predictionSignal == null) {
+            return null;
+        }
+        BigDecimal historical = evidence == null || evidence.hitRate() == null
+                ? new BigDecimal("0.50") : normalizeRate(evidence.hitRate());
+        BigDecimal factor = factorReliability == null ? new BigDecimal("0.50") : factorReliability;
+        return predictionSignal.multiply(historical).multiply(factor).setScale(8, RoundingMode.HALF_UP);
+    }
+
+    private static BigDecimal weighted(BigDecimal t1, BigDecimal t2, BigDecimal t3) {
+        return t1.multiply(HORIZON_WEIGHTS.get(1))
+                .add(t2.multiply(HORIZON_WEIGHTS.get(2)))
+                .add(t3.multiply(HORIZON_WEIGHTS.get(3)));
     }
 
     private static String availabilityReason(AiSample sample, Map<Integer, AiPrediction> predictions) {
@@ -660,7 +712,7 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
         if (Objects.equals(report.finalAction, decision.finalAction())) {
             return evidenceDescription(evidence) + "AI 报告动作“" + report.finalAction + "”与 " + DecisionPolicyV1.VERSION + " 证据一致";
         }
-        return evidenceDescription(evidence) + "AI 报告建议“" + report.finalAction + "”，但综合分 " + decision.systemScore()
+        return evidenceDescription(evidence) + "AI 报告动作建议“" + report.finalAction + "”，但综合分 " + decision.systemScore()
                 + " 未满足正式动作门槛或触发风险约束，最终裁决为“" + decision.finalAction() + "”";
     }
 
@@ -781,22 +833,67 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
     ) {
     }
 
-    private record EvaluationEvidence(
+    private record EvaluationEvidence(Map<Integer, HorizonEvaluationEvidence> byHorizon) {
+        private HorizonEvaluationEvidence horizon(int horizonDays) {
+            return byHorizon.getOrDefault(horizonDays, HorizonEvaluationEvidence.empty());
+        }
+
+        private StockEvaluationEvidence forStock(String stockCode, int horizonDays) {
+            return horizon(horizonDays).forStock(stockCode, horizonDays);
+        }
+
+        private int minimumOutOfSampleCount(String stockCode) {
+            return CORE_HORIZONS.stream().mapToInt(horizon -> forStock(stockCode, horizon).outOfSampleCount())
+                    .min().orElse(0);
+        }
+
+        private int outOfSampleCount() {
+            return CORE_HORIZONS.stream().mapToInt(horizon -> horizon(horizon).outOfSampleCount()).sum();
+        }
+
+        private BigDecimal overallHitRate() {
+            BigDecimal weightedTotal = BigDecimal.ZERO;
+            BigDecimal weight = BigDecimal.ZERO;
+            for (Integer horizon : CORE_HORIZONS) {
+                HorizonEvaluationEvidence value = horizon(horizon);
+                if (value.overallHitRate() != null && value.outOfSampleCount() > 0) {
+                    weightedTotal = weightedTotal.add(value.overallHitRate()
+                            .multiply(HORIZON_WEIGHTS.get(horizon)));
+                    weight = weight.add(HORIZON_WEIGHTS.get(horizon));
+                }
+            }
+            return weight.signum() == 0 ? null : weightedTotal.divide(weight, 4, RoundingMode.HALF_UP);
+        }
+
+        private BigDecimal strategyValidation() {
+            BigDecimal hitRate = overallHitRate();
+            return hitRate == null ? new BigDecimal("0.50") : normalizeRate(hitRate);
+        }
+    }
+
+    private record HorizonEvaluationEvidence(
             int outOfSampleCount,
             BigDecimal overallHitRate,
-            Map<String, StockEvaluationEvidence> byStock,
-            BigDecimal strategyValidation
+            Map<String, StockEvaluationEvidence> byStock
     ) {
-        private StockEvaluationEvidence forStock(String stockCode) {
+        private static HorizonEvaluationEvidence empty() {
+            return new HorizonEvaluationEvidence(0, null, Map.of());
+        }
+
+        private StockEvaluationEvidence forStock(String stockCode, int horizonDays) {
             StockEvaluationEvidence stock = byStock.get(stockCode);
             if (stock != null) {
                 return stock;
             }
             if (outOfSampleCount > 0 && overallHitRate != null) {
-                return new StockEvaluationEvidence(outOfSampleCount, overallHitRate, "STRATEGY_FALLBACK");
+                return new StockEvaluationEvidence(outOfSampleCount, overallHitRate,
+                        "STRATEGY_T" + horizonDays + "_FALLBACK");
             }
             return StockEvaluationEvidence.empty();
         }
+    }
+
+    private record FactorPerformanceKey(Long factorDefinitionId, Integer horizonDays) {
     }
 
     private record StockEvaluationEvidence(int outOfSampleCount, BigDecimal hitRate, String scope) {

@@ -565,7 +565,30 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
                         items.size(),
                         (int) items.stream().filter(item -> "LOW_SAMPLE".equals(item.confidenceLevel)).count(),
                         snapshot.globalPipelineRunId,
-                        snapshot.marketRegime));
+                        snapshot.marketRegime),
+                priorVerifications(request.userId(), request.tradeDate()),
+                learningChanges(request.userId(), request.tradeDate()));
+    }
+
+    private List<AiResearchDailyReportPayloads.PriorVerification> priorVerifications(Long userId, LocalDate tradeDate) {
+        List<AiDailyDecisionPlanService.PriorReviewSummary> values =
+                dailyDecisionPlanService.priorReviewSummaries(userId, tradeDate);
+        if (values == null || values.isEmpty()) {
+            return List.of();
+        }
+        return values.stream().map(value -> new AiResearchDailyReportPayloads.PriorVerification(
+                value.horizonDays(), value.dueCount(), value.triggerCheckedCount(), value.effectiveCount(),
+                value.ineffectiveCount(), value.noTriggerCount(), value.unavailableCount(), value.retryableCount())).toList();
+    }
+
+    private List<AiResearchDailyReportPayloads.LearningChange> learningChanges(Long userId, LocalDate tradeDate) {
+        return priorVerifications(userId, tradeDate).stream().map(value -> {
+            String message = "T+" + value.horizonDays() + " 到期 " + value.dueCount() + " 条，已检查触发 "
+                    + value.triggerCheckedCount() + " 条；有效 " + value.effectiveCount() + "，无效 "
+                    + value.ineffectiveCount() + "，未触发 " + value.noTriggerCount();
+            String level = value.retryableCount() > 0 || value.unavailableCount() > 0 ? "DATA_LIMITED" : "CANDIDATE_EVIDENCE";
+            return new AiResearchDailyReportPayloads.LearningChange("CONDITIONAL_PLAN_REVIEW", message, level);
+        }).toList();
     }
 
     private LocalDateTime latestSampleAt(List<AiDailyDecisionItem> items) {

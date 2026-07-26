@@ -19,6 +19,8 @@ public interface AiDailyDecisionPlanService {
             List<Long> decisionItemIds
     );
 
+    List<PriorReviewSummary> priorReviewSummaries(Long userId, LocalDate targetTradeDate);
+
     record PlanBuildResult(int createdCount, int unavailableCount, int failedCount, List<String> errors) {
         public PlanBuildResult {
             errors = List.copyOf(errors);
@@ -30,5 +32,17 @@ public interface AiDailyDecisionPlanService {
         public PlanReviewRunResult {
             errors = List.copyOf(errors);
         }
+    }
+
+    record PriorReviewSummary(
+            int horizonDays,
+            int dueCount,
+            int triggerCheckedCount,
+            int effectiveCount,
+            int ineffectiveCount,
+            int noTriggerCount,
+            int unavailableCount,
+            int retryableCount
+    ) {
     }
 }
