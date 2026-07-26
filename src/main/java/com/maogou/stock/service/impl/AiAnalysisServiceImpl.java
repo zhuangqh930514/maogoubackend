@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.maogou.stock.domain.entity.AiAnalysisReport;
 import com.maogou.stock.domain.entity.AiModelConfig;
+import com.maogou.stock.domain.entity.WatchStock;
 import com.maogou.stock.domain.entity.research.AiDailyDecisionItem;
 import com.maogou.stock.domain.entity.research.AiPrediction;
 import com.maogou.stock.domain.entity.research.AiSample;
@@ -152,7 +153,9 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             wrapper.eq("stock_code", code);
         }
         wrapper.select(REPORT_SUMMARY_COLUMNS);
-        return reportMapper.selectList(wrapper).stream()
+        List<AiAnalysisReport> reports = reportMapper.selectList(wrapper);
+        hydrateReportStockNames(AuthContext.currentUserIdOrDefault(), reports);
+        return reports.stream()
                 .map(AiAnalysisReportSummaryResponse::from)
                 .toList();
     }
@@ -166,6 +169,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         if (report == null) {
             throw new IllegalArgumentException("报告不存在");
         }
+        hydrateReportStockNames(AuthContext.currentUserIdOrDefault(), List.of(report));
         return reportResponse(report);
     }
 
@@ -181,6 +185,9 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         }
         query.select(REPORT_DETAIL_COLUMNS);
         AiAnalysisReport report = reportMapper.selectOne(query);
+        if (report != null) {
+            hydrateReportStockNames(AuthContext.currentUserIdOrDefault(), List.of(report));
+        }
         return report == null ? null : reportResponse(report);
     }
 
@@ -213,7 +220,9 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
                 .orderByDesc("id")
                 .last("LIMIT " + normalizedPageSize + " OFFSET " + offset);
         query.select(REPORT_SUMMARY_COLUMNS);
-        List<AiAnalysisReportSummaryResponse> items = reportMapper.selectList(query).stream()
+        List<AiAnalysisReport> reports = reportMapper.selectList(query);
+        hydrateReportStockNames(AuthContext.currentUserIdOrDefault(), reports);
+        List<AiAnalysisReportSummaryResponse> items = reports.stream()
                 .map(AiAnalysisReportSummaryResponse::from)
                 .toList();
         return new AiAnalysisReportPageResponse(
@@ -279,6 +288,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             return List.of();
         }
         Long userId = AuthContext.currentUserIdOrDefault();
+        hydrateReportStockNames(userId, reports);
         Map<Long, List<AiConditionalStrategyPayload.ReviewResult>> reviews;
         try {
             reviews = conditionalTradeStrategyService.reviewsByReportIds(
@@ -734,8 +744,98 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         return "HIGH";
     }
 
+    private void hydrateReportStockNames(Long userId, List<AiAnalysisReport> reports) {
+        if (reports == null || reports.isEmpty()) {
+            return;
+        }
+        List<String> unresolvedCodes = reports.stream()
+                .filter(Objects::nonNull)
+                .filter(report -> !hasMeaningfulStockName(report.stockName, report.stockCode))
+                .map(report -> report.stockCode)
+                .filter(code -> code != null && !code.isBlank())
+                .distinct()
+                .toList();
+        if (unresolvedCodes.isEmpty()) {
+            return;
+        }
+
+        Map<String, String> names = new LinkedHashMap<>();
+        addKnownStockNames(names, reportMapper.selectList(new QueryWrapper<AiAnalysisReport>()
+                .select("stock_code", "stock_name")
+                .eq("user_id", userId)
+                .in("stock_code", unresolvedCodes)
+                .isNotNull("stock_name")
+                .ne("stock_name", UNKNOWN_STOCK_NAME)
+                .apply("TRIM(stock_name) <> ''")
+                .apply("stock_name <> stock_code")
+                .orderByDesc("generated_at")));
+
+        List<Long> sampleIds = reports.stream()
+                .map(report -> report == null ? null : report.sampleId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (!sampleIds.isEmpty()) {
+            addKnownSampleNames(names, sampleMapper.selectBatchIds(sampleIds));
+        }
+
+        List<String> missingAfterEvidence = unresolvedCodes.stream()
+                .filter(code -> !names.containsKey(code))
+                .toList();
+        if (!missingAfterEvidence.isEmpty()) {
+            addKnownWatchlistNames(names, watchStockMapper.selectList(new QueryWrapper<WatchStock>()
+                    .select("stock_code", "stock_name")
+                    .eq("user_id", userId)
+                    .eq("deleted", 0)
+                    .in("stock_code", missingAfterEvidence)));
+        }
+
+        for (AiAnalysisReport report : reports) {
+            if (report == null || hasMeaningfulStockName(report.stockName, report.stockCode)) {
+                continue;
+            }
+            String resolvedName = names.get(report.stockCode);
+            if (hasMeaningfulStockName(resolvedName, report.stockCode)) {
+                report.stockName = resolvedName;
+            }
+        }
+    }
+
+    private static void addKnownStockNames(Map<String, String> names, List<AiAnalysisReport> reports) {
+        if (reports == null) {
+            return;
+        }
+        for (AiAnalysisReport report : reports) {
+            if (report != null && hasMeaningfulStockName(report.stockName, report.stockCode)) {
+                names.putIfAbsent(report.stockCode, report.stockName.trim());
+            }
+        }
+    }
+
+    private static void addKnownSampleNames(Map<String, String> names, List<AiSample> samples) {
+        if (samples == null) {
+            return;
+        }
+        for (AiSample sample : samples) {
+            if (sample != null && hasMeaningfulStockName(sample.stockName, sample.stockCode)) {
+                names.putIfAbsent(sample.stockCode, sample.stockName.trim());
+            }
+        }
+    }
+
+    private static void addKnownWatchlistNames(Map<String, String> names, List<WatchStock> stocks) {
+        if (stocks == null) {
+            return;
+        }
+        for (WatchStock stock : stocks) {
+            if (stock != null && hasMeaningfulStockName(stock.stockName, stock.stockCode)) {
+                names.putIfAbsent(stock.stockCode, stock.stockName.trim());
+            }
+        }
+    }
+
     private String resolveStockName(Long userId, String stockCode, String suggestedName) {
-        if (hasMeaningfulStockName(suggestedName)) {
+        if (hasMeaningfulStockName(suggestedName, stockCode)) {
             return suggestedName.trim();
         }
         String knownFromUserReports = findKnownStockName(userId, stockCode);
@@ -744,7 +844,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         }
         if (userId != null) {
             var watchStock = watchStockMapper.selectAnyByUserIdAndCode(userId, stockCode);
-            if (watchStock != null && hasMeaningfulStockName(watchStock.stockName)) {
+            if (watchStock != null && hasMeaningfulStockName(watchStock.stockName, stockCode)) {
                 return watchStock.stockName.trim();
             }
         }
@@ -770,18 +870,22 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             wrapper.eq("user_id", userId);
         }
         AiAnalysisReport existing = reportMapper.selectOne(wrapper);
-        if (existing == null || !hasMeaningfulStockName(existing.stockName)) {
+        if (existing == null || !hasMeaningfulStockName(existing.stockName, stockCode)) {
             return null;
         }
         return existing.stockName.trim();
     }
 
-    private boolean hasMeaningfulStockName(String stockName) {
+    private static boolean hasMeaningfulStockName(String stockName, String stockCode) {
         if (stockName == null) {
             return false;
         }
         String normalized = stockName.trim();
-        return !normalized.isBlank() && !UNKNOWN_STOCK_NAME.equals(normalized);
+        return !normalized.isBlank()
+                && !UNKNOWN_STOCK_NAME.equals(normalized)
+                && stockCode != null
+                && !normalized.equalsIgnoreCase(stockCode)
+                && !normalized.matches("(?i)\\d{6}(?:\\.(?:SH|SZ|BJ))?");
     }
 
     private AnalysisAttemptResult executeAnalysisWithRetry(String prompt, AiModelConfig config) throws Exception {
