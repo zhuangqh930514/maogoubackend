@@ -16,6 +16,7 @@ import com.maogou.stock.domain.entity.research.AiDailyDecisionSnapshot;
 import com.maogou.stock.domain.entity.research.AiPipelineRun;
 import com.maogou.stock.domain.entity.research.AiPipelineStep;
 import com.maogou.stock.domain.entity.research.AiResearchDailyReport;
+import com.maogou.stock.domain.entity.research.AiSample;
 import com.maogou.stock.domain.entity.research.AiStrategyRelease;
 import com.maogou.stock.dto.ai.AiConditionalStrategyPayload;
 import com.maogou.stock.dto.ai.AiResearchDailyReportPayloads;
@@ -25,6 +26,7 @@ import com.maogou.stock.mapper.research.AiDailyDecisionSnapshotMapper;
 import com.maogou.stock.mapper.research.AiPipelineRunMapper;
 import com.maogou.stock.mapper.research.AiPipelineStepMapper;
 import com.maogou.stock.mapper.research.AiResearchDailyReportMapper;
+import com.maogou.stock.mapper.research.AiSampleMapper;
 import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
 import com.maogou.stock.mapper.WatchStockMapper;
 import com.maogou.stock.mapper.AiAnalysisReportMapper;
@@ -65,6 +67,7 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
     private final AiPipelineRunMapper pipelineRunMapper;
     private final AiPipelineStepMapper pipelineStepMapper;
     private final AiStrategyReleaseMapper strategyReleaseMapper;
+    private final AiSampleMapper sampleMapper;
     private final WatchStockMapper watchStockMapper;
     private final AiAnalysisReportMapper analysisReportMapper;
     private final TradeRecordMapper tradeRecordMapper;
@@ -81,6 +84,7 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
             AiPipelineRunMapper pipelineRunMapper,
             AiPipelineStepMapper pipelineStepMapper,
             AiStrategyReleaseMapper strategyReleaseMapper,
+            AiSampleMapper sampleMapper,
             WatchStockMapper watchStockMapper,
             AiAnalysisReportMapper analysisReportMapper,
             TradeRecordMapper tradeRecordMapper,
@@ -96,6 +100,7 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
         this.pipelineRunMapper = pipelineRunMapper;
         this.pipelineStepMapper = pipelineStepMapper;
         this.strategyReleaseMapper = strategyReleaseMapper;
+        this.sampleMapper = sampleMapper;
         this.watchStockMapper = watchStockMapper;
         this.analysisReportMapper = analysisReportMapper;
         this.tradeRecordMapper = tradeRecordMapper;
@@ -288,8 +293,18 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
         List<DailyChange> changes = new ArrayList<>();
         for (AiResearchDailyReportPayloads.StockCard item : after.values()) {
             AiResearchDailyReportPayloads.StockCard old = before.remove(item.stockCode());
+            if (isDataUnavailable(item)) {
+                if (old == null || !isDataUnavailable(old)) {
+                    changes.add(change(item, old, "DATA_UNAVAILABLE", "当日数据不可用，未形成正式结论"));
+                }
+                continue;
+            }
             if (old == null) {
                 changes.add(change(item, null, "NEW", "新增进入日报"));
+                continue;
+            }
+            if (isDataUnavailable(old)) {
+                changes.add(change(item, old, "DATA_RECOVERED", "数据已恢复，已形成正式结论"));
                 continue;
             }
             if (!Objects.equals(old.action(), item.action()) || !Objects.equals(old.actionBucket(), item.actionBucket())) {
@@ -320,6 +335,10 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
                 .sorted(Comparator.<DailyChange>comparingInt(change -> changePriority(change.changeType()))
                         .thenComparing(DailyChange::stockCode, Comparator.nullsLast(String::compareTo)))
                 .toList();
+    }
+
+    private static boolean isDataUnavailable(AiResearchDailyReportPayloads.StockCard item) {
+        return item != null && "DATA_UNAVAILABLE".equals(item.actionBucket());
     }
 
     private static List<AiResearchDailyReportPayloads.StockCard> holdingCards(
@@ -353,11 +372,12 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
         return switch (changeType == null ? "" : changeType) {
             case "HOLDING_RISK_CHANGED" -> 1;
             case "ACTION_CHANGED" -> 2;
-            case "RISK_CHANGED" -> 3;
-            case "FACTORS_CHANGED" -> 4;
-            case "FRESHNESS_CHANGED" -> 5;
-            case "NEW" -> 6;
-            case "REMOVED" -> 7;
+            case "DATA_UNAVAILABLE", "DATA_RECOVERED" -> 3;
+            case "RISK_CHANGED" -> 4;
+            case "FACTORS_CHANGED" -> 5;
+            case "FRESHNESS_CHANGED" -> 6;
+            case "NEW" -> 7;
+            case "REMOVED" -> 8;
             default -> 99;
         };
     }
@@ -525,7 +545,7 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
                 new AiResearchDailyReportPayloads.Freshness(
                         snapshot.freshnessStatus,
                         zero(snapshot.dataQualityScore),
-                        snapshot.generatedAt,
+                        latestSampleAt(items),
                         snapshot.generatedAt,
                         request.generatedAt()),
                 pipelineSummary(snapshot, request),
@@ -546,6 +566,22 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
                         (int) items.stream().filter(item -> "LOW_SAMPLE".equals(item.confidenceLevel)).count(),
                         snapshot.globalPipelineRunId,
                         snapshot.marketRegime));
+    }
+
+    private LocalDateTime latestSampleAt(List<AiDailyDecisionItem> items) {
+        List<Long> sampleIds = items.stream()
+                .map(item -> item.sampleId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (sampleIds.isEmpty()) {
+            return null;
+        }
+        return safeList(sampleMapper.selectList(new QueryWrapper<AiSample>().in("id", sampleIds))).stream()
+                .map(sample -> sample.asOfTime)
+                .filter(Objects::nonNull)
+                .max(Comparator.naturalOrder())
+                .orElse(null);
     }
 
     private Map<Long, AiDailyDecisionItemPrediction> primaryPredictions(

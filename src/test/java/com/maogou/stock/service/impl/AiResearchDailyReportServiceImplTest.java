@@ -8,6 +8,7 @@ import com.maogou.stock.domain.entity.research.AiDailyDecisionItem;
 import com.maogou.stock.domain.entity.research.AiDailyDecisionItemPrediction;
 import com.maogou.stock.domain.entity.research.AiDailyDecisionSnapshot;
 import com.maogou.stock.domain.entity.research.AiResearchDailyReport;
+import com.maogou.stock.domain.entity.research.AiSample;
 import com.maogou.stock.domain.entity.research.AiStrategyRelease;
 import com.maogou.stock.mapper.research.AiDailyDecisionItemMapper;
 import com.maogou.stock.mapper.research.AiDailyDecisionItemPredictionMapper;
@@ -15,6 +16,7 @@ import com.maogou.stock.mapper.research.AiDailyDecisionSnapshotMapper;
 import com.maogou.stock.mapper.research.AiPipelineRunMapper;
 import com.maogou.stock.mapper.research.AiPipelineStepMapper;
 import com.maogou.stock.mapper.research.AiResearchDailyReportMapper;
+import com.maogou.stock.mapper.research.AiSampleMapper;
 import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
 import com.maogou.stock.mapper.WatchStockMapper;
 import com.maogou.stock.mapper.AiAnalysisReportMapper;
@@ -85,6 +87,20 @@ class AiResearchDailyReportServiceImplTest {
         assertThat(card.historicalHitRateUpper()).isNotNull();
         assertThat(card.historicalHitRateLower()).isLessThan(card.historicalHitRate());
         assertThat(card.historicalHitRateUpper()).isGreaterThan(card.historicalHitRate());
+    }
+
+    @Test
+    void exposesTheActualFormalSampleTimeInsteadOfTheDecisionSnapshotGenerationTime() {
+        Fixture fixture = fixture();
+        AiSample sample = new AiSample();
+        sample.id = 31L;
+        sample.asOfTime = LocalDateTime.of(2026, 7, 10, 16, 0);
+        when(fixture.sampleMapper.selectList(any())).thenReturn(List.of(sample));
+
+        AiResearchDailyReportService.ReportView report = fixture.service.generate(request("REPORT:FRESHNESS"));
+
+        assertThat(report.content().freshness().latestSampleAt()).isEqualTo(sample.asOfTime);
+        assertThat(report.content().freshness().latestSampleAt()).isNotEqualTo(fixture.snapshot.generatedAt);
     }
 
     @Test
@@ -183,6 +199,26 @@ class AiResearchDailyReportServiceImplTest {
             assertThat(change.changeType()).isEqualTo("ACTION_CHANGED");
             assertThat(change.previousAction()).isEqualTo("WATCH");
             assertThat(change.currentAction()).isEqualTo("BUY");
+        });
+    }
+
+    @Test
+    void overviewLabelsAFormerWatchAsDataUnavailableInsteadOfAnotherWatch() {
+        Fixture fixture = fixture();
+        AiResearchDailyReport current = archivedReport(901L, LocalDate.of(2026, 7, 10), null, "DATA_UNAVAILABLE");
+        AiResearchDailyReport previous = archivedReport(900L, LocalDate.of(2026, 7, 9), "WATCH", "CAUTIOUS");
+        when(fixture.tradingCalendarService.latestExpectedKlineDate(any(LocalDateTime.class)))
+                .thenReturn(LocalDate.of(2026, 7, 10));
+        when(fixture.reportMapper.selectLatestCurrent(5L, LocalDate.of(2026, 7, 10))).thenReturn(current);
+        when(fixture.reportMapper.selectPreviousCurrent(5L, LocalDate.of(2026, 7, 10))).thenReturn(previous);
+        when(fixture.reportMapper.selectRecent(5L, 20)).thenReturn(List.of(current, previous));
+
+        AiResearchDailyReportService.DailyOverview overview = AuthContext.callAs(
+                5L, () -> fixture.service.overview(20));
+
+        assertThat(overview.dailyChanges()).singleElement().satisfies(change -> {
+            assertThat(change.changeType()).isEqualTo("DATA_UNAVAILABLE");
+            assertThat(change.message()).isEqualTo("当日数据不可用，未形成正式结论");
         });
     }
 
@@ -406,6 +442,7 @@ class AiResearchDailyReportServiceImplTest {
         AiPipelineRunMapper runMapper = mock(AiPipelineRunMapper.class);
         AiPipelineStepMapper stepMapper = mock(AiPipelineStepMapper.class);
         AiStrategyReleaseMapper releaseMapper = mock(AiStrategyReleaseMapper.class);
+        AiSampleMapper sampleMapper = mock(AiSampleMapper.class);
         WatchStockMapper watchStockMapper = mock(WatchStockMapper.class);
         AiAnalysisReportMapper analysisReportMapper = mock(AiAnalysisReportMapper.class);
         TradeRecordMapper tradeRecordMapper = mock(TradeRecordMapper.class);
@@ -461,10 +498,10 @@ class AiResearchDailyReportServiceImplTest {
 
         AiResearchDailyReportService service = new AiResearchDailyReportServiceImpl(
                 reportMapper, snapshotMapper, itemMapper, linkMapper, runMapper, stepMapper,
-                releaseMapper, watchStockMapper, analysisReportMapper, tradeRecordMapper,
+                releaseMapper, sampleMapper, watchStockMapper, analysisReportMapper, tradeRecordMapper,
                 new ObjectMapper().findAndRegisterModules(), calendar, notificationService, dailyDecisionPlanService);
         return new Fixture(service, reportMapper, snapshotMapper, itemMapper, calendar, analysisReportMapper,
-                tradeRecordMapper, snapshot, items);
+                tradeRecordMapper, sampleMapper, snapshot, items);
     }
 
     private static AiResearchDailyReportService.GenerationRequest request(String idempotencyKey) {
@@ -605,6 +642,7 @@ class AiResearchDailyReportServiceImplTest {
             TradingCalendarService tradingCalendarService,
             AiAnalysisReportMapper analysisReportMapper,
             TradeRecordMapper tradeRecordMapper,
+            AiSampleMapper sampleMapper,
             AiDailyDecisionSnapshot snapshot,
             List<AiDailyDecisionItem> items
     ) {
