@@ -134,7 +134,13 @@ public class ResearchOperationsController {
     @PostMapping("/actions/run-user-projection")
     public ApiResponse<ResearchLabPayloads.ActionAccepted> runUserProjection(
             @RequestBody(required = false) ResearchLabPayloads.ActionRequest request) {
-        return ApiResponse.ok(operationsService.runUserProjection(currentUserId(), value(request)));
+        ResearchLabPayloads.ActionRequest action = value(request);
+        Long currentUserId = currentUserId();
+        Long targetUserId = action.userId() == null ? currentUserId : action.userId();
+        if (!targetUserId.equals(currentUserId)) {
+            authorizer.requireOperator();
+        }
+        return ApiResponse.ok(operationsService.runUserProjection(targetUserId, action));
     }
 
     @PostMapping("/strategies/{id}/promote")

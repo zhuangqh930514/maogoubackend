@@ -89,9 +89,24 @@ class ResearchOperationsAuthorizationTest {
     }
 
     @Test
-    void userProjectionIgnoresClientUserIdAndUsesAuthenticatedUser() throws Exception {
+    void userCannotProjectAnotherUsersDailyReport() throws Exception {
         Fixture fixture = fixture("USER");
         authenticate(5L, "USER");
+
+        fixture.mvc.perform(post("/api/ai/research-lab/actions/run-user-projection")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(JSON.writeValueAsString(new ResearchLabPayloads.ActionRequest(
+                                LocalDate.of(2026, 7, 14), null, null, null, null,
+                                801L, 999L, "projection-5-20260714"))))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.message").value("需要研究运维权限"));
+        verify(fixture.operations, never()).runUserProjection(anyLong(), any());
+    }
+
+    @Test
+    void operatorCanRecoverAnotherUsersDailyReportProjection() throws Exception {
+        Fixture fixture = fixture("OPERATOR");
+        authenticate(5L, "OPERATOR");
         when(fixture.operations.runUserProjection(anyLong(), any())).thenReturn(
                 new ResearchLabPayloads.ActionAccepted(902L, "PENDING"));
 
@@ -99,12 +114,12 @@ class ResearchOperationsAuthorizationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(JSON.writeValueAsString(new ResearchLabPayloads.ActionRequest(
                                 LocalDate.of(2026, 7, 14), null, null, null, null,
-                                801L, 999L, "projection-5-20260714"))))
+                                801L, 999L, "projection-999-20260714"))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.pipelineRunId").value(902));
         ArgumentCaptor<Long> userCaptor = ArgumentCaptor.forClass(Long.class);
         verify(fixture.operations).runUserProjection(userCaptor.capture(), any());
-        org.assertj.core.api.Assertions.assertThat(userCaptor.getValue()).isEqualTo(5L);
+        org.assertj.core.api.Assertions.assertThat(userCaptor.getValue()).isEqualTo(999L);
     }
 
     @Test
