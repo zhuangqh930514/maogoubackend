@@ -17,6 +17,7 @@ public class WatchStock {
     public String market;
     public String groupName;
     public Integer priority;
+    public Integer pinned;
     @TableLogic
     public Integer deleted;
     public LocalDateTime createdAt;

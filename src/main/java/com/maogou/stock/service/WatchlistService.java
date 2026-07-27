@@ -2,6 +2,7 @@ package com.maogou.stock.service;
 
 import com.maogou.stock.dto.watchlist.AddWatchStockRequest;
 import com.maogou.stock.dto.watchlist.WatchStockResponse;
+import com.maogou.stock.dto.watchlist.WatchlistQuery;
 import com.maogou.stock.dto.common.PageResponse;
 
 import java.util.List;
@@ -10,6 +11,8 @@ public interface WatchlistService {
     List<WatchStockResponse> list(String groupName);
 
     PageResponse<WatchStockResponse> page(String view, int page, int pageSize);
+
+    PageResponse<WatchStockResponse> page(WatchlistQuery query);
 
     List<String> codes(String groupName);
 
@@ -20,4 +23,6 @@ public interface WatchlistService {
     void removeBatch(List<String> codes);
 
     void reorder(List<String> codes);
+
+    void pin(String code, boolean pinned);
 }

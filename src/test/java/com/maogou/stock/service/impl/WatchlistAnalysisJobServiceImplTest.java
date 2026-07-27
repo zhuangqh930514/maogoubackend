@@ -128,7 +128,7 @@ class WatchlistAnalysisJobServiceImplTest {
     private static WatchStockResponse stock(String code, String name) {
         return new WatchStockResponse(
                 1L, code, name, null, null, null, null, null,
-                null, null, null, null, "全部");
+                null, null, null, null, "全部", false);
     }
 
     private static AiAnalysisReportResponse report(String code, String status, String errorMessage) {

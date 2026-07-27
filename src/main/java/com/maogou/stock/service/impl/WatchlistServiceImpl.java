@@ -6,6 +6,7 @@ import com.maogou.stock.dto.market.FinanceSnapshotResponse;
 import com.maogou.stock.dto.market.StockQuoteResponse;
 import com.maogou.stock.dto.watchlist.AddWatchStockRequest;
 import com.maogou.stock.dto.watchlist.WatchStockResponse;
+import com.maogou.stock.dto.watchlist.WatchlistQuery;
 import com.maogou.stock.dto.common.PageResponse;
 import com.maogou.stock.mapper.WatchStockMapper;
 import com.maogou.stock.security.AuthContext;
@@ -19,6 +20,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -40,6 +43,8 @@ public class WatchlistServiceImpl implements WatchlistService {
     public List<WatchStockResponse> list(String groupName) {
         QueryWrapper<WatchStock> wrapper = new QueryWrapper<WatchStock>()
                 .eq("user_id", AuthContext.currentUserIdOrDefault())
+                .eq("deleted", 0)
+                .orderByDesc("pinned")
                 .orderByAsc("priority")
                 .orderByDesc("created_at");
         if (groupName != null && !groupName.isBlank() && !"全部".equals(groupName)) {
@@ -56,25 +61,34 @@ public class WatchlistServiceImpl implements WatchlistService {
 
     @Override
     public PageResponse<WatchStockResponse> page(String view, int page, int pageSize) {
-        int normalizedPageSize = Math.max(1, Math.min(pageSize, 100));
-        String normalizedView = view == null || view.isBlank() ? "全部" : view.trim();
-        if ("全部".equals(normalizedView)) {
-            return pageAll(normalizedPageSize, page);
-        }
-
-        List<WatchStockResponse> filtered = list(null).stream()
-                .filter(item -> matchesView(item, normalizedView))
-                .toList();
-        int totalPages = filtered.isEmpty() ? 0 : (int) Math.ceil((double) filtered.size() / normalizedPageSize);
-        int normalizedPage = totalPages == 0 ? 1 : Math.min(Math.max(1, page), totalPages);
-        int fromIndex = Math.min((normalizedPage - 1) * normalizedPageSize, filtered.size());
-        int toIndex = Math.min(fromIndex + normalizedPageSize, filtered.size());
-        return PageResponse.of(filtered.subList(fromIndex, toIndex), filtered.size(), normalizedPage, normalizedPageSize);
+        return page(new WatchlistQuery(view, null, "MANUAL", false, page, pageSize));
     }
 
-    private PageResponse<WatchStockResponse> pageAll(int pageSize, int page) {
-        Long userId = AuthContext.currentUserIdOrDefault();
-        QueryWrapper<WatchStock> countQuery = new QueryWrapper<WatchStock>().eq("user_id", userId);
+    @Override
+    public PageResponse<WatchStockResponse> page(WatchlistQuery request) {
+        WatchlistQuery query = request == null
+                ? new WatchlistQuery("全部", null, "MANUAL", false, 1, 50) : request;
+        int normalizedPageSize = Math.max(1, Math.min(query.pageSize(), 100));
+        String normalizedView = query.view() == null || query.view().isBlank() ? "全部" : query.view().trim();
+        String normalizedSort = normalizeSort(query.sort());
+        if ("全部".equals(normalizedView) && "MANUAL".equals(normalizedSort)) {
+            return pageManual(query.keyword(), query.pinnedOnly(), normalizedPageSize, query.page());
+        }
+
+        List<WatchStock> stocks = watchStockMapper.selectList(baseQuery(query.keyword(), query.pinnedOnly())
+                .orderByDesc("pinned").orderByAsc("priority").orderByDesc("created_at"));
+        Map<String, StockQuoteResponse> quotes = marketDataService.quotesFast(stocks.stream()
+                .map(entity -> entity.stockCode).toList());
+        List<WatchStockResponse> filtered = stocks.stream()
+                .map(entity -> buildLightResponse(entity, quotes.get(entity.stockCode)))
+                .filter(item -> matchesView(item, normalizedView))
+                .sorted(responseComparator(normalizedSort))
+                .toList();
+        return pageResponses(filtered, normalizedPageSize, query.page());
+    }
+
+    private PageResponse<WatchStockResponse> pageManual(String keyword, boolean pinnedOnly, int pageSize, int page) {
+        QueryWrapper<WatchStock> countQuery = baseQuery(keyword, pinnedOnly);
         long total = watchStockMapper.selectCount(countQuery);
         int totalPages = total == 0 ? 0 : (int) Math.ceil((double) total / pageSize);
         int normalizedPage = totalPages == 0 ? 1 : Math.min(Math.max(1, page), totalPages);
@@ -83,19 +97,57 @@ public class WatchlistServiceImpl implements WatchlistService {
         }
 
         long offset = (long) (normalizedPage - 1) * pageSize;
-        QueryWrapper<WatchStock> pageQuery = new QueryWrapper<WatchStock>()
-                .eq("user_id", userId)
+        QueryWrapper<WatchStock> pageQuery = baseQuery(keyword, pinnedOnly)
+                .orderByDesc("pinned")
                 .orderByAsc("priority")
                 .orderByDesc("created_at")
                 .last("LIMIT " + pageSize + " OFFSET " + offset);
         List<WatchStock> stocks = watchStockMapper.selectList(pageQuery);
         Map<String, StockQuoteResponse> quotes = marketDataService.quotesFast(stocks.stream()
-                .map(entity -> entity.stockCode)
-                .toList());
+                .map(entity -> entity.stockCode).toList());
         List<WatchStockResponse> items = stocks.stream()
                 .map(entity -> buildLightResponse(entity, quotes.get(entity.stockCode)))
                 .toList();
         return PageResponse.of(items, total, normalizedPage, pageSize);
+    }
+
+    private QueryWrapper<WatchStock> baseQuery(String keyword, boolean pinnedOnly) {
+        QueryWrapper<WatchStock> query = new QueryWrapper<WatchStock>()
+                .eq("user_id", AuthContext.currentUserIdOrDefault())
+                .eq("deleted", 0);
+        if (pinnedOnly) {
+            query.eq("pinned", 1);
+        }
+        if (keyword != null && !keyword.isBlank()) {
+            String value = keyword.trim();
+            query.and(wrapper -> wrapper.like("stock_code", value).or().like("stock_name", value));
+        }
+        return query;
+    }
+
+    private static PageResponse<WatchStockResponse> pageResponses(List<WatchStockResponse> items, int pageSize, int page) {
+        int totalPages = items.isEmpty() ? 0 : (int) Math.ceil((double) items.size() / pageSize);
+        int normalizedPage = totalPages == 0 ? 1 : Math.min(Math.max(1, page), totalPages);
+        int fromIndex = Math.min((normalizedPage - 1) * pageSize, items.size());
+        int toIndex = Math.min(fromIndex + pageSize, items.size());
+        return PageResponse.of(items.subList(fromIndex, toIndex), items.size(), normalizedPage, pageSize);
+    }
+
+    private static String normalizeSort(String sort) {
+        String normalized = sort == null ? "MANUAL" : sort.trim().toUpperCase();
+        return List.of("MANUAL", "AI_SCORE_DESC", "PERCENT_DESC", "PERCENT_ASC", "VOLUME_RATIO_DESC")
+                .contains(normalized) ? normalized : "MANUAL";
+    }
+
+    private static Comparator<WatchStockResponse> responseComparator(String sort) {
+        Comparator<WatchStockResponse> pinnedFirst = Comparator.comparing(WatchStockResponse::pinned).reversed();
+        return switch (sort) {
+            case "AI_SCORE_DESC" -> pinnedFirst.thenComparing(WatchStockResponse::aiScore, Comparator.nullsLast(Comparator.reverseOrder()));
+            case "PERCENT_DESC" -> pinnedFirst.thenComparing(WatchStockResponse::percent, Comparator.nullsLast(Comparator.reverseOrder()));
+            case "PERCENT_ASC" -> pinnedFirst.thenComparing(WatchStockResponse::percent, Comparator.nullsLast(Comparator.naturalOrder()));
+            case "VOLUME_RATIO_DESC" -> pinnedFirst.thenComparing(WatchStockResponse::volumeRatio, Comparator.nullsLast(Comparator.reverseOrder()));
+            default -> pinnedFirst;
+        };
     }
 
     private static boolean matchesView(WatchStockResponse item, String view) {
@@ -112,6 +164,8 @@ public class WatchlistServiceImpl implements WatchlistService {
         QueryWrapper<WatchStock> wrapper = new QueryWrapper<WatchStock>()
                 .select("stock_code")
                 .eq("user_id", AuthContext.currentUserIdOrDefault())
+                .eq("deleted", 0)
+                .orderByDesc("pinned")
                 .orderByAsc("priority")
                 .orderByDesc("created_at");
         if (groupName != null && !groupName.isBlank() && !"全部".equals(groupName)) {
@@ -164,6 +218,7 @@ public class WatchlistServiceImpl implements WatchlistService {
         entity.market = quote.market();
         entity.groupName = groupName;
         entity.priority = resolveTopPriority(userId);
+        entity.pinned = 0;
         entity.deleted = 0;
         entity.createdAt = LocalDateTime.now();
         entity.updatedAt = entity.createdAt;
@@ -204,15 +259,51 @@ public class WatchlistServiceImpl implements WatchlistService {
     public void reorder(List<String> codes) {
         List<String> normalizedCodes = normalizeCodes(codes);
         Long userId = AuthContext.currentUserIdOrDefault();
+        List<WatchStock> current = watchStockMapper.selectList(new QueryWrapper<WatchStock>()
+                .eq("user_id", userId).eq("deleted", 0)
+                .orderByDesc("pinned").orderByAsc("priority").orderByDesc("created_at"));
+        Map<String, WatchStock> byCode = current.stream()
+                .collect(java.util.stream.Collectors.toMap(item -> item.stockCode, item -> item, (left, right) -> left, LinkedHashMap::new));
+        normalizedCodes = normalizedCodes.stream().filter(byCode::containsKey).toList();
+        LinkedHashMap<String, WatchStock> ordered = new LinkedHashMap<>();
+        normalizedCodes.forEach(code -> ordered.put(code, byCode.get(code)));
+        current.forEach(item -> ordered.putIfAbsent(item.stockCode, item));
         LocalDateTime now = LocalDateTime.now();
-        for (int index = 0; index < normalizedCodes.size(); index++) {
-            WatchStock entity = new WatchStock();
-            entity.userId = userId;
-            entity.stockCode = normalizedCodes.get(index);
-            entity.priority = (index + 1) * 10;
-            entity.updatedAt = now;
-            watchStockMapper.updatePriority(entity);
+        int priority = 10;
+        for (boolean pinned : List.of(true, false)) {
+            for (WatchStock original : ordered.values()) {
+                if ((original.pinned != null && original.pinned == 1) != pinned) {
+                    continue;
+                }
+                WatchStock entity = new WatchStock();
+                entity.userId = userId;
+                entity.stockCode = original.stockCode;
+                entity.priority = priority;
+                entity.updatedAt = now;
+                watchStockMapper.updatePriority(entity);
+                priority += 10;
+            }
         }
+    }
+
+    @Override
+    @Transactional
+    public void pin(String code, boolean pinned) {
+        String normalizedCode = normalizeCodes(List.of(code)).stream().findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("股票代码不能为空"));
+        WatchStock entity = new WatchStock();
+        entity.userId = AuthContext.currentUserIdOrDefault();
+        entity.stockCode = normalizedCode;
+        entity.pinned = pinned ? 1 : 0;
+        entity.updatedAt = LocalDateTime.now();
+        if (watchStockMapper.updatePinned(entity) == 0) {
+            throw new IllegalArgumentException("自选股不存在：" + normalizedCode);
+        }
+        List<String> codes = watchStockMapper.selectList(new QueryWrapper<WatchStock>()
+                        .select("stock_code").eq("user_id", entity.userId).eq("deleted", 0)
+                        .orderByDesc("pinned").orderByAsc("priority").orderByDesc("created_at"))
+                .stream().map(item -> item.stockCode).toList();
+        reorder(codes);
     }
 
     private int resolveTopPriority(Long userId) {
@@ -264,7 +355,8 @@ public class WatchlistServiceImpl implements WatchlistService {
                 finance.pb(),
                 finance.revenueGrowth(),
                 finance.profitGrowth(),
-                entity.groupName
+                entity.groupName,
+                entity.pinned != null && entity.pinned == 1
         );
     }
 

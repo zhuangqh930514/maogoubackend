@@ -15,6 +15,7 @@ public record WatchStockResponse(
         BigDecimal pb,
         BigDecimal revenueGrowth,
         BigDecimal profitGrowth,
-        String groupName
+        String groupName,
+        boolean pinned
 ) {
 }

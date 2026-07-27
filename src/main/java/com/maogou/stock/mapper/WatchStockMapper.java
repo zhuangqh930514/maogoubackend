@@ -8,7 +8,7 @@ import org.apache.ibatis.annotations.Update;
 
 public interface WatchStockMapper extends BaseMapper<WatchStock> {
     @Select("""
-            SELECT id, user_id, stock_code, stock_name, market, group_name, priority, deleted, created_at, updated_at
+            SELECT id, user_id, stock_code, stock_name, market, group_name, priority, pinned, deleted, created_at, updated_at
             FROM watch_stock
             WHERE user_id = #{userId} AND stock_code = #{code}
             LIMIT 1
@@ -33,6 +33,13 @@ public interface WatchStockMapper extends BaseMapper<WatchStock> {
             WHERE user_id = #{userId} AND stock_code = #{stockCode} AND deleted = 0
             """)
     int updatePriority(WatchStock entity);
+
+    @Update("""
+            UPDATE watch_stock
+            SET pinned = #{pinned}, updated_at = #{updatedAt}
+            WHERE user_id = #{userId} AND stock_code = #{stockCode} AND deleted = 0
+            """)
+    int updatePinned(WatchStock entity);
 
     @Select("""
             SELECT MIN(priority)

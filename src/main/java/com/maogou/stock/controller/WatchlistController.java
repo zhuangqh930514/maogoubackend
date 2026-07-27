@@ -5,6 +5,8 @@ import com.maogou.stock.dto.watchlist.AddWatchStockRequest;
 import com.maogou.stock.dto.watchlist.BatchWatchStockRequest;
 import com.maogou.stock.dto.watchlist.ReorderWatchStockRequest;
 import com.maogou.stock.dto.watchlist.WatchStockResponse;
+import com.maogou.stock.dto.watchlist.WatchlistQuery;
+import com.maogou.stock.dto.watchlist.PinWatchStockRequest;
 import com.maogou.stock.dto.common.PageResponse;
 import com.maogou.stock.service.WatchlistService;
 import jakarta.validation.Valid;
@@ -38,10 +40,13 @@ public class WatchlistController {
     @GetMapping("/page")
     public ApiResponse<PageResponse<WatchStockResponse>> page(
             @RequestParam(defaultValue = "全部") String view,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(defaultValue = "MANUAL") String sort,
+            @RequestParam(defaultValue = "false") boolean pinnedOnly,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "50") int pageSize
     ) {
-        return ApiResponse.ok(watchlistService.page(view, page, pageSize));
+        return ApiResponse.ok(watchlistService.page(new WatchlistQuery(view, keyword, sort, pinnedOnly, page, pageSize)));
     }
 
     @GetMapping("/codes")
@@ -69,6 +74,15 @@ public class WatchlistController {
     @PutMapping("/reorder")
     public ApiResponse<Void> reorder(@RequestBody @Valid ReorderWatchStockRequest request) {
         watchlistService.reorder(request.codes());
+        return ApiResponse.ok(null);
+    }
+
+    @PutMapping("/{code}/pin")
+    public ApiResponse<Void> pin(
+            @PathVariable String code,
+            @RequestBody PinWatchStockRequest request
+    ) {
+        watchlistService.pin(code, request.pinned());
         return ApiResponse.ok(null);
     }
 }

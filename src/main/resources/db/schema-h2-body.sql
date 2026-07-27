@@ -27,12 +27,13 @@ CREATE TABLE IF NOT EXISTS watch_stock (
     market VARCHAR(16) NULL,
     group_name VARCHAR(64) NOT NULL DEFAULT '全部',
     priority INT NOT NULL DEFAULT 100,
+    pinned TINYINT NOT NULL DEFAULT 0,
     deleted TINYINT NOT NULL DEFAULT 0,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_watch_stock_user_code (user_id, stock_code),
     KEY idx_watch_stock_group (user_id, group_name),
-    KEY idx_watch_stock_user_list (user_id, deleted, priority ASC, created_at DESC),
+    KEY idx_watch_stock_user_list (user_id, deleted, pinned DESC, priority ASC, created_at DESC),
     KEY idx_watch_stock_user_group_list (user_id, deleted, group_name, priority ASC, created_at DESC)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 
