@@ -40,6 +40,11 @@ public class AiLearningCoverageServiceImpl implements AiLearningCoverageService 
             value.matureLabelCount = Math.toIntExact(eligible);
             value.evaluationCount = Math.toIntExact(evaluated);
             value.directionAssessedCount = Math.toIntExact(evaluated);
+            // Plan-level counters are not collected by the due-prediction verifier yet.
+            // Persist explicit zeros because the SQL upsert binds every NOT NULL column.
+            value.planDueCount = 0;
+            value.planTriggerCheckedCount = 0;
+            value.planOutcomeEvaluatedCount = 0;
             value.unavailableCount = 0;
             value.retryableCount = Math.max(0, Math.toIntExact(eligible - evaluated));
             value.failedCount = result == null ? 0 : result.failedCount();

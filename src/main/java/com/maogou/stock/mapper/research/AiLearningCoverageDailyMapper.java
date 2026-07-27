@@ -61,6 +61,8 @@ public interface AiLearningCoverageDailyMapper extends BaseMapper<AiLearningCove
             ) ON DUPLICATE KEY UPDATE
                 eligible_prediction_count = VALUES(eligible_prediction_count), mature_label_count = VALUES(mature_label_count),
                 evaluation_count = VALUES(evaluation_count), direction_assessed_count = VALUES(direction_assessed_count),
+                plan_due_count = VALUES(plan_due_count), plan_trigger_checked_count = VALUES(plan_trigger_checked_count),
+                plan_outcome_evaluated_count = VALUES(plan_outcome_evaluated_count),
                 unavailable_count = VALUES(unavailable_count), retryable_count = VALUES(retryable_count),
                 failed_count = VALUES(failed_count), coverage_rate = VALUES(coverage_rate),
                 coverage_status = VALUES(coverage_status), error_summary = VALUES(error_summary), generated_at = VALUES(generated_at),

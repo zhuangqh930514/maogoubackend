@@ -20,9 +20,9 @@ public class AiLearningCoverageDaily {
     public Integer matureLabelCount;
     public Integer evaluationCount;
     public Integer directionAssessedCount;
-    public Integer planDueCount;
-    public Integer planTriggerCheckedCount;
-    public Integer planOutcomeEvaluatedCount;
+    public Integer planDueCount = 0;
+    public Integer planTriggerCheckedCount = 0;
+    public Integer planOutcomeEvaluatedCount = 0;
     public Integer unavailableCount;
     public Integer retryableCount;
     public Integer failedCount;
