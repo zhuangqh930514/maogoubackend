@@ -197,6 +197,8 @@ class AiUserDailyProjectionServiceImplTest {
 
         assertThat(result.snapshot().snapshotVersion).isEqualTo(2);
         assertThat(result.snapshot().supersedesSnapshotId).isEqualTo(999L);
+        assertThat(result.snapshot().idempotencyKey)
+                .isEqualTo("USER_DAILY:5:2026-07-10:81:REBUILD:2");
         verify(fixture.snapshotMapper).retireCurrent(eq(999L), eq(5L), any());
         ArgumentCaptor<AiResearchDailyReportService.GenerationRequest> requestCaptor =
                 ArgumentCaptor.forClass(AiResearchDailyReportService.GenerationRequest.class);

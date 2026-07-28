@@ -399,7 +399,9 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
         snapshot.strategyReleaseId = run.strategyReleaseId;
         snapshot.modelVersionId = run.modelVersionId;
         snapshot.supersedesSnapshotId = current == null ? null : current.id;
-        snapshot.idempotencyKey = request.idempotencyKey();
+        // A report retry rebuilds the decision after fresh AI reports are available. Keep the
+        // original snapshot immutable and give the successor a distinct database idempotency key.
+        snapshot.idempotencyKey = snapshotIdempotencyKey(request, version);
         snapshot.isCurrent = 1;
         snapshot.snapshotStatus = "BUILDING";
         snapshot.marketRegime = dominantMarketRegime(samples);
@@ -417,6 +419,13 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
         snapshot.createdAt = request.generatedAt();
         snapshot.updatedAt = request.generatedAt();
         return snapshot;
+    }
+
+    private static String snapshotIdempotencyKey(ProjectionRequest request, int version) {
+        if (!request.rebuildCurrentSnapshot()) {
+            return request.idempotencyKey();
+        }
+        return request.idempotencyKey() + ":REBUILD:" + version;
     }
 
     private void applySnapshotMetrics(
