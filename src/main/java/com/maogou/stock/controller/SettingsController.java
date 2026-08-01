@@ -29,8 +29,11 @@ import org.springframework.scheduling.support.CronExpression;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/settings")
@@ -83,6 +86,8 @@ public class SettingsController {
         AiResearchDailyReportService.ReportView latestDailyReport = aiResearchDailyReportService.latestOrNull(userId);
         PipelineStatusView pipelineStatus = latestPipelineStatus(userId, entity.autoClosePipelineEnabled != null
                 && entity.autoClosePipelineEnabled == 1);
+        List<AiPipelineRun> recentGlobalRuns = recentRuns("GLOBAL", null, "GLOBAL_DAILY_RESEARCH", 14);
+        List<AiPipelineRun> recentUserRuns = recentRuns("USER", userId, "USER_DAILY_PROJECTION", 14);
         return ApiResponse.ok(new SchedulerStatusResponse(
                 scheduler.isEnabled(),
                 scheduler.getNewsFixedRateMs(),
@@ -117,8 +122,143 @@ public class SettingsController {
                         latestDailyReport.watchCount(),
                         latestDailyReport.avoidCount(),
                         latestDailyReport.freshnessStatus()
-                )
+                ),
+                pipelineSummary(firstRun(recentGlobalRuns), "全局日度研究流水线"),
+                pipelineSummary(firstRun(recentUserRuns), "用户投研日报投影流水线"),
+                buildRecentTrend(recentGlobalRuns, recentUserRuns)
         ));
+    }
+
+    private List<AiPipelineRun> recentRuns(String scopeType, Long ownerUserId, String pipelineType, int limit) {
+        QueryWrapper<AiPipelineRun> query = new QueryWrapper<AiPipelineRun>()
+                .eq("scope_type", scopeType)
+                .eq("pipeline_type", pipelineType)
+                .orderByDesc("trade_date")
+                .orderByDesc("id")
+                .last("LIMIT " + Math.max(1, Math.min(limit, 30)));
+        if ("USER".equals(scopeType)) {
+            query.eq("owner_user_id", ownerUserId);
+        }
+        List<AiPipelineRun> runs = pipelineRunMapper.selectList(query);
+        return runs == null ? List.of() : runs;
+    }
+
+    private static AiPipelineRun firstRun(List<AiPipelineRun> runs) {
+        return runs == null || runs.isEmpty() ? null : runs.get(0);
+    }
+
+    private SchedulerStatusResponse.PipelineStatusSummary pipelineSummary(AiPipelineRun run, String pipelineName) {
+        if (run == null) {
+            return null;
+        }
+        int processed = nonNegative(run.processedCount);
+        int success = nonNegative(run.successCount);
+        int failed = nonNegative(run.failedCount);
+        int completed = Math.min(processed, Math.max(0, success + failed));
+        int progress = processed == 0
+                ? "SUCCESS".equalsIgnoreCase(run.status) ? 100 : 0
+                : Math.min(100, (int) Math.round(completed * 100d / processed));
+        LocalDateTime started = run.startedAt == null ? run.createdAt : run.startedAt;
+        LocalDateTime ended = run.finishedAt == null ? LocalDateTime.now() : run.finishedAt;
+        long duration = started == null ? 0 : Math.max(0, java.time.Duration.between(started, ended).toMillis());
+        return new SchedulerStatusResponse.PipelineStatusSummary(
+                run.id,
+                run.tradeDate == null ? null : run.tradeDate.toString(),
+                nullToEmpty(run.status),
+                run.currentStep,
+                progress,
+                processed,
+                completed,
+                success,
+                failed,
+                primaryFailureReason(run),
+                formatDateTime(run.nextRetryAt),
+                formatDateTime(started),
+                formatDateTime(run.finishedAt),
+                duration,
+                pipelineRunMessage(run, pipelineName)
+        );
+    }
+
+    private List<SchedulerStatusResponse.PipelineTrendEntry> buildRecentTrend(
+            List<AiPipelineRun> globalRuns,
+            List<AiPipelineRun> userRuns
+    ) {
+        Map<LocalDate, AiPipelineRun> globalByDate = latestByTradeDate(globalRuns);
+        Map<LocalDate, AiPipelineRun> userByDate = latestByTradeDate(userRuns);
+        return java.util.stream.Stream.concat(globalByDate.keySet().stream(), userByDate.keySet().stream())
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .sorted(Comparator.reverseOrder())
+                .limit(7)
+                .map(date -> {
+                    AiPipelineRun global = globalByDate.get(date);
+                    AiPipelineRun user = userByDate.get(date);
+                    String reason = primaryFailureReason(global);
+                    if (reason == null) {
+                        reason = primaryFailureReason(user);
+                    }
+                    return new SchedulerStatusResponse.PipelineTrendEntry(
+                            date.toString(),
+                            statusOrNull(global),
+                            statusOrNull(user),
+                            global == null ? null : nonNegative(global.failedCount),
+                            user == null ? null : nonNegative(user.failedCount),
+                            durationMillis(global),
+                            durationMillis(user),
+                            reason
+                    );
+                })
+                .toList();
+    }
+
+    private static Map<LocalDate, AiPipelineRun> latestByTradeDate(List<AiPipelineRun> runs) {
+        Map<LocalDate, AiPipelineRun> result = new LinkedHashMap<>();
+        if (runs == null) {
+            return result;
+        }
+        for (AiPipelineRun run : runs) {
+            if (run != null && run.tradeDate != null) {
+                result.putIfAbsent(run.tradeDate, run);
+            }
+        }
+        return result;
+    }
+
+    private static String statusOrNull(AiPipelineRun run) {
+        return run == null ? null : nullToEmpty(run.status);
+    }
+
+    private static long durationMillis(AiPipelineRun run) {
+        if (run == null) {
+            return 0;
+        }
+        LocalDateTime started = run.startedAt == null ? run.createdAt : run.startedAt;
+        LocalDateTime ended = run.finishedAt == null ? LocalDateTime.now() : run.finishedAt;
+        return started == null ? 0 : Math.max(0, java.time.Duration.between(started, ended).toMillis());
+    }
+
+    private static int nonNegative(Integer value) {
+        return value == null ? 0 : Math.max(0, value);
+    }
+
+    private static String primaryFailureReason(AiPipelineRun run) {
+        if (run == null) {
+            return null;
+        }
+        String message = firstMeaningfulLine(run.errorMessage);
+        if (message != null) {
+            return message;
+        }
+        return firstMeaningfulLine(run.errorDetail);
+    }
+
+    private static String firstMeaningfulLine(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String normalized = value.replace('\r', ' ').replace('\n', ' ').trim();
+        return normalized.length() <= 240 ? normalized : normalized.substring(0, 237) + "...";
     }
 
     private PipelineStatusView latestPipelineStatus(Long userId, boolean automationEnabled) {

@@ -15,6 +15,8 @@ import com.maogou.stock.mapper.research.AiTrainingDatasetItemMapper;
 import com.maogou.stock.service.research.AiResearchCycleResult;
 import com.maogou.stock.service.research.AiResearchContract;
 import com.maogou.stock.service.research.AiModelTrainer;
+import com.maogou.stock.service.research.AiModelQualityGate;
+import com.maogou.stock.service.research.AiChallengerReleaseService;
 import com.maogou.stock.service.research.AiMonthlyTrainingRunner;
 import com.maogou.stock.service.research.AiTrainingDatasetService;
 import com.maogou.stock.service.research.AiTrainingReadinessService;
@@ -57,6 +59,8 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
     private final AiStrategyReleaseMapper strategyReleaseMapper;
     private final ObjectMapper objectMapper;
     private final AiFactorPerformanceMapper factorPerformanceMapper;
+    private final AiModelQualityGate qualityGate;
+    private final AiChallengerReleaseService challengerReleaseService;
 
     public AiMonthlyTrainingServiceImpl(
             AppProperties properties,
@@ -71,7 +75,6 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
                 strategyReleaseMapper, objectMapper, null);
     }
 
-    @Autowired
     public AiMonthlyTrainingServiceImpl(
             AppProperties properties,
             AiTrainingDatasetItemMapper datasetItemMapper,
@@ -82,6 +85,23 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
             ObjectMapper objectMapper,
             AiFactorPerformanceMapper factorPerformanceMapper
     ) {
+        this(properties, datasetItemMapper, readinessService, datasetService, modelTrainer, strategyReleaseMapper,
+                objectMapper, factorPerformanceMapper, null, null);
+    }
+
+    @Autowired
+    public AiMonthlyTrainingServiceImpl(
+            AppProperties properties,
+            AiTrainingDatasetItemMapper datasetItemMapper,
+            AiTrainingReadinessService readinessService,
+            AiTrainingDatasetService datasetService,
+            AiModelTrainer modelTrainer,
+            AiStrategyReleaseMapper strategyReleaseMapper,
+            ObjectMapper objectMapper,
+            AiFactorPerformanceMapper factorPerformanceMapper,
+            AiModelQualityGate qualityGate,
+            AiChallengerReleaseService challengerReleaseService
+    ) {
         this.properties = properties;
         this.datasetItemMapper = datasetItemMapper;
         this.readinessService = readinessService;
@@ -90,6 +110,8 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
         this.strategyReleaseMapper = strategyReleaseMapper;
         this.objectMapper = objectMapper;
         this.factorPerformanceMapper = factorPerformanceMapper;
+        this.qualityGate = qualityGate;
+        this.challengerReleaseService = challengerReleaseService;
     }
 
     @Override
@@ -156,22 +178,30 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
         AiModelTrainer.TrainingArtifacts artifacts = trainAndPublish(datasetPath, root);
         JsonNode metrics = readJson(artifacts.metricsPath(), "模型指标");
         JsonNode calibration = metrics.path("calibration");
-        boolean qualityGatePassed = qualityGatePassed(metrics, scheduler.getModelMinimumTestRocAuc());
+        AiModelQualityGate.Evaluation evaluation = qualityGate == null
+                ? fallbackQualityGate(dataset, metrics, calibration, scheduler)
+                : qualityGate.evaluate(dataset, dataset.rowCount == null ? 0 : dataset.rowCount,
+                metrics, calibration, scheduler.getMonthlyMinimumSamples(),
+                scheduler.getModelMinimumTestRocAuc());
+        boolean qualityGatePassed = evaluation.passed();
+        String registeredMetrics = qualityMetrics(metrics, evaluation);
         AiModelVersion model = datasetService.registerModel(new AiTrainingDatasetService.ModelRegistration(
                 dataset.id, AiResearchContract.MODEL_FAMILY, MODEL_KEY, version,
                 "RANKER", artifacts.algorithm(),
                 summary.featureVersion, metrics.path("trainerVersion").asText(TRAINER_VERSION),
                 RANDOM_SEED, artifacts.onnxPath().toUri().toString(), sha256(artifacts.onnxPath()),
                 artifacts.featureManifestPath().toUri().toString(), sha256(artifacts.featureManifestPath()),
-                metrics.path("parameters").toString(), metrics.toString(), calibration.toString(),
+                metrics.path("parameters").toString(), registeredMetrics, calibration.toString(),
                 dataset.rowCount, qualityGatePassed, triggeredAt));
         if (!"VALIDATED".equals(model.status)) {
             return new AiResearchCycleResult(
                     "SUCCESS", dataset.rowCount, 1, 0,
                     "模型已注册为 CANDIDATE，样本外质量门未通过，不创建 Challenger");
         }
-        AiStrategyRelease challenger = createOrGetChallenger(
-                champion.researchUniverseId, model, metrics.toString(), factorSnapshot(triggeredAt), triggeredAt);
+        AiStrategyRelease challenger = challengerReleaseService == null
+                ? createOrGetChallenger(champion.researchUniverseId, model, registeredMetrics,
+                factorSnapshot(triggeredAt), triggeredAt)
+                : challengerReleaseService.createFromValidatedModel(model.id, triggeredAt);
         return new AiResearchCycleResult(
                 "SUCCESS", dataset.rowCount, 1, 0,
                 "已生成 VALIDATED 模型和 SHADOW Challenger #" + challenger.id);
@@ -417,6 +447,31 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
                 && metrics.path("calibration").path("fitted").asBoolean(false)
                 && Double.isFinite(validationAuc) && validationAuc >= 0.55d
                 && Double.isFinite(testAuc) && testAuc >= Math.max(0.52d, configuredMinimumTestAuc);
+    }
+
+    private static AiModelQualityGate.Evaluation fallbackQualityGate(
+            AiTrainingDataset dataset,
+            JsonNode metrics,
+            JsonNode calibration,
+            AppProperties.Scheduler scheduler
+    ) {
+        boolean passed = qualityGatePassed(metrics, scheduler.getModelMinimumTestRocAuc())
+                && dataset != null && dataset.rowCount != null
+                && dataset.rowCount >= scheduler.getMonthlyMinimumSamples();
+        return new AiModelQualityGate.Evaluation(passed, List.of(
+                new AiModelQualityGate.Check("QUALITY_GATE_COMPAT", passed, "训练质量门", passed ? "通过" : "未通过",
+                        passed ? "通过" : "兼容训练构造器未启用统一质量门")));
+    }
+
+    private String qualityMetrics(JsonNode metrics, AiModelQualityGate.Evaluation evaluation) {
+        try {
+            com.fasterxml.jackson.databind.node.ObjectNode copy = (com.fasterxml.jackson.databind.node.ObjectNode)
+                    metrics.deepCopy();
+            copy.set("qualityGate", objectMapper.valueToTree(evaluation));
+            return objectMapper.writeValueAsString(copy);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("模型质量门结果写入指标失败", exception);
+        }
     }
 
     private static TrainingWindows windows(List<LocalDate> dates) {

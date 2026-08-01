@@ -25,6 +25,9 @@ public record AiAnalysisReportResponse(
         String errorMessage,
         Long sampleId,
         Long strategyReleaseId,
+        Long pipelineRunId,
+        String lineageStatus,
+        String lineageIssueJson,
         Integer reportVersion,
         Long supersedesReportId,
         BigDecimal dataQualityScore,
@@ -32,6 +35,42 @@ public record AiAnalysisReportResponse(
         String finalAction,
         DailyDecision dailyDecision
 ) {
+    /**
+     * Compatibility constructor for service tests and integrations created before report
+     * lineage fields were exposed. The omitted lineage values are intentionally null.
+     */
+    public AiAnalysisReportResponse(
+            Long id,
+            String stock,
+            String code,
+            Integer score,
+            String advice,
+            LocalDateTime generatedAt,
+            String technicalAnalysis,
+            String riskWarning,
+            String buySellPoints,
+            String conditionalStrategy,
+            List<AiConditionalStrategyPayload.ReviewResult> tradePlanReviews,
+            String promptSummary,
+            String sourceModel,
+            String status,
+            String errorMessage,
+            Long sampleId,
+            Long strategyReleaseId,
+            Integer reportVersion,
+            Long supersedesReportId,
+            BigDecimal dataQualityScore,
+            BigDecimal calibratedConfidence,
+            String finalAction,
+            DailyDecision dailyDecision
+    ) {
+        this(id, stock, code, score, advice, generatedAt, technicalAnalysis, riskWarning,
+                buySellPoints, conditionalStrategy, tradePlanReviews, promptSummary, sourceModel,
+                status, errorMessage, sampleId, strategyReleaseId, null, null, null,
+                reportVersion, supersedesReportId, dataQualityScore, calibratedConfidence,
+                finalAction, dailyDecision);
+    }
+
     public static AiAnalysisReportResponse from(AiAnalysisReport entity) {
         return from(entity, List.of());
     }
@@ -70,6 +109,9 @@ public record AiAnalysisReportResponse(
                 entity.errorMessage,
                 entity.sampleId,
                 entity.strategyReleaseId,
+                entity.pipelineRunId,
+                entity.lineageStatus,
+                entity.lineageIssueJson,
                 entity.reportVersion,
                 entity.supersedesReportId,
                 entity.dataQualityScore,

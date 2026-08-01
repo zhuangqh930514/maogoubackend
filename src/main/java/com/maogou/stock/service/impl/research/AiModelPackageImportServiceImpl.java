@@ -9,6 +9,8 @@ import com.maogou.stock.domain.entity.research.AiTrainingDataset;
 import com.maogou.stock.mapper.research.AiTrainingDatasetMapper;
 import com.maogou.stock.mapper.research.AiResearchSchemaVersionMapper;
 import com.maogou.stock.service.research.AiModelPackageImportService;
+import com.maogou.stock.service.research.AiChallengerReleaseService;
+import com.maogou.stock.service.research.AiModelQualityGate;
 import com.maogou.stock.service.research.AiResearchContract;
 import com.maogou.stock.service.research.AiTrainingDatasetService;
 import com.maogou.stock.service.research.OnnxModelHealthValidator;
@@ -62,6 +64,8 @@ public class AiModelPackageImportServiceImpl implements AiModelPackageImportServ
     private final AiTrainingDatasetService datasetService;
     private final OnnxModelHealthValidator onnxValidator;
     private final ObjectMapper objectMapper;
+    private final AiModelQualityGate qualityGate;
+    private final AiChallengerReleaseService challengerReleaseService;
 
     public AiModelPackageImportServiceImpl(
             AppProperties properties,
@@ -71,12 +75,28 @@ public class AiModelPackageImportServiceImpl implements AiModelPackageImportServ
             OnnxModelHealthValidator onnxValidator,
             ObjectMapper objectMapper
     ) {
+        this(properties, datasetMapper, schemaVersionMapper, datasetService, onnxValidator, objectMapper, null, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public AiModelPackageImportServiceImpl(
+            AppProperties properties,
+            AiTrainingDatasetMapper datasetMapper,
+            AiResearchSchemaVersionMapper schemaVersionMapper,
+            AiTrainingDatasetService datasetService,
+            OnnxModelHealthValidator onnxValidator,
+            ObjectMapper objectMapper,
+            AiModelQualityGate qualityGate,
+            AiChallengerReleaseService challengerReleaseService
+    ) {
         this.properties = properties;
         this.datasetMapper = datasetMapper;
         this.schemaVersionMapper = schemaVersionMapper;
         this.datasetService = datasetService;
         this.onnxValidator = onnxValidator;
         this.objectMapper = objectMapper;
+        this.qualityGate = qualityGate;
+        this.challengerReleaseService = challengerReleaseService;
     }
 
     @Override
@@ -96,6 +116,12 @@ public class AiModelPackageImportServiceImpl implements AiModelPackageImportServ
             verifyTargetSchema(candidate.sourceSchemaVersion());
             AiTrainingDataset dataset = findProductionDataset(candidate);
             onnxValidator.verify(candidate.modelPath());
+            AiModelQualityGate.Evaluation evaluation = qualityGate == null
+                    ? new AiModelQualityGate.Evaluation(false, java.util.List.of(
+                    new AiModelQualityGate.Check("QUALITY_GATE", false, "统一质量门", "未注入", "统一质量门不可用")))
+                    : qualityGate.evaluate(dataset, candidate.sampleCount(), candidate.metrics(), candidate.calibration(),
+                    properties.getScheduler().getMonthlyMinimumSamples(),
+                    properties.getScheduler().getModelMinimumTestRocAuc());
 
             Path target = artifactRoot.resolve("imported-models")
                     .resolve(candidate.modelFamily()).resolve(candidate.modelKey())
@@ -117,13 +143,24 @@ public class AiModelPackageImportServiceImpl implements AiModelPackageImportServ
                     candidate.trainerVersion(), candidate.randomSeed(), candidate.modelPath().toUri().toString(),
                     candidate.modelChecksum(), candidate.featureManifestPath().toUri().toString(),
                     candidate.featureManifestChecksum(), candidate.metrics().path("parameters").toString(),
-                    candidate.metrics().toString(), candidate.calibration().toString(), candidate.sampleCount(),
-                    false, LocalDateTime.now()));
-            if (!"CANDIDATE".equals(registered.status)) {
-                throw new IllegalStateException("导入模型必须保持 CANDIDATE 状态");
+                    qualityMetrics(candidate.metrics(), evaluation), candidate.calibration().toString(), candidate.sampleCount(),
+                    evaluation.passed(), LocalDateTime.now()));
+            Long challengerId = null;
+            String message = evaluation.summary();
+            if ("VALIDATED".equals(registered.status) && challengerReleaseService != null) {
+                try {
+                    challengerId = challengerReleaseService.createFromValidatedModel(registered.id, LocalDateTime.now()).id;
+                    message = message + "；已进入 SHADOW Challenger #" + challengerId;
+                } catch (RuntimeException exception) {
+                    message = message + "；模型已 VALIDATED，但暂未进入 SHADOW：" + exception.getMessage();
+                }
+            } else if (!"VALIDATED".equals(registered.status)) {
+                message = message + "；保持 CANDIDATE，不参与正式决策";
             }
             return new ImportResult(registered.id, dataset.id, registered.modelFamily, registered.modelKey,
-                    registered.versionNo, registered.status, packageChecksum);
+                    registered.versionNo, registered.status, packageChecksum,
+                    new AiModelPackageImportService.QualityGateSummary(
+                            evaluation.passed(), evaluation.checks(), evaluation.summary()), challengerId, message);
         } catch (IOException | RuntimeException exception) {
             if (publishedByThisImport) {
                 deleteRecursively(published);
@@ -134,6 +171,16 @@ public class AiModelPackageImportServiceImpl implements AiModelPackageImportServ
             throw (RuntimeException) exception;
         } finally {
             deleteRecursively(staging);
+        }
+    }
+
+    private String qualityMetrics(JsonNode metrics, AiModelQualityGate.Evaluation evaluation) {
+        try {
+            com.fasterxml.jackson.databind.node.ObjectNode copy = metrics.deepCopy();
+            copy.set("qualityGate", objectMapper.valueToTree(evaluation));
+            return objectMapper.writeValueAsString(copy);
+        } catch (RuntimeException | IOException exception) {
+            throw new IllegalStateException("模型质量门结果写入指标失败", exception);
         }
     }
 

@@ -28,9 +28,12 @@ import com.maogou.stock.mapper.research.AiPredictionEvaluationMapper;
 import com.maogou.stock.mapper.research.AiPredictionMapper;
 import com.maogou.stock.mapper.research.AiSampleMapper;
 import com.maogou.stock.service.AiResearchDailyReportService;
+import com.maogou.stock.service.AiDecisionPolicyShadowService;
 import com.maogou.stock.service.research.AiDailyDecisionPlanService;
 import com.maogou.stock.service.research.AiDailyDecisionPolicy;
 import com.maogou.stock.service.research.AiResearchContract;
+import com.maogou.stock.service.research.AiFactorSignalPolicy;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.maogou.stock.service.research.AiUserDailyProjectionService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -82,6 +85,8 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
     private final AiResearchDailyReportService dailyReportService;
     private final AiDailyDecisionPlanService dailyDecisionPlanService;
     private final ObjectMapper objectMapper;
+    @Autowired(required = false)
+    private AiDecisionPolicyShadowService decisionShadowService;
 
     public AiUserDailyProjectionServiceImpl(
             AiDailyDecisionSnapshotMapper snapshotMapper,
@@ -217,6 +222,12 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
                 throw new IllegalStateException("每日决策明细写入后缺少主键：" + stockCode);
             }
             items.add(item);
+            if (decisionShadowService != null) {
+                decisionShadowService.record(request.userId(), request.tradeDate(), sample, corePredictions,
+                        shadowInput(stockCode, sample, corePredictions, evidence, factorsBySample.getOrDefault(
+                                sample == null ? null : sample.id, List.of()), holding, primaryAction(corePredictions),
+                                factorPerformanceByDefinition), item);
+            }
             for (Integer horizon : CORE_HORIZONS) {
                 AiPrediction prediction = corePredictions.get(horizon);
                 if (prediction == null) {
@@ -352,6 +363,90 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
                         .sorted().collect(Collectors.joining(",")));
         item.createdAt = request.generatedAt();
         return item;
+    }
+
+    private static com.maogou.stock.service.impl.research.DecisionPolicyShadow.Input shadowInput(
+            String stockCode, AiSample sample, Map<Integer, AiPrediction> predictions,
+            EvaluationEvidence evidence, List<AiFactorValue> factors, boolean holding,
+            String predictionAction, Map<FactorPerformanceKey, AiFactorPerformance> performance
+    ) {
+        return new com.maogou.stock.service.impl.research.DecisionPolicyShadow.Input(
+                shadowEvidence(predictions.get(1), evidence.forStock(stockCode, 1)),
+                shadowEvidence(predictions.get(2), evidence.forStock(stockCode, 2)),
+                shadowEvidence(predictions.get(3), evidence.forStock(stockCode, 3)),
+                factorSupportSignal(factors, performance, 3),
+                evidence.strategyValidation(),
+                sample == null ? null : sample.dataQualityScore,
+                predictions.get(3) == null ? null : predictions.get(3).riskScore,
+                predictions.get(3) != null && containsIgnoreCase(predictions.get(3).reasonJson, "HARD_STOP"),
+                predictionAction, holding, availabilityReason(sample, predictions));
+    }
+
+    private static com.maogou.stock.service.research.HorizonDecisionEvidence shadowEvidence(
+            AiPrediction prediction, StockEvaluationEvidence evidence
+    ) {
+        return new com.maogou.stock.service.research.HorizonDecisionEvidence(
+                prediction == null || prediction.horizonDays == null ? 3 : prediction.horizonDays,
+                signal(prediction), evidence == null ? 0 : evidence.outOfSampleCount(),
+                evidence == null ? null : evidence.hitRate(),
+                wilsonLower(evidence), evidence == null ? "NONE" : evidence.scope());
+    }
+
+    private static BigDecimal wilsonLower(StockEvaluationEvidence evidence) {
+        if (evidence == null || evidence.outOfSampleCount() <= 0 || evidence.hitRate() == null) return null;
+        double n = evidence.outOfSampleCount();
+        double p = normalizeRate(evidence.hitRate()).doubleValue();
+        double z = 1.96;
+        double denominator = 1 + z * z / n;
+        double centre = p + z * z / (2 * n);
+        double margin = z * Math.sqrt((p * (1 - p) + z * z / (4 * n)) / n);
+        return BigDecimal.valueOf((centre - margin) / denominator).setScale(8, RoundingMode.HALF_UP);
+    }
+
+    private static BigDecimal factorSupportSignal(List<AiFactorValue> values,
+                                                  Map<FactorPerformanceKey, AiFactorPerformance> performance,
+                                                  int horizonDays) {
+        BigDecimal numerator = BigDecimal.ZERO;
+        BigDecimal denominator = BigDecimal.ZERO;
+        for (AiFactorValue value : values) {
+            if (value == null || value.missing != null && value.missing == 1 || value.normalizedValue == null) continue;
+            AiFactorPerformance factor = value.factorDefinitionId == null ? null
+                    : performance.get(new FactorPerformanceKey(value.factorDefinitionId, horizonDays));
+            BigDecimal oriented = AiFactorSignalPolicy.orient(value, value.normalizedValue);
+            if (oriented == null || factor == null || factor.sampleCount == null
+                    || factor.sampleCount < 30 || factor.wilsonLowerBound == null) {
+                continue;
+            }
+            BigDecimal sampleStrength = clampRatio(BigDecimal.valueOf(factor.sampleCount - 30)
+                    .divide(BigDecimal.valueOf(200 - 30), 8, RoundingMode.HALF_UP));
+            BigDecimal qualityStrength = clampRatio(normalizeRate(factor.wilsonLowerBound)
+                    .subtract(new BigDecimal("0.50"))
+                    .divide(new BigDecimal("0.15"), 8, RoundingMode.HALF_UP));
+            BigDecimal evidenceStrength = sampleStrength.multiply(qualityStrength);
+            if (evidenceStrength.signum() <= 0) {
+                continue;
+            }
+            BigDecimal orientedZ = oriented.max(new BigDecimal("-3"))
+                    .min(new BigDecimal("3"))
+                    .divide(new BigDecimal("3"), 8, RoundingMode.HALF_UP);
+            BigDecimal defaultWeight = value.defaultWeight == null
+                    ? BigDecimal.ONE : value.defaultWeight.abs();
+            BigDecimal weight = defaultWeight.multiply(evidenceStrength);
+            numerator = numerator.add(orientedZ.multiply(weight));
+            denominator = denominator.add(weight.abs());
+        }
+        if (denominator.signum() == 0) return new BigDecimal("0.50");
+        return new BigDecimal("0.50").add(numerator.divide(denominator, 8, RoundingMode.HALF_UP)
+                .max(BigDecimal.valueOf(-1)).min(BigDecimal.ONE).multiply(new BigDecimal("0.50")));
+    }
+
+    private static BigDecimal clampRatio(BigDecimal value) {
+        return value.max(BigDecimal.ZERO).min(BigDecimal.ONE);
+    }
+
+    private static String primaryAction(Map<Integer, AiPrediction> predictions) {
+        AiPrediction primary = predictions.get(3);
+        return primary == null ? "WATCH" : primary.action;
     }
 
     private Map<String, AiAnalysisReport> loadCurrentReports(

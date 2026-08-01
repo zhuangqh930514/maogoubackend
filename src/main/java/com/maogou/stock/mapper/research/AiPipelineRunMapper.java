@@ -8,9 +8,44 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 import java.time.LocalDateTime;
+import java.time.LocalDate;
 import java.util.List;
 
 public interface AiPipelineRunMapper extends BaseMapper<AiPipelineRun> {
+
+    @Select("""
+            SELECT * FROM ai_pipeline_run
+            WHERE scope_type = 'GLOBAL'
+              AND pipeline_type = 'GLOBAL_DAILY_RESEARCH'
+              AND trade_date = #{tradeDate}
+            ORDER BY id DESC
+            LIMIT 1
+            """)
+    AiPipelineRun selectLatestGlobalDailyByTradeDate(@Param("tradeDate") LocalDate tradeDate);
+
+    @Select("""
+            SELECT * FROM ai_pipeline_run
+            WHERE scope_type = 'USER'
+              AND pipeline_type = 'USER_DAILY_PROJECTION'
+              AND owner_user_id = #{userId}
+              AND trade_date = #{tradeDate}
+            ORDER BY id DESC
+            LIMIT 1
+            """)
+    AiPipelineRun selectLatestUserProjectionByTradeDate(
+            @Param("userId") Long userId,
+            @Param("tradeDate") LocalDate tradeDate
+    );
+
+    @Select("""
+            SELECT * FROM ai_pipeline_run
+            WHERE scope_type = 'GLOBAL'
+              AND pipeline_type = 'GLOBAL_DAILY_RESEARCH'
+              AND data_batch_id = #{dataBatchId}
+            ORDER BY id DESC
+            LIMIT 1
+            """)
+    AiPipelineRun selectLatestGlobalDailyByDataBatchId(@Param("dataBatchId") Long dataBatchId);
 
     @Select("""
             SELECT *

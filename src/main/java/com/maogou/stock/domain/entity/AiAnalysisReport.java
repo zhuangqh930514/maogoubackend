@@ -18,6 +18,10 @@ public class AiAnalysisReport {
     public String stockName;
     public Long sampleId;
     public Long strategyReleaseId;
+    public Long pipelineRunId;
+    public String lineageStatus;
+    public String lineageIssueJson;
+    public String inputFingerprint;
     public Long promptTemplateId;
     public LocalDate reportDate;
     public Integer reportVersion;

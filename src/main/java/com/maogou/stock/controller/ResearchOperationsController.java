@@ -5,6 +5,8 @@ import com.maogou.stock.dto.research.ResearchLabPayloads;
 import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.security.ResearchOperatorAuthorizer;
 import com.maogou.stock.service.research.AiModelPackageImportService;
+import com.maogou.stock.service.research.AiChallengerReleaseService;
+import com.maogou.stock.service.research.AiImportedModelQualificationService;
 import com.maogou.stock.service.research.AiTrainingDatasetPackageImportService;
 import com.maogou.stock.service.research.AiHistoricalIndustryBarImportService;
 import com.maogou.stock.service.research.AiHistoricalTradingStateImportService;
@@ -30,6 +32,8 @@ public class ResearchOperationsController {
     private final AiHistoricalIndustryBarImportService historicalIndustryBarImportService;
     private final AiConditionalRuleGovernanceService conditionalRuleGovernanceService;
     private final ResearchOperatorAuthorizer authorizer;
+    private final AiChallengerReleaseService challengerReleaseService;
+    private final AiImportedModelQualificationService importedModelQualificationService;
 
     public ResearchOperationsController(
             AiResearchOperationsService operationsService,
@@ -40,6 +44,38 @@ public class ResearchOperationsController {
             AiConditionalRuleGovernanceService conditionalRuleGovernanceService,
             ResearchOperatorAuthorizer authorizer
     ) {
+        this(operationsService, modelPackageImportService, trainingDatasetPackageImportService,
+                historicalTradingStateImportService, historicalIndustryBarImportService,
+                conditionalRuleGovernanceService, authorizer, null, null);
+    }
+
+    public ResearchOperationsController(
+            AiResearchOperationsService operationsService,
+            AiModelPackageImportService modelPackageImportService,
+            AiTrainingDatasetPackageImportService trainingDatasetPackageImportService,
+            AiHistoricalTradingStateImportService historicalTradingStateImportService,
+            AiHistoricalIndustryBarImportService historicalIndustryBarImportService,
+            AiConditionalRuleGovernanceService conditionalRuleGovernanceService,
+            ResearchOperatorAuthorizer authorizer,
+            AiChallengerReleaseService challengerReleaseService
+    ) {
+        this(operationsService, modelPackageImportService, trainingDatasetPackageImportService,
+                historicalTradingStateImportService, historicalIndustryBarImportService,
+                conditionalRuleGovernanceService, authorizer, challengerReleaseService, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public ResearchOperationsController(
+            AiResearchOperationsService operationsService,
+            AiModelPackageImportService modelPackageImportService,
+            AiTrainingDatasetPackageImportService trainingDatasetPackageImportService,
+            AiHistoricalTradingStateImportService historicalTradingStateImportService,
+            AiHistoricalIndustryBarImportService historicalIndustryBarImportService,
+            AiConditionalRuleGovernanceService conditionalRuleGovernanceService,
+            ResearchOperatorAuthorizer authorizer,
+            AiChallengerReleaseService challengerReleaseService,
+            AiImportedModelQualificationService importedModelQualificationService
+    ) {
         this.operationsService = operationsService;
         this.modelPackageImportService = modelPackageImportService;
         this.trainingDatasetPackageImportService = trainingDatasetPackageImportService;
@@ -47,6 +83,8 @@ public class ResearchOperationsController {
         this.historicalIndustryBarImportService = historicalIndustryBarImportService;
         this.conditionalRuleGovernanceService = conditionalRuleGovernanceService;
         this.authorizer = authorizer;
+        this.challengerReleaseService = challengerReleaseService;
+        this.importedModelQualificationService = importedModelQualificationService;
     }
 
     @PostMapping("/actions/run-daily")
@@ -89,6 +127,20 @@ public class ResearchOperationsController {
             @RequestParam("package") MultipartFile packageFile) {
         authorizer.requireOperator();
         return ApiResponse.ok(modelPackageImportService.importCandidate(packageFile, currentUserId()));
+    }
+
+    @PostMapping("/models/{modelId}/qualify-and-shadow")
+    public ApiResponse<?> qualifyAndShadow(@PathVariable Long modelId) {
+        authorizer.requireOperator();
+        if (importedModelQualificationService != null) {
+            return ApiResponse.ok(importedModelQualificationService.qualifyAndCreateShadow(
+                    modelId, java.time.LocalDateTime.now()));
+        }
+        if (challengerReleaseService == null) {
+            throw new IllegalStateException("Challenger 服务未启用");
+        }
+        var release = challengerReleaseService.createFromValidatedModel(modelId, java.time.LocalDateTime.now());
+        return ApiResponse.ok(new ResearchLabPayloads.ActionAccepted(release.id, release.status));
     }
 
     @PostMapping(value = "/actions/preview-training-dataset-import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)

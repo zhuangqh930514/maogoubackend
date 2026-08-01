@@ -843,6 +843,15 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         }
     }
 
+    private record ShadowGenerationResult(
+            List<AiPrediction> predictions,
+            int challengerCount,
+            int inputCount,
+            int successCount,
+            List<String> errors
+    ) {
+    }
+
     private StepOutcome matureSampleLabels(PipelineContext context) {
         return matureSampleLabels(context, "MATURE_SAMPLE_LABELS", DAILY_LABEL_CANDIDATE_LIMIT);
     }
@@ -920,49 +929,66 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
                     context.modelVersionId() == null ? "RULE_BASELINE" : "CHAMPION",
                     context.startedAt())));
         }
-        List<AiPrediction> shadowPredictions = generateShadowPredictions(context, inputs);
-        predictions.addAll(shadowPredictions);
+        ShadowGenerationResult shadow = generateShadowPredictions(context, inputs);
+        predictions.addAll(shadow.predictions());
         Map<String, Object> checkpoint = Map.of(
                 "dataBatchId", batchId,
                 "sampleCount", samples.size(),
                 "predictionCount", predictions.size(),
-                "shadowPredictionCount", shadowPredictions.size(),
+                "shadowPredictionCount", shadow.predictions().size(),
+                "shadowChallengerCount", shadow.challengerCount(),
+                "shadowInputCount", shadow.inputCount(),
+                "shadowSuccessCount", shadow.successCount(),
+                "shadowFailureCount", shadow.errors().size(),
                 "horizons", PREDICTION_HORIZONS);
         return success("GENERATE_PREDICTIONS", samples.size() * PREDICTION_HORIZONS.size(),
                 predictions.size(), Math.max(0, samples.size() * PREDICTION_HORIZONS.size() - predictions.size()),
-                checkpoint, batchId, List.of());
+                checkpoint, batchId, shadow.errors());
     }
 
     /** Challenger predictions are immutable same-sample evidence only, never a user decision input. */
-    private List<AiPrediction> generateShadowPredictions(
+    private ShadowGenerationResult generateShadowPredictions(
             PipelineContext context,
             List<AiPredictionEngine.PredictionInput> inputs
     ) {
         if (strategyReleaseMapper == null || context.strategyReleaseId() == null || inputs.isEmpty()) {
-            return List.of();
+            return new ShadowGenerationResult(List.of(), 0, inputs.size(), 0, List.of());
         }
         AiStrategyRelease champion = strategyReleaseMapper.selectById(context.strategyReleaseId());
         if (champion == null || champion.researchUniverseId == null || champion.modelFamily == null) {
-            return List.of();
+            return new ShadowGenerationResult(List.of(), 0, inputs.size(), 0, List.of("缺少 Champion 研究域，未执行 Challenger Shadow"));
         }
         List<AiStrategyRelease> challengers = strategyReleaseMapper.selectShadowChallengers(
                 champion.researchUniverseId, champion.modelFamily);
         if (challengers == null || challengers.isEmpty()) {
-            return List.of();
+            return new ShadowGenerationResult(List.of(), 0, inputs.size(), 0, List.of());
         }
         List<AiPrediction> results = new ArrayList<>();
+        List<String> errors = new ArrayList<>();
+        int successfulBatches = 0;
         for (AiStrategyRelease challenger : challengers) {
             if (challenger == null || challenger.id == null || challenger.modelVersionId == null) {
+                errors.add("Challenger 记录缺少 releaseId 或 modelVersionId，已跳过");
                 continue;
             }
             for (Integer horizon : PREDICTION_HORIZONS) {
-                context.checkpointLease();
-                results.addAll(predictionEngine.predictAndStore(new AiPredictionEngine.PredictionBatch(
-                        inputs, challenger.id, challenger.modelVersionId, horizon,
-                        Math.max(3, Math.min(10, inputs.size())), "CHALLENGER_SHADOW", context.startedAt())));
+                try {
+                    context.checkpointLease();
+                    List<AiPrediction> batch = predictionEngine.predictAndStore(new AiPredictionEngine.PredictionBatch(
+                            inputs, challenger.id, challenger.modelVersionId, horizon,
+                            Math.max(3, Math.min(10, inputs.size())), "CHALLENGER_SHADOW", context.startedAt()));
+                    if (batch != null) {
+                        results.addAll(batch);
+                        successfulBatches++;
+                    }
+                } catch (RuntimeException exception) {
+                    errors.add("Challenger #" + challenger.id + " T+" + horizon + " Shadow 失败："
+                            + rootMessage(exception));
+                }
             }
         }
-        return List.copyOf(results);
+        return new ShadowGenerationResult(List.copyOf(results), challengers.size(), inputs.size(), successfulBatches,
+                List.copyOf(errors));
     }
 
     private StepOutcome evaluateDueDailyPredictions(PipelineContext context) {

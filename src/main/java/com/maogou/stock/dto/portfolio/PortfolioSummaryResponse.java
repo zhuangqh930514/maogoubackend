@@ -14,6 +14,25 @@ public record PortfolioSummaryResponse(
         long positionTotal,
         int page,
         int pageSize,
-        int totalPages
+        int totalPages,
+        long pricedPositionCount,
+        long unpricedPositionCount,
+        boolean summaryComplete
 ) {
+    public PortfolioSummaryResponse(
+            BigDecimal totalCost,
+            BigDecimal totalMarketValue,
+            BigDecimal totalProfit,
+            BigDecimal profitRate,
+            BigDecimal todayProfit,
+            BigDecimal todayProfitRate,
+            List<PositionResponse> positions,
+            long positionTotal,
+            int page,
+            int pageSize,
+            int totalPages
+    ) {
+        this(totalCost, totalMarketValue, totalProfit, profitRate, todayProfit, todayProfitRate,
+                positions, positionTotal, page, pageSize, totalPages, 0, 0, true);
+    }
 }

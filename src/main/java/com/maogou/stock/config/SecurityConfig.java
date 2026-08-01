@@ -51,6 +51,7 @@ public class SecurityConfig {
                                 "/api/ai/research-lab/actions/import-training-dataset",
                                 "/api/ai/research-lab/actions/import-historical-trading-state",
                                 "/api/ai/research-lab/actions/import-historical-industry-bars",
+                                "/api/ai/research-lab/models/*/qualify-and-shadow",
                                 "/api/ai/research-lab/actions/run-conditional-rule-walk-forward",
                                 "/api/ai/research-lab/actions/run-conditional-rule-shadow",
                                 "/api/ai/research-lab/conditional-rules/candidates",
@@ -67,6 +68,18 @@ public class SecurityConfig {
                         .authenticationEntryPoint((request, response, authException) -> writeUnauthorized(response, objectMapper))
                         .accessDeniedHandler((request, response, accessDeniedException) -> writeForbidden(response, objectMapper))
                 )
+                .headers(headers -> headers
+                        .httpStrictTransportSecurity(hsts -> hsts
+                                .includeSubDomains(true)
+                                .maxAgeInSeconds(31536000))
+                        .contentSecurityPolicy(csp -> csp
+                                .policyDirectives("default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+                                        + "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+                                        + "font-src 'self' data:; connect-src 'self' https: ws: wss:; frame-ancestors 'self'")
+                                .reportOnly())
+                        .referrerPolicy(referrer -> referrer
+                                .policy(org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter.ReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN))
+                        .contentTypeOptions(Customizer.withDefaults()))
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
         return http.build();
     }

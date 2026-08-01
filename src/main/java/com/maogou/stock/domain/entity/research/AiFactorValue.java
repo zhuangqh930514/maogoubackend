@@ -28,6 +28,8 @@ public class AiFactorValue {
     public String factorGroup;
     @TableField(exist = false)
     public String direction;
+    @TableField(exist = false)
+    public BigDecimal defaultWeight;
     public BigDecimal rawValue;
     public BigDecimal normalizedValue;
     public Integer hit;

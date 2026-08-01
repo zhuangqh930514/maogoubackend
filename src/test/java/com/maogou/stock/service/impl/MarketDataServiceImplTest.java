@@ -112,6 +112,24 @@ class MarketDataServiceImplTest {
         assertThat(cached).containsKey("600519");
     }
 
+    @Test
+    void fastQuotesMarkExpiredProcessCacheAsStaleWhileRefreshingInBackground() throws Exception {
+        AppProperties properties = new AppProperties();
+        properties.getMarket().setQuoteCacheTtlSeconds(1);
+        ToggleQuoteClient client = new ToggleQuoteClient();
+        MarketDataServiceImpl service = new MarketDataServiceImpl(client, properties);
+
+        assertThat(service.quote("600519").sourceStatus()).isEqualTo("REALTIME");
+        Thread.sleep(1100);
+        client.fail = true;
+
+        StockQuoteResponse response = service.quotesFast(List.of("600519")).get("600519");
+
+        assertThat(response).isNotNull();
+        assertThat(response.sourceStatus()).isEqualTo("STALE");
+        assertThat(response.price()).isPositive();
+    }
+
     private static class FailingSectorMarketClient extends MockMarketDataClient {
         @Override
         public SectorHeatmapResponse fetchSectorHeatmap() {
@@ -209,6 +227,38 @@ class MarketDataServiceImplTest {
             } finally {
                 completed.countDown();
             }
+        }
+    }
+
+    private static class ToggleQuoteClient extends MockMarketDataClient {
+        private boolean fail;
+        private static final LocalDateTime SOURCE_TIME = LocalDateTime.of(2026, 8, 1, 10, 0);
+
+        @Override
+        public StockQuoteResponse fetchQuote(String stockCode) {
+            if (fail) {
+                throw new IllegalStateException("source down");
+            }
+            return new StockQuoteResponse(
+                    stockCode,
+                    "测试股票",
+                    new BigDecimal("100.00"),
+                    new BigDecimal("1.00"),
+                    new BigDecimal("1.00"),
+                    new BigDecimal("1.10"),
+                    "SH",
+                    "EASTMONEY",
+                    SOURCE_TIME
+            );
+        }
+
+        @Override
+        public Map<String, StockQuoteResponse> fetchQuotes(List<String> stockCodes) {
+            if (fail) {
+                throw new IllegalStateException("source down");
+            }
+            return stockCodes.stream()
+                    .collect(java.util.stream.Collectors.toMap(code -> code, this::fetchQuote));
         }
     }
 }

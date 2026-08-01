@@ -1,12 +1,14 @@
 package com.maogou.stock.service.impl;
 
 import com.maogou.stock.config.AppProperties;
+import com.maogou.stock.domain.entity.MarketQuoteCurrent;
 import com.maogou.stock.dto.market.*;
 import com.maogou.stock.infrastructure.market.MarketDataClient;
-import com.maogou.stock.infrastructure.market.MockMarketDataClient;
 import com.maogou.stock.infrastructure.market.ResearchMarketDataClient;
 import com.maogou.stock.infrastructure.market.ResearchSourceResult;
 import com.maogou.stock.service.MarketDataService;
+import com.maogou.stock.service.MarketSnapshotService;
+import com.maogou.stock.mapper.MarketQuoteCurrentMapper;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -15,6 +17,7 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -37,9 +40,10 @@ public class MarketDataServiceImpl implements MarketDataService {
     private static final long BREADTH_SOURCE_FAILURE_COOLDOWN_MILLIS = Duration.ofMinutes(2).toMillis();
 
     private final MarketDataClient marketDataClient;
-    private final MarketDataClient fallbackMarketDataClient = new MockMarketDataClient();
     private final AppProperties properties;
     private final ResearchMarketDataClient researchMarketDataClient;
+    private final MarketSnapshotService marketSnapshotService;
+    private final MarketQuoteCurrentMapper marketQuoteCurrentMapper;
     private final ConcurrentMap<String, CacheEntry<StockQuoteResponse>> quoteCache = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, CacheEntry<FinanceSnapshotResponse>> financeCache = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, CacheEntry<List<NewsFlashResponse>>> newsCache = new ConcurrentHashMap<>();
@@ -61,18 +65,39 @@ public class MarketDataServiceImpl implements MarketDataService {
     private volatile long breadthSourceUnavailableUntilMillis = 0;
 
     public MarketDataServiceImpl(MarketDataClient marketDataClient, AppProperties properties) {
-        this(marketDataClient, properties, null);
+        this(marketDataClient, properties, null, null);
+    }
+
+    public MarketDataServiceImpl(
+            MarketDataClient marketDataClient,
+            AppProperties properties,
+            ResearchMarketDataClient researchMarketDataClient
+    ) {
+        this(marketDataClient, properties, researchMarketDataClient, null, null);
+    }
+
+    public MarketDataServiceImpl(
+            MarketDataClient marketDataClient,
+            AppProperties properties,
+            ResearchMarketDataClient researchMarketDataClient,
+            MarketSnapshotService marketSnapshotService
+    ) {
+        this(marketDataClient, properties, researchMarketDataClient, marketSnapshotService, null);
     }
 
     @Autowired
     public MarketDataServiceImpl(
             MarketDataClient marketDataClient,
             AppProperties properties,
-            ResearchMarketDataClient researchMarketDataClient
+            ResearchMarketDataClient researchMarketDataClient,
+            MarketSnapshotService marketSnapshotService,
+            MarketQuoteCurrentMapper marketQuoteCurrentMapper
     ) {
         this.marketDataClient = marketDataClient;
         this.properties = properties;
         this.researchMarketDataClient = researchMarketDataClient;
+        this.marketSnapshotService = marketSnapshotService;
+        this.marketQuoteCurrentMapper = marketQuoteCurrentMapper;
     }
 
     @Override
@@ -86,23 +111,23 @@ public class MarketDataServiceImpl implements MarketDataService {
     @Override
     public List<NewsFlashResponse> latestNews(int limit) {
         int size = Math.max(1, Math.min(limit, 50));
-        return cachedWithFallback(
+        return cachedOrEmpty(
                 newsCache,
                 "latest:" + size,
                 Duration.ofMinutes(5),
                 () -> marketDataClient.fetchLatestNews(size),
-                null
+                List.of()
         );
     }
 
     @Override
     public List<MarketIndexResponse> coreIndexes() {
-        return cachedWithFallback(
+        return cachedOrEmpty(
                 indexCache,
                 "core-indexes",
                 Duration.ofSeconds(properties.getMarket().getQuoteCacheTtlSeconds()),
                 marketDataClient::fetchCoreIndexes,
-                null
+                List.of()
         );
     }
 
@@ -184,12 +209,12 @@ public class MarketDataServiceImpl implements MarketDataService {
     @Override
     public List<IntradayPointResponse> intraday(String symbol) {
         String normalizedCode = normalizeCode(symbol);
-        return cachedWithFallback(
+        return cachedOrEmpty(
                 intradayCache,
                 normalizedCode,
                 Duration.ofSeconds(properties.getMarket().getQuoteCacheTtlSeconds()),
                 () -> marketDataClient.fetchIntraday(normalizedCode),
-                () -> fallbackMarketDataClient.fetchIntraday(normalizedCode)
+                List.of()
         );
     }
 
@@ -198,12 +223,12 @@ public class MarketDataServiceImpl implements MarketDataService {
         String normalizedCode = normalizeCode(symbol);
         String normalizedPeriod = period == null || period.isBlank() ? "day" : period.trim();
         int size = Math.max(1, Math.min(limit, 240));
-        return cachedWithFallback(
+        return cachedOrEmpty(
                 klineCache,
                 normalizedCode + ":" + normalizedPeriod + ":" + size,
                 Duration.ofMinutes(5),
                 () -> marketDataClient.fetchKline(normalizedCode, normalizedPeriod, size),
-                () -> fallbackMarketDataClient.fetchKline(normalizedCode, normalizedPeriod, size)
+                List.of()
         );
     }
 
@@ -345,13 +370,25 @@ public class MarketDataServiceImpl implements MarketDataService {
     @Override
     public StockQuoteResponse quote(String code) {
         String normalizedCode = normalizeCode(code);
-        return cachedWithFallback(
-                quoteCache,
-                normalizedCode,
-                Duration.ofSeconds(properties.getMarket().getQuoteCacheTtlSeconds()),
-                () -> marketDataClient.fetchQuote(normalizedCode),
-                () -> fallbackMarketDataClient.fetchQuote(normalizedCode)
-        );
+        Duration ttl = Duration.ofSeconds(properties.getMarket().getQuoteCacheTtlSeconds());
+        CacheEntry<StockQuoteResponse> existing = quoteCache.get(normalizedCode);
+        if (isFresh(existing)) {
+            return existing.value;
+        }
+        try {
+            StockQuoteResponse loaded = normalizeQuote(marketDataClient.fetchQuote(normalizedCode), normalizedCode);
+            quoteCache.put(normalizedCode, new CacheEntry<>(loaded, expiresAtMillis(ttl), loaded.sourceAsOf()));
+            persistRealtimeQuote(loaded);
+            return loaded;
+        } catch (RuntimeException ex) {
+            String message = "行情获取失败：" + readableMessage(ex);
+            if (existing != null && existing.value != null && existing.value.hasUsablePrice()) {
+                log.warn("market quote source failed, return stale real cache, code={}, error={}", normalizedCode, message);
+                return StockQuoteResponse.stale(existing.value, message);
+            }
+            log.warn("market quote unavailable and no real cache, code={}, error={}", normalizedCode, message);
+            return StockQuoteResponse.unavailable(normalizedCode, null, message);
+        }
     }
 
     private static BigDecimal volumeRatio(List<KlinePointResponse> points) {
@@ -402,6 +439,9 @@ public class MarketDataServiceImpl implements MarketDataService {
         if (!missingCodes.isEmpty() && now >= batchQuoteSourceUnavailableUntilMillis) {
             try {
                 Map<String, StockQuoteResponse> loadedQuotes = marketDataClient.fetchQuotes(missingCodes);
+                if (loadedQuotes == null) {
+                    throw new IllegalStateException("批量行情来源返回空结果");
+                }
                 long expiresAt = ttlMillis <= 0 ? 0 : System.currentTimeMillis() + ttlMillis;
                 for (String code : missingCodes) {
                     StockQuoteResponse quote = loadedQuotes.get(code);
@@ -409,16 +449,18 @@ public class MarketDataServiceImpl implements MarketDataService {
                         quote = loadedQuotes.get(stockCodeKey(code));
                     }
                     if (quote != null) {
-                        quoteCache.put(code, new CacheEntry<>(quote, expiresAt));
-                        result.put(code, quote);
+                        StockQuoteResponse normalized = normalizeQuote(quote, code);
+                        quoteCache.put(code, new CacheEntry<>(normalized, expiresAt, normalized.sourceAsOf()));
+                        persistRealtimeQuote(normalized);
+                        result.put(code, normalized);
                     }
                 }
             } catch (RuntimeException ex) {
                 batchQuoteSourceUnavailableUntilMillis = System.currentTimeMillis() + QUOTE_SOURCE_FAILURE_COOLDOWN_MILLIS;
-                log.warn("batch market quote source failed, return stale or fallback data, codes={}", missingCodes, ex);
+                log.warn("batch market quote source failed, return stale or unavailable data, codes={}, error={}", missingCodes, readableMessage(ex));
             }
         } else if (!missingCodes.isEmpty()) {
-            log.debug("batch market quote source is cooling down, return cached or fallback data, codes={}", missingCodes);
+            log.debug("batch market quote source is cooling down, return cached or unavailable data, codes={}", missingCodes);
         }
 
         for (String rawCode : codes) {
@@ -427,14 +469,22 @@ public class MarketDataServiceImpl implements MarketDataService {
                 continue;
             }
             CacheEntry<StockQuoteResponse> stale = quoteCache.get(code);
+            if (stale != null && stale.value != null && stale.value.hasUsablePrice()) {
+                result.put(code, StockQuoteResponse.stale(stale.value, "行情来源暂时不可用，展示上次真实行情。"));
+                continue;
+            }
+            if (stale != null && stale.value != null && !stale.value.hasUsablePrice()) {
+                result.put(code, stale.value);
+                continue;
+            }
+            if (result.containsKey(code)) {
+                continue;
+            }
             if (stale != null) {
                 result.put(code, stale.value);
                 continue;
             }
-            StockQuoteResponse fallbackQuote = fallbackMarketDataClient.fetchQuote(code);
-            long fallbackExpiresAt = ttlMillis <= 0 ? 0 : System.currentTimeMillis() + Math.max(ttlMillis, QUOTE_SOURCE_FAILURE_COOLDOWN_MILLIS);
-            quoteCache.put(code, new CacheEntry<>(fallbackQuote, fallbackExpiresAt));
-            result.put(code, fallbackQuote);
+            result.put(code, StockQuoteResponse.unavailable(code, null, "行情来源暂时不可用，暂无真实快照。"));
         }
         return result;
     }
@@ -446,20 +496,69 @@ public class MarketDataServiceImpl implements MarketDataService {
             return cachedQuotes;
         }
         long now = System.currentTimeMillis();
-        List<String> refreshCodes = codes.stream()
+        List<String> normalizedCodes = codes.stream()
                 .map(MarketDataServiceImpl::normalizeCode)
                 .filter(code -> !code.isBlank())
                 .distinct()
+                .toList();
+        List<String> refreshCodes = normalizedCodes.stream()
                 .filter(code -> {
                     CacheEntry<StockQuoteResponse> cached = quoteCache.get(code);
                     if (cached != null) {
-                        cachedQuotes.put(code, cached.value);
+                        boolean fresh = cached.expiresAtMillis <= 0 || cached.expiresAtMillis > now;
+                        if (fresh || cached.value == null || !cached.value.hasUsablePrice()) {
+                            cachedQuotes.put(code, cached.value);
+                        } else {
+                            cachedQuotes.put(code, StockQuoteResponse.stale(
+                                    cached.value, "行情来源正在刷新，展示上次真实行情。"));
+                        }
                     }
                     return cached == null || cached.expiresAtMillis <= now;
                 })
                 .toList();
+        if (!refreshCodes.isEmpty() && marketQuoteCurrentMapper != null) {
+            try {
+                List<MarketQuoteCurrent> persisted = marketQuoteCurrentMapper.selectBySymbols(refreshCodes);
+                Map<String, MarketQuoteCurrent> byCode = new LinkedHashMap<>();
+                for (MarketQuoteCurrent current : persisted == null ? List.<MarketQuoteCurrent>of() : persisted) {
+                    if (current != null && current.symbol != null) {
+                        byCode.putIfAbsent(current.symbol, current);
+                    }
+                }
+                long persistentNow = System.currentTimeMillis();
+                long ttlMillis = Duration.ofSeconds(properties.getMarket().getQuoteCacheTtlSeconds()).toMillis();
+                for (String code : refreshCodes) {
+                    MarketQuoteCurrent current = byCode.get(code);
+                    if (current == null) {
+                        continue;
+                    }
+                    StockQuoteResponse quote = fromPersistentCurrent(current, ttlMillis);
+                    boolean fresh = current.sourceAsOf != null && (ttlMillis <= 0
+                            || persistentNow - current.sourceAsOf.atZone(java.time.ZoneId.systemDefault())
+                            .toInstant().toEpochMilli() <= ttlMillis);
+                    quoteCache.put(code, new CacheEntry<>(quote,
+                            fresh ? persistentNow + Math.max(1000, ttlMillis) : persistentNow, current.sourceAsOf));
+                    cachedQuotes.put(code, quote);
+                }
+            } catch (RuntimeException exception) {
+                log.warn("读取持久化行情快照失败，继续使用进程内缓存，codes={}", refreshCodes, exception);
+            }
+        }
         scheduleFastQuoteRefresh(refreshCodes);
         return cachedQuotes;
+    }
+
+    private StockQuoteResponse fromPersistentCurrent(MarketQuoteCurrent current, long ttlMillis) {
+        LocalDateTime sourceAsOf = current.sourceAsOf;
+        boolean stale = sourceAsOf == null || (ttlMillis > 0
+                && Duration.between(sourceAsOf, LocalDateTime.now()).toMillis() > ttlMillis);
+        String status = stale ? "STALE" : current.sourceStatus == null ? "UNAVAILABLE" : current.sourceStatus;
+        String mode = stale ? "RECENT_CLOSE" : current.dataMode == null ? "UNAVAILABLE" : current.dataMode;
+        String message = stale ? "展示最近一次真实行情快照，正在后台刷新" : "来自真实行情快照";
+        return new StockQuoteResponse(current.symbol, current.name, current.latestPrice,
+                current.changeAmount, current.changePercent, current.volumeRatio, current.market,
+                current.sourceProvider, sourceAsOf, status, mode, "CLOSED", current.tradeDate,
+                sourceAsOf, LocalDateTime.now(), message);
     }
 
     private void scheduleFastQuoteRefresh(List<String> codes) {
@@ -504,12 +603,12 @@ public class MarketDataServiceImpl implements MarketDataService {
     @Override
     public FinanceSnapshotResponse finance(String code) {
         String normalizedCode = normalizeCode(code);
-        return cachedWithFallback(
+        return cachedOrEmpty(
                 financeCache,
                 normalizedCode,
                 Duration.ofSeconds(properties.getMarket().getFinanceCacheTtlSeconds()),
                 () -> marketDataClient.fetchFinance(normalizedCode),
-                () -> fallbackMarketDataClient.fetchFinance(normalizedCode)
+                FinanceSnapshotResponse.empty()
         );
     }
 
@@ -580,6 +679,9 @@ public class MarketDataServiceImpl implements MarketDataService {
         }
         try {
             List<SectorHotStockResponse> loaded = safeList(loader.get());
+            if (loaded.isEmpty()) {
+                throw new IllegalStateException("东方财富热门股票来源返回空结果");
+            }
             LocalDateTime loadedAt = LocalDateTime.now();
             hotStocksCache.put(key, new CacheEntry<>(loaded, expiresAtMillis(ttl), loadedAt));
             return SectorHotStocksResponse.realtime(loaded, loadedAt);
@@ -591,6 +693,9 @@ public class MarketDataServiceImpl implements MarketDataService {
     }
 
     private SectorHeatmapResponse realtimeHeatmap(SectorHeatmapResponse response, LocalDateTime fallbackUpdatedAt) {
+        if (response == null || response.items() == null || response.items().isEmpty()) {
+            throw new IllegalStateException("东方财富板块热力图来源返回空结果");
+        }
         LocalDateTime sourceUpdatedAt = sourceUpdatedAt(response, fallbackUpdatedAt);
         return SectorHeatmapResponse.realtime(safeList(response == null ? null : response.items()), sourceUpdatedAt);
     }
@@ -739,6 +844,70 @@ public class MarketDataServiceImpl implements MarketDataService {
         }
     }
 
+    private static <T> T cachedOrEmpty(
+            ConcurrentMap<String, CacheEntry<T>> cache,
+            String key,
+            Duration ttl,
+            Supplier<T> loader,
+            T emptyValue
+    ) {
+        try {
+            return cached(cache, key, ttl, loader);
+        } catch (RuntimeException ex) {
+            CacheEntry<T> existing = cache.get(key);
+            if (existing != null && existing.value != null) {
+                log.warn("market data source failed, return stale cache, key={}, error={}", key, readableMessage(ex));
+                return existing.value;
+            }
+            log.warn("market data source failed and no real cache, return unavailable value, key={}, error={}",
+                    key, readableMessage(ex));
+            return emptyValue;
+        }
+    }
+
+    private StockQuoteResponse normalizeQuote(StockQuoteResponse quote, String requestedCode) {
+        if (quote == null) {
+            throw new IllegalStateException("行情来源返回空报价");
+        }
+        LocalDateTime sourceAsOf = quote.sourceAsOf() != null
+                ? quote.sourceAsOf() : quote.fetchedAt();
+        if (sourceAsOf == null) {
+            sourceAsOf = LocalDateTime.now();
+        }
+        String source = quote.source() == null || quote.source().isBlank() ? "UNKNOWN" : quote.source();
+        String code = quote.code() == null || quote.code().isBlank() ? requestedCode : quote.code();
+        LocalDate tradeDate = quote.tradeDate() == null ? sourceAsOf.toLocalDate() : quote.tradeDate();
+        if ("MOCK".equalsIgnoreCase(source) || "LOCAL_FALLBACK".equalsIgnoreCase(source)) {
+            return new StockQuoteResponse(code, quote.name(), quote.price(), quote.change(), quote.percent(),
+                    quote.volumeRatio(), quote.market(), source, quote.fetchedAt(), "UNAVAILABLE", "UNAVAILABLE",
+                    "CLOSED", tradeDate, sourceAsOf, LocalDateTime.now(), "演示行情源，仅允许开发测试，不是正式行情");
+        }
+        if (quote.price() == null || quote.price().signum() <= 0) {
+            throw new IllegalStateException("行情来源返回无效价格：" + code);
+        }
+        String status = quote.sourceStatus() == null || quote.sourceStatus().isBlank()
+                ? "REALTIME" : quote.sourceStatus();
+        String mode = quote.dataMode() == null || quote.dataMode().isBlank() ? "LIVE" : quote.dataMode();
+        String session = quote.marketSession() == null || quote.marketSession().isBlank()
+                ? "TRADING" : quote.marketSession();
+        return new StockQuoteResponse(code, quote.name(), quote.price(), quote.change(), quote.percent(),
+                quote.volumeRatio(), quote.market(), source, quote.fetchedAt(), status, mode, session,
+                tradeDate, sourceAsOf, LocalDateTime.now(), quote.message());
+    }
+
+    private void persistRealtimeQuote(StockQuoteResponse quote) {
+        if (marketSnapshotService == null || quote == null
+                || !"REALTIME".equalsIgnoreCase(quote.sourceStatus())) {
+            return;
+        }
+        try {
+            marketSnapshotService.recordRealtimeQuote(quote);
+        } catch (RuntimeException exception) {
+            log.error("真实行情快照写入失败，stockCode={}, provider={}, reason={}",
+                    quote.code(), quote.source(), readableMessage(exception), exception);
+        }
+    }
+
     private static String normalizeCode(String code) {
         return code == null ? "" : code.trim();
     }
@@ -755,6 +924,9 @@ public class MarketDataServiceImpl implements MarketDataService {
     }
 
     private static String adviceByPercent(BigDecimal percent) {
+        if (percent == null) {
+            return "数据不可用";
+        }
         if (percent.compareTo(new BigDecimal("3")) >= 0) {
             return "突破跟踪";
         }
@@ -765,6 +937,9 @@ public class MarketDataServiceImpl implements MarketDataService {
     }
 
     private static int scoreByPercent(BigDecimal percent) {
+        if (percent == null) {
+            return 0;
+        }
         if (percent.compareTo(new BigDecimal("3")) >= 0) {
             return 86;
         }

@@ -2,6 +2,7 @@ package com.maogou.stock.infrastructure.market;
 
 import com.maogou.stock.dto.market.*;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -12,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 
 @Component
+@Profile("dev-mock")
 @ConditionalOnProperty(prefix = "maogou.market", name = "provider", havingValue = "mock")
 public class MockMarketDataClient implements MarketDataClient {
 

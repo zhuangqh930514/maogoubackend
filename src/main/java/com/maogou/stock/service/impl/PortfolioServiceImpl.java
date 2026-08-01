@@ -3,6 +3,7 @@ package com.maogou.stock.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.maogou.stock.domain.entity.TradeRecord;
+import com.maogou.stock.domain.entity.UserPositionSnapshot;
 import com.maogou.stock.domain.enums.TradeSide;
 import com.maogou.stock.dto.market.StockQuoteResponse;
 import com.maogou.stock.dto.portfolio.PortfolioSummaryResponse;
@@ -14,6 +15,7 @@ import com.maogou.stock.mapper.TradeRecordMapper;
 import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.MarketDataService;
 import com.maogou.stock.service.PortfolioService;
+import com.maogou.stock.service.UserPositionSnapshotService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -32,10 +34,21 @@ public class PortfolioServiceImpl implements PortfolioService {
 
     private final TradeRecordMapper tradeRecordMapper;
     private final MarketDataService marketDataService;
+    private final UserPositionSnapshotService positionSnapshotService;
 
     public PortfolioServiceImpl(TradeRecordMapper tradeRecordMapper, MarketDataService marketDataService) {
+        this(tradeRecordMapper, marketDataService, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public PortfolioServiceImpl(
+            TradeRecordMapper tradeRecordMapper,
+            MarketDataService marketDataService,
+            UserPositionSnapshotService positionSnapshotService
+    ) {
         this.tradeRecordMapper = tradeRecordMapper;
         this.marketDataService = marketDataService;
+        this.positionSnapshotService = positionSnapshotService;
     }
 
     @Override
@@ -62,6 +75,9 @@ public class PortfolioServiceImpl implements PortfolioService {
         entity.createdAt = LocalDateTime.now();
         entity.updatedAt = entity.createdAt;
         tradeRecordMapper.insert(entity);
+        if (positionSnapshotService != null) {
+            positionSnapshotService.rebuild(entity.userId, entity.stockCode, quote);
+        }
         return toTradeResponse(entity);
     }
 
@@ -81,10 +97,18 @@ public class PortfolioServiceImpl implements PortfolioService {
                 .in("stock_code", normalizedCodes)
                 .set("deleted", 1)
                 .set("updated_at", LocalDateTime.now()));
+        if (positionSnapshotService != null) {
+            Long userId = AuthContext.currentUserIdOrDefault();
+            normalizedCodes.forEach(code -> positionSnapshotService.rebuild(userId, code, null));
+        }
     }
 
     @Override
     public PortfolioSummaryResponse portfolio(int page, int pageSize) {
+        if (positionSnapshotService != null) {
+            return portfolioFromSnapshot(positionSnapshotService.page(
+                    AuthContext.currentUserIdOrDefault(), page, pageSize));
+        }
         int normalizedPageSize = Math.max(1, Math.min(pageSize, 100));
         List<TradePositionAggregate> activePositions = tradeRecordMapper.selectActivePositions(
                 AuthContext.currentUserIdOrDefault());
@@ -94,15 +118,23 @@ public class PortfolioServiceImpl implements PortfolioService {
         List<PositionResponse> allPositions = activePositions.stream()
                 .map(position -> toPositionResponse(position, quotes.get(position.stockCode)))
                 .toList();
-        BigDecimal totalCost = allPositions.stream().map(PositionResponse::cost).reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal totalMarketValue = allPositions.stream().map(PositionResponse::marketValue).reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal totalProfit = totalMarketValue.subtract(totalCost);
-        BigDecimal profitRate = totalCost.signum() == 0 ? BigDecimal.ZERO : totalProfit
+        BigDecimal totalCost = allPositions.stream().map(PositionResponse::cost)
+                .filter(java.util.Objects::nonNull).reduce(BigDecimal.ZERO, BigDecimal::add);
+        long unpricedPositionCount = allPositions.stream()
+                .filter(item -> !"AVAILABLE".equalsIgnoreCase(item.calculationStatus())).count();
+        long pricedPositionCount = allPositions.size() - unpricedPositionCount;
+        boolean summaryComplete = unpricedPositionCount == 0;
+        BigDecimal pricedMarketValue = allPositions.stream().map(PositionResponse::marketValue)
+                .filter(java.util.Objects::nonNull).reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal totalMarketValue = summaryComplete ? pricedMarketValue : null;
+        BigDecimal totalProfit = summaryComplete ? totalMarketValue.subtract(totalCost) : null;
+        BigDecimal profitRate = !summaryComplete || totalCost.signum() == 0 ? null : totalProfit
                 .multiply(new BigDecimal("100"))
                 .divide(totalCost, 2, RoundingMode.HALF_UP);
-        BigDecimal todayProfit = allPositions.stream().map(PositionResponse::todayProfit).reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal todayBase = totalMarketValue.subtract(todayProfit);
-        BigDecimal todayProfitRate = todayBase.signum() == 0 ? BigDecimal.ZERO : todayProfit
+        BigDecimal todayProfit = summaryComplete ? allPositions.stream().map(PositionResponse::todayProfit)
+                .filter(java.util.Objects::nonNull).reduce(BigDecimal.ZERO, BigDecimal::add) : null;
+        BigDecimal todayBase = summaryComplete ? totalMarketValue.subtract(todayProfit) : null;
+        BigDecimal todayProfitRate = !summaryComplete || todayBase.signum() == 0 ? null : todayProfit
                 .multiply(new BigDecimal("100"))
                 .divide(todayBase, 2, RoundingMode.HALF_UP);
         int totalPages = allPositions.isEmpty() ? 0 : (int) Math.ceil((double) allPositions.size() / normalizedPageSize);
@@ -112,7 +144,49 @@ public class PortfolioServiceImpl implements PortfolioService {
         List<PositionResponse> positions = allPositions.subList(fromIndex, toIndex);
         return new PortfolioSummaryResponse(
                 totalCost, totalMarketValue, totalProfit, profitRate, todayProfit, todayProfitRate,
-                positions, allPositions.size(), normalizedPage, normalizedPageSize, totalPages);
+                positions, allPositions.size(), normalizedPage, normalizedPageSize, totalPages,
+                pricedPositionCount, unpricedPositionCount, summaryComplete);
+    }
+
+    private PortfolioSummaryResponse portfolioFromSnapshot(UserPositionSnapshotService.Page result) {
+        var summary = result.summary();
+        long total = result.total();
+        long priced = summary.pricedPositionCount;
+        long unpriced = summary.unpricedPositionCount;
+        boolean complete = unpriced == 0;
+        BigDecimal totalCost = zero(summary.totalCost);
+        BigDecimal totalMarketValue = complete ? zero(summary.totalMarketValue) : null;
+        BigDecimal totalProfit = complete ? zero(summary.totalUnrealizedPnl) : null;
+        BigDecimal profitRate = !complete || totalCost.signum() == 0 ? null
+                : totalProfit.multiply(BigDecimal.valueOf(100)).divide(totalCost, 2, RoundingMode.HALF_UP);
+        BigDecimal todayProfit = complete ? zero(summary.totalTodayPnl) : null;
+        BigDecimal todayBase = complete && totalMarketValue != null && todayProfit != null
+                ? totalMarketValue.subtract(todayProfit) : null;
+        BigDecimal todayProfitRate = todayBase == null || todayBase.signum() == 0 ? null
+                : todayProfit.multiply(BigDecimal.valueOf(100)).divide(todayBase, 2, RoundingMode.HALF_UP);
+        List<PositionResponse> positions = result.items().stream().map(this::toPositionResponse).toList();
+        return new PortfolioSummaryResponse(totalCost, totalMarketValue, totalProfit, profitRate,
+                todayProfit, todayProfitRate, positions, total, result.page(), result.pageSize(), result.totalPages(),
+                priced, unpriced, complete);
+    }
+
+    private PositionResponse toPositionResponse(UserPositionSnapshot position) {
+        return new PositionResponse(position.stockCode, position.stockName, position.averageCost,
+                position.quantity, position.currentPrice, position.totalCost, position.marketValue,
+                position.unrealizedPnl, rate(position.unrealizedPnl, position.totalCost), position.todayPnl,
+                position.todayPnlRate, position.quoteStatus, position.quoteSource, position.quoteAsOf,
+                position.calculationStatus, position.unavailableReason);
+    }
+
+    private static BigDecimal rate(BigDecimal value, BigDecimal base) {
+        if (value == null || base == null || base.signum() == 0) {
+            return null;
+        }
+        return value.multiply(BigDecimal.valueOf(100)).divide(base, 2, RoundingMode.HALF_UP);
+    }
+
+    private static BigDecimal zero(BigDecimal value) {
+        return value == null ? BigDecimal.ZERO : value;
     }
 
     private QueryWrapper<TradeRecord> baseTradeQuery() {
@@ -133,45 +207,53 @@ public class PortfolioServiceImpl implements PortfolioService {
     }
 
     private PositionResponse toPositionResponse(TradePositionAggregate position, StockQuoteResponse quote) {
-        StockQuoteResponse resolvedQuote = quote == null ? fallbackQuote(position) : quote;
         int quantity = position.quantity == null ? 0 : position.quantity;
         BigDecimal totalCost = position.totalCost == null ? BigDecimal.ZERO : position.totalCost;
         BigDecimal buyPrice = quantity == 0 ? BigDecimal.ZERO
                 : totalCost.divide(BigDecimal.valueOf(quantity), 2, RoundingMode.HALF_UP);
         BigDecimal cost = buyPrice.multiply(BigDecimal.valueOf(quantity));
-        BigDecimal marketValue = resolvedQuote.price().multiply(BigDecimal.valueOf(quantity));
+        if (quote == null || !quote.hasUsablePrice()) {
+            return new PositionResponse(
+                    position.stockCode,
+                    position.stockName,
+                    buyPrice,
+                    quantity,
+                    null,
+                    cost,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    quote == null ? "UNAVAILABLE" : quote.sourceStatus(),
+                    quote == null ? null : quote.source(),
+                    quote == null ? null : quote.sourceAsOf(),
+                    "UNAVAILABLE",
+                    quote == null ? "行情暂不可用" : quote.message());
+        }
+        BigDecimal marketValue = quote.price().multiply(BigDecimal.valueOf(quantity));
         BigDecimal profit = marketValue.subtract(cost);
         BigDecimal profitRate = cost.signum() == 0 ? BigDecimal.ZERO : profit
                 .multiply(new BigDecimal("100"))
                 .divide(cost, 2, RoundingMode.HALF_UP);
-        BigDecimal todayProfit = resolvedQuote.change().multiply(BigDecimal.valueOf(quantity));
+        BigDecimal todayProfit = quote.change() == null ? null : quote.change().multiply(BigDecimal.valueOf(quantity));
         return new PositionResponse(
                 position.stockCode,
                 position.stockName,
                 buyPrice,
                 quantity,
-                resolvedQuote.price(),
+                quote.price(),
                 cost,
                 marketValue,
                 profit,
                 profitRate,
                 todayProfit,
-                resolvedQuote.percent()
-        );
-    }
-
-    private StockQuoteResponse fallbackQuote(TradePositionAggregate position) {
-        log.warn("portfolio quote missing, use zero quote fallback, stockCode={}", position.stockCode);
-        return new StockQuoteResponse(
-                position.stockCode,
-                position.stockName == null ? position.stockCode : position.stockName,
-                BigDecimal.ZERO,
-                BigDecimal.ZERO,
-                BigDecimal.ZERO,
-                BigDecimal.ZERO,
-                null,
-                "LOCAL_FALLBACK",
-                LocalDateTime.now()
+                quote.percent(),
+                quote.sourceStatus(),
+                quote.source(),
+                quote.sourceAsOf(),
+                "AVAILABLE",
+                null
         );
     }
 

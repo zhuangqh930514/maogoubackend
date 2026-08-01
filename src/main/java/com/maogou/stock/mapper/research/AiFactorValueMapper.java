@@ -39,7 +39,8 @@ public interface AiFactorValueMapper extends BaseMapper<AiFactorValue> {
                    d.factor_name AS factor_name,
                    d.factor_version AS factor_version,
                    d.factor_group AS factor_group,
-                   d.direction AS direction
+                   d.direction AS direction,
+                   d.default_weight AS default_weight
             FROM ai_factor_value v
             JOIN ai_factor_definition d ON d.id = v.factor_definition_id
             WHERE d.factor_version = #{factorVersion}
@@ -62,7 +63,8 @@ public interface AiFactorValueMapper extends BaseMapper<AiFactorValue> {
                    d.factor_name AS factor_name,
                    d.factor_version AS factor_version,
                    d.factor_group AS factor_group,
-                   d.direction AS direction
+                   d.direction AS direction,
+                   d.default_weight AS default_weight
             FROM ai_factor_value v
             JOIN ai_factor_definition d ON d.id = v.factor_definition_id
             WHERE d.factor_version = #{factorVersion}

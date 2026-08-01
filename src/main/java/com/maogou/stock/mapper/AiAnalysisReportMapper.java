@@ -26,6 +26,7 @@ public interface AiAnalysisReportMapper extends BaseMapper<AiAnalysisReport> {
 
     @Select("""
             SELECT id, user_id, stock_code, stock_name, sample_id, strategy_release_id,
+                   pipeline_run_id, lineage_status, lineage_issue_json, input_fingerprint,
                    prompt_template_id, report_date, report_version, supersedes_report_id,
                    idempotency_key, status, system_score, final_action, target_direction,
                    risk_score, risk_level, calibrated_confidence, data_quality_score, advice,

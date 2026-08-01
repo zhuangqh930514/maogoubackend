@@ -3,14 +3,18 @@ package com.maogou.stock.service.impl;
 import com.maogou.stock.domain.entity.AiAnalysisReport;
 import com.maogou.stock.domain.entity.research.AiAnalysisReportPrediction;
 import com.maogou.stock.domain.entity.research.AiPrediction;
+import com.maogou.stock.domain.enums.AnalysisStatus;
 import com.maogou.stock.mapper.AiAnalysisReportMapper;
 import com.maogou.stock.mapper.research.AiAnalysisReportPredictionMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -51,6 +55,8 @@ public class AiAnalysisReportLineageWriter {
         draft.idempotencyKey = "analysis-report:" + draft.userId + ":" + draft.stockCode
                 + ":" + draft.reportDate + ":v" + draft.reportVersion;
         LocalDateTime now = draft.generatedAt == null ? LocalDateTime.now() : draft.generatedAt;
+        draft.inputFingerprint = inputFingerprint(draft, linkedPredictions);
+        applyLineageStatus(draft, linkedPredictions);
         draft.createdAt = now;
         draft.updatedAt = now;
         reportMapper.insert(draft);
@@ -117,5 +123,46 @@ public class AiAnalysisReportLineageWriter {
             }
         }
         return values;
+    }
+
+    private static void applyLineageStatus(AiAnalysisReport report, List<AiPrediction> predictions) {
+        if (report.status == AnalysisStatus.FAILED) {
+            report.lineageStatus = "AI_OUTPUT_FAILED";
+            report.lineageIssueJson = "{\"code\":\"AI_OUTPUT_FAILED\",\"message\":\"模型输出未通过结构化校验\"}";
+            return;
+        }
+        boolean hasCorePredictions = predictions.stream()
+                .map(item -> item.horizonDays)
+                .filter(Objects::nonNull)
+                .distinct()
+                .collect(java.util.stream.Collectors.toSet())
+                .containsAll(List.of(1, 2, 3));
+        if (!hasCorePredictions) {
+            report.lineageStatus = "UNVERIFIED_MISSING_CORE_PREDICTION";
+            report.lineageIssueJson = "{\"code\":\"MISSING_T1_T2_T3\",\"message\":\"缺少完整 T+1/T+2/T+3 正式预测\"}";
+            return;
+        }
+        if (report.pipelineRunId == null) {
+            report.lineageStatus = "UNVERIFIED_NO_PIPELINE";
+            report.lineageIssueJson = "{\"code\":\"PIPELINE_RUN_NOT_LINKED\",\"message\":\"报告未关联生成该正式样本的流水线运行\"}";
+            return;
+        }
+        report.lineageStatus = "VERIFIED";
+        report.lineageIssueJson = null;
+    }
+
+    private static String inputFingerprint(AiAnalysisReport report, List<AiPrediction> predictions) {
+        String source = String.join("|", String.valueOf(report.sampleId),
+                String.valueOf(report.strategyReleaseId), String.valueOf(report.reportDate),
+                predictions.stream()
+                        .sorted(Comparator.comparing(item -> item.horizonDays == null ? 0 : item.horizonDays))
+                        .map(item -> String.valueOf(item.horizonDays) + ":" + String.valueOf(item.inputFingerprint))
+                        .reduce((left, right) -> left + ";" + right).orElse(""));
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(source.getBytes(StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("JDK 不支持 SHA-256", exception);
+        }
     }
 }

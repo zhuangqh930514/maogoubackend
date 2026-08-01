@@ -22,4 +22,30 @@ public interface TradeRecordMapper extends BaseMapper<TradeRecord> {
             ORDER BY last_traded_at DESC, stock_code ASC
             """)
     List<TradePositionAggregate> selectActivePositions(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT stock_code,
+                   MAX(stock_name) AS stock_name,
+                   SUM(CASE WHEN side = 'SELL' THEN -price * quantity ELSE price * quantity END) AS total_cost,
+                   SUM(CASE WHEN side = 'SELL' THEN -quantity ELSE quantity END) AS quantity,
+                   MAX(traded_at) AS last_traded_at
+            FROM trade_record
+            WHERE user_id = #{userId} AND stock_code = #{stockCode} AND deleted = 0
+            GROUP BY stock_code
+            HAVING SUM(CASE WHEN side = 'SELL' THEN -quantity ELSE quantity END) > 0
+            LIMIT 1
+            """)
+    TradePositionAggregate selectActivePosition(
+            @Param("userId") Long userId,
+            @Param("stockCode") String stockCode
+    );
+
+    @Select("""
+            SELECT DISTINCT user_id
+            FROM trade_record
+            WHERE stock_code = #{stockCode} AND deleted = 0
+            GROUP BY user_id, stock_code
+            HAVING SUM(CASE WHEN side = 'SELL' THEN -quantity ELSE quantity END) > 0
+            """)
+    List<Long> selectUserIdsHolding(@Param("stockCode") String stockCode);
 }

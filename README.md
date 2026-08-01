@@ -41,6 +41,17 @@ backend/src/main/java/com/maogou/stock
 
 除注册和登录外，业务接口使用 `Authorization: Bearer <token>` 访问。
 
+## 后端测试运行时
+
+后端测试固定使用 JDK 17。执行测试前运行：
+
+```bash
+export JAVA_HOME=$(/usr/libexec/java_home -v 17)
+./backend/scripts/verify-java-runtime.sh
+```
+
+Maven 会拒绝 JDK 18 及以上运行时，避免 Mockito/Byte Buddy 兼容性错误被误判为业务测试失败。
+
 ## 本地启动
 
 推荐直接用本仓库自带的本地 MySQL 方案，这样可以把登录、自动化任务、每日投研、投研日报整条链路在本机跑通，不依赖远程数据库。
@@ -131,8 +142,12 @@ Vite 会把 `/api` 代理到 `http://127.0.0.1:8081`，也可以通过 `VITE_API
 如需回到本地静态数据，可设置：
 
 ```bash
+export SPRING_PROFILES_ACTIVE='dev-mock'
 export MAOGOU_MARKET_PROVIDER='mock'
 ```
+
+`mock` provider 仅允许在 `dev-mock` profile 下启用。生产或普通本地 profile
+误配置为 `mock` 时，后端会在启动阶段直接失败，避免把演示行情当成正式数据。
 
 后续也可以新增：
 

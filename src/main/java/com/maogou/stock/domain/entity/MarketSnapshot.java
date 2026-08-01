@@ -20,5 +20,10 @@ public class MarketSnapshot {
     public BigDecimal volumeRatio;
     public BigDecimal amount;
     public LocalDateTime quoteTime;
+    public java.time.LocalDate tradeDate;
+    public String sourceProvider;
+    public String sourceStatus;
+    public String dataMode;
+    public String sourceFingerprint;
     public LocalDateTime createdAt;
 }

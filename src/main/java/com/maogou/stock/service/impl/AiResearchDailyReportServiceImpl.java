@@ -201,11 +201,33 @@ public class AiResearchDailyReportServiceImpl implements AiResearchDailyReportSe
         ReportView fullReport = ReportView.from(toView(entity));
         AiResearchDailyReport previous = reportMapper.selectPreviousCurrent(userId, entity.tradeDate);
         ReportView previousView = previous == null ? null : ReportView.from(toView(previous));
+        AiDailyDecisionSnapshot snapshot = entity.decisionSnapshotId == null
+                ? null : snapshotMapper.selectById(entity.decisionSnapshotId);
+        Long globalRunId = snapshot == null ? null : snapshot.globalPipelineRunId;
+        Long userRunId = snapshot == null ? entity.pipelineRunId : snapshot.pipelineRunId;
+        AiPipelineRun globalRun = globalRunId == null
+                ? pipelineRunMapper.selectLatestGlobalDailyByTradeDate(entity.tradeDate)
+                : pipelineRunMapper.selectById(globalRunId);
+        AiPipelineRun userRun = userRunId == null
+                ? pipelineRunMapper.selectLatestUserProjectionByTradeDate(userId, entity.tradeDate)
+                : pipelineRunMapper.selectById(userRunId);
         return new DailyOverview(
                 trimPagedSections(fullReport),
                 list(historyLimit),
                 dailyChanges(fullReport, previousView),
-                tradingCalendarService.nextTradingDateTime(LocalDateTime.now(), 16, 0));
+                tradingCalendarService.nextTradingDateTime(LocalDateTime.now(), 16, 0),
+                runSummary(globalRun),
+                runSummary(userRun));
+    }
+
+    private static AiResearchDailyReportService.ResearchRunSummary runSummary(AiPipelineRun run) {
+        if (run == null) {
+            return null;
+        }
+        return new AiResearchDailyReportService.ResearchRunSummary(
+                run.id, run.pipelineType, run.tradeDate, run.status, run.currentStep,
+                value(run.processedCount), value(run.successCount), value(run.failedCount),
+                value(run.retryCount), run.errorMessage, run.startedAt, run.finishedAt, run.nextRetryAt);
     }
 
     @Override

@@ -113,6 +113,34 @@ class SettingsControllerTest {
         latestPipeline.startedAt = LocalDateTime.of(2026, 7, 13, 16, 0);
         latestPipeline.finishedAt = LocalDateTime.of(2026, 7, 13, 16, 12);
         when(pipelineRunMapper.selectOne(any(QueryWrapper.class))).thenReturn(latestPipeline);
+        AiPipelineRun globalRun = new AiPipelineRun();
+        globalRun.id = 8998L;
+        globalRun.scopeType = "GLOBAL";
+        globalRun.pipelineType = "GLOBAL_DAILY_RESEARCH";
+        globalRun.tradeDate = LocalDate.of(2026, 7, 13);
+        globalRun.status = "PARTIAL_SUCCESS";
+        globalRun.currentStep = "GENERATE_STOCK_REPORTS";
+        globalRun.processedCount = 10;
+        globalRun.successCount = 8;
+        globalRun.failedCount = 2;
+        globalRun.errorMessage = "2 只股票行情源超时";
+        globalRun.nextRetryAt = LocalDateTime.of(2026, 7, 14, 9, 0);
+        globalRun.startedAt = LocalDateTime.of(2026, 7, 13, 16, 0);
+        globalRun.finishedAt = LocalDateTime.of(2026, 7, 13, 16, 12);
+        AiPipelineRun userRun = new AiPipelineRun();
+        userRun.id = 8997L;
+        userRun.scopeType = "USER";
+        userRun.ownerUserId = 5L;
+        userRun.pipelineType = "USER_DAILY_PROJECTION";
+        userRun.tradeDate = LocalDate.of(2026, 7, 13);
+        userRun.status = "SUCCESS";
+        userRun.processedCount = 3;
+        userRun.successCount = 3;
+        userRun.failedCount = 0;
+        userRun.startedAt = LocalDateTime.of(2026, 7, 13, 16, 12);
+        userRun.finishedAt = LocalDateTime.of(2026, 7, 13, 16, 13);
+        when(pipelineRunMapper.selectList(any(QueryWrapper.class)))
+                .thenReturn(List.of(globalRun), List.of(userRun));
 
         SettingsController controller = new SettingsController(
                 modelConfigService,
@@ -138,6 +166,26 @@ class SettingsControllerTest {
         assertThat(response.nextWeeklyEvolutionTime()).matches("\\d{4}-\\d{2}-\\d{2} 18:00:00");
         assertThat(response.monthlyTrainingCron()).isEqualTo("0 0 19 1 * *");
         assertThat(response.nextMonthlyTrainingTime()).matches("\\d{4}-\\d{2}-01 19:00:00");
+        assertThat(response.globalResearch()).satisfies(summary -> {
+            assertThat(summary.status()).isEqualTo("PARTIAL_SUCCESS");
+            assertThat(summary.currentStep()).isEqualTo("GENERATE_STOCK_REPORTS");
+            assertThat(summary.progressPercent()).isEqualTo(100);
+            assertThat(summary.failedCount()).isEqualTo(2);
+            assertThat(summary.primaryFailureReason()).isEqualTo("2 只股票行情源超时");
+            assertThat(summary.nextRetryAt()).isEqualTo("2026-07-14 09:00:00");
+        });
+        assertThat(response.userDailyReport()).satisfies(summary -> {
+            assertThat(summary.status()).isEqualTo("SUCCESS");
+            assertThat(summary.progressPercent()).isEqualTo(100);
+            assertThat(summary.durationMillis()).isEqualTo(60_000L);
+        });
+        assertThat(response.recentTradingDayTrend()).singleElement().satisfies(trend -> {
+            assertThat(trend.tradeDate()).isEqualTo("2026-07-13");
+            assertThat(trend.globalStatus()).isEqualTo("PARTIAL_SUCCESS");
+            assertThat(trend.userDailyReportStatus()).isEqualTo("SUCCESS");
+            assertThat(trend.globalFailedCount()).isEqualTo(2);
+            assertThat(trend.userDailyReportFailedCount()).isEqualTo(0);
+        });
     }
 
     @Test

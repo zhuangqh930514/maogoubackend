@@ -98,7 +98,26 @@ public interface AiResearchDailyReportService {
             ReportView report,
             List<AiResearchDailyReportPayloads.ReportListItem> history,
             List<DailyChange> dailyChanges,
-            LocalDateTime nextAutoRunAt
+            LocalDateTime nextAutoRunAt,
+            ResearchRunSummary globalResearch,
+            ResearchRunSummary userProjection
+    ) {
+    }
+
+    record ResearchRunSummary(
+            Long runId,
+            String pipelineType,
+            LocalDate tradeDate,
+            String status,
+            String currentStep,
+            Integer processedCount,
+            Integer successCount,
+            Integer failedCount,
+            Integer retryCount,
+            String errorMessage,
+            LocalDateTime startedAt,
+            LocalDateTime finishedAt,
+            LocalDateTime nextRetryAt
     ) {
     }
 

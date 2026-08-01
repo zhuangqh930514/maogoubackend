@@ -33,6 +33,7 @@ import com.maogou.stock.mapper.research.AiPredictionMapper;
 import com.maogou.stock.mapper.research.AiDailyDecisionItemMapper;
 import com.maogou.stock.mapper.research.AiSampleMapper;
 import com.maogou.stock.mapper.research.AiStrategyReleaseMapper;
+import com.maogou.stock.mapper.research.AiPipelineRunMapper;
 import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.AiAnalysisService;
 import com.maogou.stock.service.AiConditionalTradeStrategyService;
@@ -46,6 +47,7 @@ import com.maogou.stock.service.research.ExternalIoTransactionGuard;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClientResponseException;
 
@@ -82,6 +84,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
     private static final String[] REPORT_SUMMARY_COLUMNS = {
             "id", "stock_code", "stock_name", "system_score", "advice", "generated_at",
             "source_model", "status", "error_message", "sample_id", "strategy_release_id",
+            "pipeline_run_id", "lineage_status",
             "report_version", "supersedes_report_id", "data_quality_score", "calibrated_confidence",
             "final_action", "risk_score", "risk_level"
     };
@@ -89,6 +92,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             "id", "user_id", "stock_code", "stock_name", "sample_id", "strategy_release_id",
             "prompt_template_id", "report_date", "report_version", "supersedes_report_id",
             "idempotency_key", "status", "system_score", "final_action", "target_direction",
+            "pipeline_run_id", "lineage_status", "lineage_issue_json", "input_fingerprint",
             "risk_score", "risk_level", "calibrated_confidence", "data_quality_score", "advice",
             "technical_analysis", "risk_warning", "buy_sell_points", "conditional_strategy",
             "prompt_summary", "source_model", "error_message", "generated_at", "created_at", "updated_at"
@@ -109,6 +113,8 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
     private final TradingCalendarService tradingCalendarService;
     private final LocalAiClient localAiClient;
     private final ObjectMapper objectMapper;
+    @Autowired(required = false)
+    private AiPipelineRunMapper pipelineRunMapper;
 
     public AiAnalysisServiceImpl(
             AiAnalysisReportMapper reportMapper,
@@ -451,6 +457,7 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
         report.generatedAt = now;
         report.sampleId = formalContext.sample().id;
         report.strategyReleaseId = formalContext.release().id;
+        report.pipelineRunId = resolvePipelineRunId(formalContext.sample(), tradeDate);
         report.dataQualityScore = formalContext.sample().dataQualityScore == null
                 ? BigDecimal.ZERO : formalContext.sample().dataQualityScore;
         report.calibratedConfidence = formalDecision.calibratedConfidence();
@@ -486,6 +493,8 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             report.rawResponse = ex instanceof AnalysisAttemptException attemptException ? attemptException.rawResponse() : report.rawResponse;
             report.errorMessage = ex.getMessage();
             report.status = AnalysisStatus.FAILED;
+            report.finalAction = "WATCH";
+            report.advice = "AI 解读失败，暂不形成正式买卖动作；请检查失败原因后重试";
             log.error("AI stock analysis failed userId={} code={} model={} promptTemplateId={} targetReportId={} message={} rawResponsePreview={}",
                     report.userId, report.stockCode, config.modelName, normalizedPromptTemplateId, targetReportId, ex.getMessage(), preview(report.rawResponse), ex);
         }
@@ -496,6 +505,22 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
             log.warn("initialize conditional trade reviews failed, reportId={}, message={}", report.id, exception.getMessage());
         }
         return reportResponse(report);
+    }
+
+    private Long resolvePipelineRunId(AiSample sample, LocalDate tradeDate) {
+        if (pipelineRunMapper == null || sample == null) {
+            return null;
+        }
+        if (sample.dataBatchId != null) {
+            com.maogou.stock.domain.entity.research.AiPipelineRun run =
+                    pipelineRunMapper.selectLatestGlobalDailyByDataBatchId(sample.dataBatchId);
+            if (run != null) {
+                return run.id;
+            }
+        }
+        com.maogou.stock.domain.entity.research.AiPipelineRun run =
+                pipelineRunMapper.selectLatestGlobalDailyByTradeDate(tradeDate);
+        return run == null ? null : run.id;
     }
 
     private AiAnalysisReport reusableReport(

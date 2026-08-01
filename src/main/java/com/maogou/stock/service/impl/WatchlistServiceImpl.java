@@ -6,6 +6,7 @@ import com.maogou.stock.dto.market.FinanceSnapshotResponse;
 import com.maogou.stock.dto.market.StockQuoteResponse;
 import com.maogou.stock.dto.watchlist.AddWatchStockRequest;
 import com.maogou.stock.dto.watchlist.WatchStockResponse;
+import com.maogou.stock.dto.watchlist.WatchlistPageRow;
 import com.maogou.stock.dto.watchlist.WatchlistQuery;
 import com.maogou.stock.dto.common.PageResponse;
 import com.maogou.stock.mapper.WatchStockMapper;
@@ -74,17 +75,53 @@ public class WatchlistServiceImpl implements WatchlistService {
         if ("全部".equals(normalizedView) && "MANUAL".equals(normalizedSort)) {
             return pageManual(query.keyword(), query.pinnedOnly(), normalizedPageSize, query.page());
         }
+        return pageFiltered(normalizedView, query.keyword(), normalizedSort, query.pinnedOnly(),
+                normalizedPageSize, query.page());
+    }
 
-        List<WatchStock> stocks = watchStockMapper.selectList(baseQuery(query.keyword(), query.pinnedOnly())
-                .orderByDesc("pinned").orderByAsc("priority").orderByDesc("created_at"));
-        Map<String, StockQuoteResponse> quotes = marketDataService.quotesFast(stocks.stream()
-                .map(entity -> entity.stockCode).toList());
-        List<WatchStockResponse> filtered = stocks.stream()
-                .map(entity -> buildLightResponse(entity, quotes.get(entity.stockCode)))
-                .filter(item -> matchesView(item, normalizedView))
-                .sorted(responseComparator(normalizedSort))
-                .toList();
-        return pageResponses(filtered, normalizedPageSize, query.page());
+    private PageResponse<WatchStockResponse> pageFiltered(
+            String view, String keyword, String sort, boolean pinnedOnly, int pageSize, int page
+    ) {
+        Long userId = AuthContext.currentUserIdOrDefault();
+        String normalizedKeyword = keyword == null ? null : keyword.trim();
+        long total = watchStockMapper.countFilteredPage(userId, view, normalizedKeyword, pinnedOnly);
+        int totalPages = total == 0 ? 0 : (int) Math.ceil((double) total / pageSize);
+        int normalizedPage = totalPages == 0 ? 1 : Math.min(Math.max(1, page), totalPages);
+        if (total == 0) {
+            return PageResponse.of(List.of(), 0, normalizedPage, pageSize);
+        }
+        List<WatchlistPageRow> rows = watchStockMapper.selectFilteredPage(userId, view, normalizedKeyword,
+                sort, pinnedOnly, pageSize, (long) (normalizedPage - 1) * pageSize);
+        List<WatchStockResponse> items = (rows == null ? List.<WatchlistPageRow>of() : rows).stream()
+                .map(this::toPageResponse).toList();
+        return PageResponse.of(items, total, normalizedPage, pageSize);
+    }
+
+    private WatchStockResponse toPageResponse(WatchlistPageRow row) {
+        boolean usable = row.price != null && row.price.signum() > 0
+                && row.quoteStatus != null && !"UNAVAILABLE".equalsIgnoreCase(row.quoteStatus);
+        String advice = advice(row.finalAction, row.category);
+        return new WatchStockResponse(row.id, row.stockCode,
+                row.stockName == null || row.stockName.isBlank() ? row.stockCode : row.stockName,
+                usable ? row.price : null, usable ? row.percent : null, usable ? row.volumeRatio : null,
+                row.aiScore, advice, null, null, null, null, row.groupName,
+                row.pinned != null && row.pinned == 1,
+                row.quoteStatus == null ? "UNAVAILABLE" : row.quoteStatus, row.quoteSource, row.quoteAsOf,
+                usable ? ("STALE".equalsIgnoreCase(row.quoteStatus) ? "STALE" : "AVAILABLE") : "UNAVAILABLE",
+                usable ? null : "暂无可用真实行情快照");
+    }
+
+    private static String advice(String action, String category) {
+        if (action == null || action.isBlank()) {
+            return category == null ? "请查看投研日报" : "数据不可用";
+        }
+        return switch (action.toUpperCase()) {
+            case "BUY", "RECOMMEND" -> "关注";
+            case "HOLD" -> "持有";
+            case "SELL", "REDUCE", "AVOID" -> "回避";
+            case "WATCH", "CAUTIOUS" -> "观察";
+            default -> action;
+        };
     }
 
     private PageResponse<WatchStockResponse> pageManual(String keyword, boolean pinnedOnly, int pageSize, int page) {
@@ -178,13 +215,11 @@ public class WatchlistServiceImpl implements WatchlistService {
 
     private WatchStockResponse buildLightResponse(WatchStock entity, StockQuoteResponse quote) {
         try {
-            if (quote == null) {
-                return fallbackResponse(entity, "行情暂不可用");
-            }
+            if (quote == null || !quote.hasUsablePrice()) return unavailableResponse(entity, quote, "行情暂不可用");
             return buildResponse(entity, quote, EMPTY_FINANCE);
         } catch (RuntimeException ex) {
             log.warn("build watch stock response failed, stockCode={}", entity.stockCode, ex);
-            return fallbackResponse(entity, "行情暂不可用");
+            return unavailableResponse(entity, quote, "行情暂不可用：" + ex.getMessage());
         }
     }
 
@@ -201,7 +236,7 @@ public class WatchlistServiceImpl implements WatchlistService {
 
         StockQuoteResponse quote = marketDataService.quote(code);
         if (existing != null) {
-            existing.stockName = quote.name();
+            existing.stockName = quote.name() == null ? code : quote.name();
             existing.market = quote.market();
             existing.groupName = groupName;
             existing.priority = resolveTopPriority(userId);
@@ -214,7 +249,7 @@ public class WatchlistServiceImpl implements WatchlistService {
         WatchStock entity = new WatchStock();
         entity.userId = userId;
         entity.stockCode = code;
-        entity.stockName = quote.name();
+        entity.stockName = quote.name() == null ? code : quote.name();
         entity.market = quote.market();
         entity.groupName = groupName;
         entity.priority = resolveTopPriority(userId);
@@ -314,25 +349,13 @@ public class WatchlistServiceImpl implements WatchlistService {
         return minPriority - 10;
     }
 
-    private WatchStockResponse fallbackResponse(WatchStock entity, String advice) {
-        StockQuoteResponse quote = new StockQuoteResponse(
-                entity.stockCode,
-                entity.stockName == null ? entity.stockCode : entity.stockName,
-                BigDecimal.ZERO,
-                BigDecimal.ZERO,
-                BigDecimal.ZERO,
-                BigDecimal.ZERO,
-                entity.market,
-                "LOCAL_FALLBACK",
-                LocalDateTime.now()
-        );
-        return buildResponse(entity, quote, EMPTY_FINANCE, advice, 0);
-    }
-
     private WatchStockResponse buildResponse(WatchStock entity, StockQuoteResponse quote, FinanceSnapshotResponse finance) {
-        int aiScore = quote.percent().signum() < 0 ? 64 : quote.percent().doubleValue() >= 3 ? 86 : 72;
-        String advice = quote.percent().signum() < 0 ? "控制仓位" : quote.percent().doubleValue() >= 3 ? "突破跟踪" : "稳健持有";
-        return buildResponse(entity, quote, finance, advice, aiScore);
+        if (quote == null || !quote.hasUsablePrice()) {
+            return unavailableResponse(entity, quote, "行情暂不可用");
+        }
+        // A price change is not an AI decision.  The real score/action comes from
+        // the daily research snapshot and is wired in by the research projection.
+        return buildResponse(entity, quote, finance, "请查看投研日报", null);
     }
 
     private WatchStockResponse buildResponse(
@@ -340,12 +363,12 @@ public class WatchlistServiceImpl implements WatchlistService {
             StockQuoteResponse quote,
             FinanceSnapshotResponse finance,
             String advice,
-            int aiScore
+            Integer aiScore
     ) {
         return new WatchStockResponse(
                 entity.id,
                 entity.stockCode,
-                entity.stockName == null ? quote.name() : entity.stockName,
+                entity.stockName == null ? (quote == null ? entity.stockCode : quote.name()) : entity.stockName,
                 quote.price(),
                 quote.percent(),
                 quote.volumeRatio(),
@@ -356,7 +379,28 @@ public class WatchlistServiceImpl implements WatchlistService {
                 finance.revenueGrowth(),
                 finance.profitGrowth(),
                 entity.groupName,
-                entity.pinned != null && entity.pinned == 1
+                entity.pinned != null && entity.pinned == 1,
+                quote.sourceStatus(),
+                quote.source(),
+                quote.sourceAsOf(),
+                "AVAILABLE",
+                null
+        );
+    }
+
+    private WatchStockResponse unavailableResponse(WatchStock entity, StockQuoteResponse quote, String reason) {
+        return new WatchStockResponse(
+                entity.id,
+                entity.stockCode,
+                entity.stockName == null ? entity.stockCode : entity.stockName,
+                null, null, null, null, "行情不可用", null, null, null, null,
+                entity.groupName,
+                entity.pinned != null && entity.pinned == 1,
+                quote == null ? "UNAVAILABLE" : quote.sourceStatus(),
+                quote == null ? null : quote.source(),
+                quote == null ? null : quote.sourceAsOf(),
+                "UNAVAILABLE",
+                reason
         );
     }
 

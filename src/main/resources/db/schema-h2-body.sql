@@ -56,6 +56,31 @@ CREATE TABLE IF NOT EXISTS trade_record (
     KEY idx_trade_record_user_active_stock (user_id, deleted, stock_code, traded_at)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 
+CREATE TABLE IF NOT EXISTS user_position_snapshot (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    stock_code VARCHAR(16) NOT NULL,
+    stock_name VARCHAR(64) NULL,
+    quantity INT NOT NULL,
+    average_cost DECIMAL(18, 4) NOT NULL,
+    total_cost DECIMAL(20, 4) NOT NULL,
+    realized_pnl DECIMAL(20, 4) NOT NULL DEFAULT 0,
+    current_price DECIMAL(18, 4) NULL,
+    market_value DECIMAL(20, 4) NULL,
+    unrealized_pnl DECIMAL(20, 4) NULL,
+    today_pnl DECIMAL(20, 4) NULL,
+    today_pnl_rate DECIMAL(12, 4) NULL,
+    quote_status VARCHAR(24) NOT NULL DEFAULT 'UNAVAILABLE',
+    quote_source VARCHAR(64) NULL,
+    quote_as_of TIMESTAMP NULL,
+    calculation_status VARCHAR(24) NOT NULL DEFAULT 'UNAVAILABLE',
+    unavailable_reason VARCHAR(512) NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_user_position_snapshot_user_stock (user_id, stock_code),
+    KEY idx_user_position_snapshot_user_status_value (user_id, calculation_status, market_value),
+    KEY idx_user_position_snapshot_user_updated (user_id, updated_at)
+);
+
 CREATE TABLE IF NOT EXISTS ai_model_config (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     user_id BIGINT NOT NULL,
@@ -142,13 +167,40 @@ CREATE TABLE IF NOT EXISTS market_snapshot (
     name VARCHAR(64) NULL,
     market VARCHAR(16) NULL,
     latest_price DECIMAL(18, 4) NOT NULL,
-    change_amount DECIMAL(18, 4) NOT NULL DEFAULT 0,
-    change_percent DECIMAL(10, 4) NOT NULL DEFAULT 0,
+    change_amount DECIMAL(18, 4) NULL,
+    change_percent DECIMAL(10, 4) NULL,
     volume_ratio DECIMAL(10, 4) NULL,
     amount DECIMAL(24, 4) NULL,
     quote_time DATETIME NOT NULL,
+    trade_date DATE NULL,
+    source_provider VARCHAR(64) NULL,
+    source_status VARCHAR(24) NULL,
+    data_mode VARCHAR(24) NULL,
+    source_fingerprint VARCHAR(128) NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    KEY idx_market_snapshot_symbol_time (symbol, quote_time)
+    KEY idx_market_snapshot_symbol_time (symbol, quote_time),
+    KEY idx_market_snapshot_symbol_trade_quote (symbol, trade_date, quote_time),
+    UNIQUE KEY uk_market_snapshot_source_fact (symbol, source_provider, quote_time, source_fingerprint)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS market_quote_current (
+    symbol VARCHAR(32) PRIMARY KEY,
+    name VARCHAR(64) NULL,
+    market VARCHAR(16) NULL,
+    latest_price DECIMAL(18, 4) NOT NULL,
+    change_amount DECIMAL(18, 4) NULL,
+    change_percent DECIMAL(10, 4) NULL,
+    volume_ratio DECIMAL(10, 4) NULL,
+    amount DECIMAL(24, 4) NULL,
+    trade_date DATE NULL,
+    source_provider VARCHAR(64) NOT NULL,
+    source_as_of DATETIME NOT NULL,
+    source_fingerprint VARCHAR(128) NOT NULL,
+    source_status VARCHAR(24) NOT NULL,
+    data_mode VARCHAR(24) NOT NULL,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_market_quote_current_trade_source (trade_date, source_status, source_as_of),
+    KEY idx_market_quote_current_provider_time (source_provider, source_as_of)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 
 CREATE TABLE IF NOT EXISTS stock_kline (
@@ -1168,6 +1220,31 @@ CREATE TABLE IF NOT EXISTS ai_pipeline_step (
         FOREIGN KEY (pipeline_run_id) REFERENCES ai_pipeline_run (id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 
+CREATE TABLE IF NOT EXISTS ai_pipeline_issue (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    report_id BIGINT NOT NULL,
+    pipeline_run_id BIGINT NOT NULL DEFAULT 0,
+    trade_date DATE NOT NULL,
+    step_key VARCHAR(96) NOT NULL,
+    step_name VARCHAR(128) NOT NULL,
+    stock_code VARCHAR(16) NOT NULL DEFAULT '',
+    stock_name VARCHAR(64) NOT NULL DEFAULT '',
+    provider_code VARCHAR(64) NOT NULL DEFAULT '',
+    endpoint_type VARCHAR(96) NOT NULL DEFAULT '',
+    reason_code VARCHAR(64) NOT NULL,
+    reason_message VARCHAR(2048) NOT NULL,
+    retry_count INT NOT NULL DEFAULT 0,
+    max_retries INT NOT NULL DEFAULT 3,
+    next_retry_at TIMESTAMP NULL,
+    recoverable TINYINT NOT NULL DEFAULT 0,
+    source_as_of TIMESTAMP NULL,
+    attempt_no INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (user_id, report_id, pipeline_run_id, step_key, stock_code, provider_code, reason_code, attempt_no)
+);
+
 CREATE TABLE IF NOT EXISTS ai_shadow_evaluation (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     pipeline_run_id BIGINT NULL,
@@ -1325,6 +1402,10 @@ CREATE TABLE IF NOT EXISTS ai_analysis_report (
     user_id BIGINT NOT NULL,
     sample_id BIGINT NOT NULL,
     strategy_release_id BIGINT NOT NULL,
+    pipeline_run_id BIGINT NULL,
+    lineage_status VARCHAR(32) NOT NULL DEFAULT 'LEGACY_UNVERIFIED',
+    lineage_issue_json CLOB NULL,
+    input_fingerprint VARCHAR(128) NULL,
     prompt_template_id BIGINT NULL,
     stock_code VARCHAR(16) NOT NULL,
     stock_name VARCHAR(64) NULL,
@@ -1642,6 +1723,68 @@ CREATE TABLE IF NOT EXISTS ai_daily_decision_snapshot (
         FOREIGN KEY (user_id, supersedes_snapshot_id)
         REFERENCES ai_daily_decision_snapshot (user_id, id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_decision_policy_release (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    policy_key VARCHAR(64) NOT NULL,
+    version_no VARCHAR(32) NOT NULL,
+    status VARCHAR(24) NOT NULL,
+    config_json CLOB NOT NULL,
+    code_checksum VARCHAR(128) NOT NULL,
+    shadow_started_at TIMESTAMP NULL,
+    activated_at TIMESTAMP NULL,
+    retired_at TIMESTAMP NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (policy_key, version_no),
+    active_guard TINYINT GENERATED ALWAYS AS (
+        CASE WHEN status = 'ACTIVE' THEN 1 ELSE NULL END
+    ),
+    UNIQUE (policy_key, active_guard)
+);
+
+CREATE TABLE IF NOT EXISTS ai_decision_policy_shadow_item (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    trade_date DATE NOT NULL,
+    sample_id BIGINT NOT NULL,
+    stock_code VARCHAR(16) NOT NULL,
+    active_policy_version VARCHAR(32) NOT NULL,
+    shadow_policy_version VARCHAR(32) NOT NULL,
+    active_score DECIMAL(10,4) NULL,
+    shadow_score DECIMAL(10,4) NULL,
+    active_action VARCHAR(16) NULL,
+    shadow_action VARCHAR(16) NULL,
+    active_risk_score DECIMAL(10,4) NULL,
+    shadow_risk_score DECIMAL(10,4) NULL,
+    input_fingerprint VARCHAR(128) NOT NULL,
+    t1_prediction_id BIGINT NULL,
+    t2_prediction_id BIGINT NULL,
+    t3_prediction_id BIGINT NULL,
+    evaluation_status VARCHAR(32) NOT NULL DEFAULT 'PENDING_LABEL',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (user_id, trade_date, sample_id, shadow_policy_version, input_fingerprint)
+);
+
+CREATE TABLE IF NOT EXISTS ai_decision_policy_evaluation (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    policy_key VARCHAR(64) NOT NULL,
+    active_policy_version VARCHAR(32) NOT NULL,
+    shadow_policy_version VARCHAR(32) NOT NULL,
+    window_start_date DATE NOT NULL,
+    window_end_date DATE NOT NULL,
+    sample_count INT NOT NULL DEFAULT 0,
+    coverage_rate DECIMAL(10,6) NULL,
+    precision_at_k DECIMAL(10,6) NULL,
+    brier_score DECIMAL(10,6) NULL,
+    calibration_error DECIMAL(10,6) NULL,
+    excess_return DECIMAL(14,6) NULL,
+    max_drawdown DECIMAL(14,6) NULL,
+    turnover_rate DECIMAL(10,6) NULL,
+    comparison_json CLOB NOT NULL,
+    decision_status VARCHAR(32) NOT NULL DEFAULT 'OBSERVING',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (policy_key, shadow_policy_version, window_start_date, window_end_date)
+);
 
 CREATE TABLE IF NOT EXISTS ai_daily_decision_item (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
