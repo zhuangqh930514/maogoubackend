@@ -1,6 +1,7 @@
 package com.maogou.stock.infrastructure.market;
 
 import com.maogou.stock.config.AppProperties;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
@@ -31,6 +32,7 @@ public class HistoricalProviderRetryExecutorImpl implements HistoricalProviderRe
     private final int maxAttempts;
     private final long maxDelayMs;
 
+    @Autowired
     public HistoricalProviderRetryExecutorImpl(
             MarketSourceHealthRegistry healthRegistry,
             AppProperties properties
