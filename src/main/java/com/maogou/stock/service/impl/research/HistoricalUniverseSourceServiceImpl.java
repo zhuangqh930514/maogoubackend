@@ -89,6 +89,15 @@ public class HistoricalUniverseSourceServiceImpl implements HistoricalUniverseSo
             return missing(tradeDate, asOfTime, null, null,
                     List.of("缺少当日有效且已固化的历史股票池"));
         }
+        if (!"READY".equals(snapshot.pointInTimeStatus)
+                || blank(snapshot.membershipSourceName)
+                || blank(snapshot.membershipSourceRevision)
+                || snapshot.sourceObservedAt == null
+                || snapshot.sourceObservedAt.isAfter(asOfTime)
+                || mockSource(snapshot.membershipSourceName)) {
+            return missing(tradeDate, asOfTime, snapshot.id, null,
+                    List.of("历史股票池缺少 READY 的 PIT 状态、来源版本或可见观测时间"));
+        }
 
         List<AiResearchUniverseItem> items = itemMapper.selectList(
                 new QueryWrapper<AiResearchUniverseItem>()
@@ -100,11 +109,17 @@ public class HistoricalUniverseSourceServiceImpl implements HistoricalUniverseSo
         } else {
             for (AiResearchUniverseItem item : items) {
                 if (item == null || item.id == null || blank(item.stockCode)
+                        || !item.stockCode.matches("[036]\\d{5}")
+                        || blank(item.stockName)
                         || !"LISTED".equals(item.listedStatus)
+                        || !historicalSourceType(item.sourceType)
                         || item.effectiveFrom == null || item.effectiveFrom.isAfter(tradeDate)
-                        || blank(item.sourceFingerprint)) {
+                        || (item.effectiveTo != null && item.effectiveTo.isBefore(tradeDate))
+                        || blank(item.evidenceJson)
+                        || blank(item.sourceFingerprint)
+                        || excludedSecurityName(item.stockName)) {
                     missing.add((item == null || blank(item.stockCode) ? "未知股票" : item.stockCode)
-                            + " 缺少当日有效上市状态或成分来源指纹");
+                            + " 缺少当日有效上市状态、历史成分来源或成分来源指纹");
                 }
             }
         }
@@ -221,6 +236,17 @@ public class HistoricalUniverseSourceServiceImpl implements HistoricalUniverseSo
         String normalized = source == null ? "" : source.trim().toUpperCase(Locale.ROOT);
         return normalized.contains("MOCK") || normalized.contains("DEMO")
                 || normalized.contains("FALLBACK") || normalized.contains("SAMPLE");
+    }
+
+    private static boolean historicalSourceType(String sourceType) {
+        String normalized = sourceType == null ? "" : sourceType.trim().toUpperCase(Locale.ROOT);
+        return normalized.contains("HISTORICAL") && !normalized.contains("CURRENT");
+    }
+
+    private static boolean excludedSecurityName(String stockName) {
+        String normalized = stockName == null ? "" : stockName.trim().toUpperCase(Locale.ROOT);
+        return normalized.startsWith("ST") || normalized.startsWith("*ST")
+                || normalized.startsWith("PT") || normalized.contains("退");
     }
 
     private static String sourceKey(String sourceType, String stockCode) {

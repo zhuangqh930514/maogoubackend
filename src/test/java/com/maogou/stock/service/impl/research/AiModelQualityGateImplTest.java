@@ -44,7 +44,7 @@ class AiModelQualityGateImplTest {
 
     private static AiTrainingDataset dataset() {
         AiTrainingDataset dataset = new AiTrainingDataset();
-        dataset.status = "READY";
+        dataset.status = "FROZEN";
         dataset.rowCount = 1000;
         dataset.trainStartDate = LocalDate.of(2024, 1, 1);
         dataset.trainEndDate = LocalDate.of(2024, 12, 31);

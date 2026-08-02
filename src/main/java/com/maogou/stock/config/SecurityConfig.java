@@ -40,6 +40,8 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers("/api/auth/login", "/api/auth/register", "/actuator/health", "/actuator/info").permitAll()
+                        .requestMatchers("/api/ai/research-lab/historical-fast-start/**")
+                        .hasAnyRole("OPERATOR", "ADMIN")
                         .requestMatchers(HttpMethod.POST,
                                 "/api/ai/research-lab/actions/run-daily",
                                 "/api/ai/research-lab/actions/run-historical-bootstrap",

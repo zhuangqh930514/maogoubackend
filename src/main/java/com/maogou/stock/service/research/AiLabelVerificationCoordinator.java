@@ -14,6 +14,14 @@ public interface AiLabelVerificationCoordinator {
             int candidateLimit
     );
 
+    /** Historical replay must keep labels inside the originating backfill run. */
+    VerificationResult matureSampleLabels(
+            LocalDate tradeDate,
+            LocalDateTime verifiedAt,
+            int candidateLimit,
+            Long historicalBackfillRunId
+    );
+
     VerificationResult evaluatePredictions(LocalDate tradeDate, LocalDateTime evaluatedAt);
 
     VerificationResult evaluatePredictions(
@@ -31,6 +39,13 @@ public interface AiLabelVerificationCoordinator {
         return evaluatePredictions(tradeDate, evaluatedAt, candidateLimit);
     }
 
+    VerificationResult evaluateDueDailyPredictions(
+            LocalDate tradeDate,
+            LocalDateTime evaluatedAt,
+            int candidateLimit,
+            Long historicalBackfillRunId
+    );
+
     /** Historical work is intentionally separate from the daily due lane. */
     default VerificationResult evaluateHistoricalBacklog(
             LocalDate tradeDate,
@@ -39,6 +54,13 @@ public interface AiLabelVerificationCoordinator {
     ) {
         return evaluatePredictions(tradeDate, evaluatedAt, candidateLimit);
     }
+
+    VerificationResult evaluateHistoricalBacklog(
+            LocalDate tradeDate,
+            LocalDateTime evaluatedAt,
+            int candidateLimit,
+            Long historicalBackfillRunId
+    );
 
     record VerificationResult(
             int processedCount,

@@ -1,0 +1,7 @@
+# ACTION|TABLE|REASON
+KEEP|ai_historical_backfill_run|历史快速启动运行状态、配置指纹和总体进度
+KEEP|ai_historical_backfill_shard|历史快速启动分片 lease、checkpoint 和逐片失败状态
+KEEP|ai_raw_evidence_manifest|原始历史证据文件、版本和 checksum 清单
+KEEP|ai_data_quarantine|不可进入正式事实的逐行隔离记录
+KEEP|ai_training_readiness_snapshot|版本化训练准入和阻断项快照
+KEEP|ai_artifact_package_registry|事实包、数据集包和模型包 preview/import 注册表

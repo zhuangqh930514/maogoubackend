@@ -47,6 +47,8 @@ public class AppProperties {
         private long sourceCooldownBaseSeconds = 30;
         private long sourceCooldownMaxSeconds = 900;
         private int sourceCooldownFailureThreshold = 3;
+        private int historicalProviderMaxAttempts = 5;
+        private long historicalRetryMaxDelayMs = 60000;
         private BigDecimal sourcePriceTolerancePct = new BigDecimal("0.005");
         private BigDecimal sourceVolumeTolerancePct = new BigDecimal("0.15");
         private BigDecimal sourceMaxDailyChangePct = new BigDecimal("0.35");
@@ -154,6 +156,22 @@ public class AppProperties {
 
         public void setSourceCooldownFailureThreshold(int sourceCooldownFailureThreshold) {
             this.sourceCooldownFailureThreshold = sourceCooldownFailureThreshold;
+        }
+
+        public int getHistoricalProviderMaxAttempts() {
+            return historicalProviderMaxAttempts;
+        }
+
+        public void setHistoricalProviderMaxAttempts(int historicalProviderMaxAttempts) {
+            this.historicalProviderMaxAttempts = historicalProviderMaxAttempts;
+        }
+
+        public long getHistoricalRetryMaxDelayMs() {
+            return historicalRetryMaxDelayMs;
+        }
+
+        public void setHistoricalRetryMaxDelayMs(long historicalRetryMaxDelayMs) {
+            this.historicalRetryMaxDelayMs = historicalRetryMaxDelayMs;
         }
 
         public BigDecimal getSourcePriceTolerancePct() {
@@ -319,6 +337,7 @@ public class AppProperties {
         private int weeklyLookbackDays = 180;
         private int monthlyMinimumSamples = 1000;
         private String trainingArtifactRoot = "./data/ai-training";
+        private String historicalRawEvidenceRoot = "./data/ai-research/raw";
         private long modelPackageMaxBytes = 536870912L;
         private long historicalStateImportMaxBytes = 134217728L;
         private String trainerPythonExecutable = "python3";
@@ -471,6 +490,14 @@ public class AppProperties {
 
         public void setTrainingArtifactRoot(String trainingArtifactRoot) {
             this.trainingArtifactRoot = trainingArtifactRoot;
+        }
+
+        public String getHistoricalRawEvidenceRoot() {
+            return historicalRawEvidenceRoot;
+        }
+
+        public void setHistoricalRawEvidenceRoot(String historicalRawEvidenceRoot) {
+            this.historicalRawEvidenceRoot = historicalRawEvidenceRoot;
         }
 
         public long getModelPackageMaxBytes() {

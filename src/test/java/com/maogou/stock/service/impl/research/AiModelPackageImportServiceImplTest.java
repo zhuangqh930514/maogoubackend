@@ -35,6 +35,8 @@ import static org.mockito.Mockito.when;
 
 class AiModelPackageImportServiceImplTest {
 
+    private static final String FROZEN_CHECKSUM = "a".repeat(64);
+
     @TempDir
     Path tempDir;
 
@@ -128,7 +130,8 @@ class AiModelPackageImportServiceImplTest {
         dataset.modelFamily = "A_SHARE_MULTI_HORIZON";
         dataset.featureVersion = "POINT_IN_TIME/1.0.0";
         dataset.rowCount = 90550;
-        dataset.status = "READY";
+        dataset.status = "FROZEN";
+        dataset.freezeChecksum = FROZEN_CHECKSUM;
         when(datasetMapper.selectOne(any(QueryWrapper.class))).thenReturn(dataset);
         AiTrainingDatasetService datasetService = mock(AiTrainingDatasetService.class);
         when(datasetService.registerModel(any())).thenAnswer(invocation -> {
@@ -163,7 +166,8 @@ class AiModelPackageImportServiceImplTest {
         byte[] calibration = "{\"method\":\"sigmoid\",\"fitted\":true}".getBytes(StandardCharsets.UTF_8);
         byte[] dataset = ("{\"format\":\"MAOGOU_DATASET_MANIFEST_V1\",\"sourceSnapshot\":{\"schemaVersion\":\"20260714-unified-1.1\"},\"dataset\":{\"datasetKey\":\"MAOGOU_RANKER_T3\","
                 + "\"versionNo\":\"20260719003353\",\"lineageFingerprint\":\"647ff3101d4472e21e1c0e06bc97dd3e8fc93264d23094c82730783e81c1d611\","
-                + "\"featureVersion\":\"POINT_IN_TIME/1.0.0\",\"rowCount\":90550,\"status\":\"READY\"}}").getBytes(StandardCharsets.UTF_8);
+                + "\"featureVersion\":\"POINT_IN_TIME/1.0.0\",\"rowCount\":90550,\"status\":\"FROZEN\","
+                + "\"freezeChecksum\":\"" + FROZEN_CHECKSUM + "\",\"frozenAt\":\"2026-07-20T16:00:00\"}}").getBytes(StandardCharsets.UTF_8);
         byte[] packageManifest = ("{\"format\":\"MAOGOU_MODEL_PACKAGE_V1\",\"requiredRegistrationStatus\":\"CANDIDATE\","
                 + "\"datasetBusinessKey\":{\"datasetKey\":\"MAOGOU_RANKER_T3\",\"versionNo\":\"20260719003353\","
                 + "\"lineageFingerprint\":\"647ff3101d4472e21e1c0e06bc97dd3e8fc93264d23094c82730783e81c1d611\"},"

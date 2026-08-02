@@ -7,6 +7,7 @@ import java.time.LocalDateTime;
 public class AiTrainingDatasetSource {
     public Long sampleId;
     public Long sampleLabelId;
+    public Long backfillRunId;
     public String stockCode;
     public String marketRegime;
     public String sectorCode;

@@ -176,10 +176,20 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
             LocalDateTime verifiedAt,
             int candidateLimit
     ) {
+        return matureSampleLabels(tradeDate, verifiedAt, candidateLimit, null);
+    }
+
+    @Override
+    public VerificationResult matureSampleLabels(
+            LocalDate tradeDate,
+            LocalDateTime verifiedAt,
+            int candidateLimit,
+            Long historicalBackfillRunId
+    ) {
         requireTime(tradeDate, verifiedAt, "标签成熟");
         requireLimit(candidateLimit);
         List<AiSample> firstPage = pendingLabelCandidatesPage(
-                tradeDate, null, candidateLimit);
+                tradeDate, null, candidateLimit, historicalBackfillRunId);
         if (firstPage.isEmpty()) {
             return empty("MATURE_LABELS", tradeDate);
         }
@@ -241,7 +251,8 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
                     || page.size() < Math.min(CANDIDATE_SCAN_PAGE_SIZE, candidateLimit)) {
                 break;
             }
-            page = pendingLabelCandidatesPage(tradeDate, page.get(page.size() - 1), candidateLimit);
+            page = pendingLabelCandidatesPage(
+                    tradeDate, page.get(page.size() - 1), candidateLimit, historicalBackfillRunId);
         }
         if (inputs.isEmpty()) {
             return new VerificationResult(unavailableStocks.size(), 0, unavailableStocks.size(), errors,
@@ -332,7 +343,8 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
     private List<AiSample> pendingLabelCandidatesPage(
             LocalDate tradeDate,
             AiSample cursor,
-            int candidateLimit
+            int candidateLimit,
+            Long historicalBackfillRunId
     ) {
         int pageSize = Math.min(CANDIDATE_SCAN_PAGE_SIZE, candidateLimit);
         int scanLimit = Math.multiplyExact(pageSize, PENDING_FILTER_SCAN_MULTIPLIER);
@@ -341,12 +353,19 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
         AiSample scanCursor = cursor;
         int scanned = 0;
         while (pending.size() < pageSize && scanned < maximumScanCount) {
-            List<AiSample> candidates = sampleMapper.selectLabelCandidateScanPage(
-                    tradeDate, AiResearchContract.LABEL_VERSION,
-                    scanCursor == null ? null : scanCursor.tradeDate,
-                    scanCursor == null ? null : scanCursor.stockCode,
-                    scanCursor == null ? null : scanCursor.id,
-                    scanLimit);
+            List<AiSample> candidates = historicalBackfillRunId == null
+                    ? sampleMapper.selectLabelCandidateScanPage(
+                            tradeDate, AiResearchContract.LABEL_VERSION,
+                            scanCursor == null ? null : scanCursor.tradeDate,
+                            scanCursor == null ? null : scanCursor.stockCode,
+                            scanCursor == null ? null : scanCursor.id,
+                            scanLimit)
+                    : sampleMapper.selectLabelCandidateScanPageForBackfillRun(
+                            tradeDate, AiResearchContract.LABEL_VERSION,
+                            scanCursor == null ? null : scanCursor.tradeDate,
+                            scanCursor == null ? null : scanCursor.stockCode,
+                            scanCursor == null ? null : scanCursor.id,
+                            scanLimit, historicalBackfillRunId);
             if (candidates == null || candidates.isEmpty()) {
                 break;
             }
@@ -429,7 +448,8 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
     ) {
         requireTime(tradeDate, evaluatedAt, "预测评价");
         requireLimit(candidateLimit);
-        return evaluateCandidates(tradeDate, evaluatedAt, candidateLimit, false, "EVALUATE_PREDICTIONS");
+        return evaluateCandidates(tradeDate, evaluatedAt, candidateLimit, false,
+                "EVALUATE_PREDICTIONS", null);
     }
 
     @Override
@@ -440,7 +460,21 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
     ) {
         requireTime(tradeDate, evaluatedAt, "到期预测评价");
         requireLimit(candidateLimit);
-        return evaluateCandidates(tradeDate, evaluatedAt, candidateLimit, true, "EVALUATE_DUE_DAILY_PREDICTIONS");
+        return evaluateCandidates(tradeDate, evaluatedAt, candidateLimit, true,
+                "EVALUATE_DUE_DAILY_PREDICTIONS", null);
+    }
+
+    @Override
+    public VerificationResult evaluateDueDailyPredictions(
+            LocalDate tradeDate,
+            LocalDateTime evaluatedAt,
+            int candidateLimit,
+            Long historicalBackfillRunId
+    ) {
+        requireTime(tradeDate, evaluatedAt, "到期预测评价");
+        requireLimit(candidateLimit);
+        return evaluateCandidates(tradeDate, evaluatedAt, candidateLimit, true,
+                "EVALUATE_DUE_DAILY_PREDICTIONS", historicalBackfillRunId);
     }
 
     @Override
@@ -451,7 +485,21 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
     ) {
         requireTime(tradeDate, evaluatedAt, "历史预测回填");
         requireLimit(candidateLimit);
-        return evaluateCandidates(tradeDate, evaluatedAt, candidateLimit, false, "EVALUATE_HISTORICAL_BACKLOG");
+        return evaluateCandidates(tradeDate, evaluatedAt, candidateLimit, false,
+                "EVALUATE_HISTORICAL_BACKLOG", null);
+    }
+
+    @Override
+    public VerificationResult evaluateHistoricalBacklog(
+            LocalDate tradeDate,
+            LocalDateTime evaluatedAt,
+            int candidateLimit,
+            Long historicalBackfillRunId
+    ) {
+        requireTime(tradeDate, evaluatedAt, "历史预测回填");
+        requireLimit(candidateLimit);
+        return evaluateCandidates(tradeDate, evaluatedAt, candidateLimit, false,
+                "EVALUATE_HISTORICAL_BACKLOG", historicalBackfillRunId);
     }
 
     private VerificationResult evaluateCandidates(
@@ -459,19 +507,32 @@ public class AiLabelVerificationCoordinatorImpl implements AiLabelVerificationCo
             LocalDateTime evaluatedAt,
             int candidateLimit,
             boolean dueDailyOnly,
-            String operation
+            String operation,
+            Long historicalBackfillRunId
     ) {
         int processed = 0;
         List<AiPredictionEvaluation> evaluations = new ArrayList<>();
         List<String> errors = new ArrayList<>();
         while (processed < candidateLimit) {
             int limit = Math.min(EVALUATION_BATCH_SIZE, candidateLimit - processed);
-            List<AiPrediction> predictions = dueDailyOnly
-                    ? predictionMapper.selectDueDailyUnevaluatedCandidates(
-                            tradeDate, DAILY_DUE_LOOKBACK_DAYS, AiResearchContract.LABEL_VERSION,
-                            AiPredictionEvaluationServiceImpl.VERSION, limit)
-                    : predictionMapper.selectUnevaluatedCandidates(tradeDate, AiResearchContract.LABEL_VERSION,
-                            AiPredictionEvaluationServiceImpl.VERSION, limit);
+            List<AiPrediction> predictions;
+            if (dueDailyOnly) {
+                predictions = historicalBackfillRunId == null
+                        ? predictionMapper.selectDueDailyUnevaluatedCandidates(
+                                tradeDate, DAILY_DUE_LOOKBACK_DAYS, AiResearchContract.LABEL_VERSION,
+                                AiPredictionEvaluationServiceImpl.VERSION, limit)
+                        : predictionMapper.selectDueDailyUnevaluatedCandidatesForBackfillRun(
+                                tradeDate, DAILY_DUE_LOOKBACK_DAYS, AiResearchContract.LABEL_VERSION,
+                                AiPredictionEvaluationServiceImpl.VERSION, limit, historicalBackfillRunId);
+            } else {
+                predictions = historicalBackfillRunId == null
+                        ? predictionMapper.selectUnevaluatedCandidates(
+                                tradeDate, AiResearchContract.LABEL_VERSION,
+                                AiPredictionEvaluationServiceImpl.VERSION, limit)
+                        : predictionMapper.selectUnevaluatedCandidatesForBackfillRun(
+                                tradeDate, AiResearchContract.LABEL_VERSION,
+                                AiPredictionEvaluationServiceImpl.VERSION, limit, historicalBackfillRunId);
+            }
             if (predictions == null || predictions.isEmpty()) {
                 break;
             }

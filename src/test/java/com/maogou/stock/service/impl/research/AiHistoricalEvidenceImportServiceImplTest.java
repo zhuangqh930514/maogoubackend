@@ -17,6 +17,7 @@ import com.maogou.stock.service.research.AiHistoricalEvidenceImportService;
 import com.maogou.stock.service.research.AiResearchUniverseService;
 import com.maogou.stock.service.research.AiSecurityDailyStateService;
 import com.maogou.stock.service.research.AiSampleSnapshotService;
+import com.maogou.stock.service.research.HistoricalUniverseCatalogService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -24,7 +25,9 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -110,6 +113,8 @@ class AiHistoricalEvidenceImportServiceImplTest {
         AiHistoricalEvidenceImportService.ColdStartPlan plan = new AiHistoricalEvidenceImportService.ColdStartPlan(
                 tradeDate, tradeDate, 1, 1, 2, List.of(tradeDate));
         when(fixture.provider.fetchCurrentListedUniverse(anyInt(), any())).thenReturn(catalog(tradeDate));
+        when(fixture.historicalUniverseCatalogService.load(any(), any(), anyInt()))
+                .thenReturn(historicalCatalog(tradeDate));
         when(fixture.provider.fetchHistoricalKline(any(), anyInt(), any(), eq("NONE")))
                 .thenAnswer(invocation -> series(invocation.getArgument(0), tradeDate, "NONE"));
         when(fixture.provider.fetchHistoricalKline(any(), anyInt(), any(), eq("QFQ")))
@@ -189,6 +194,8 @@ class AiHistoricalEvidenceImportServiceImplTest {
         AiHistoricalEvidenceImportService.ColdStartPlan plan = new AiHistoricalEvidenceImportService.ColdStartPlan(
                 tradeDate, tradeDate, 1, 1, 2, List.of(tradeDate));
         when(fixture.provider.fetchCurrentListedUniverse(anyInt(), any())).thenReturn(catalog(tradeDate));
+        when(fixture.historicalUniverseCatalogService.load(any(), any(), anyInt()))
+                .thenReturn(historicalCatalog(tradeDate));
         when(fixture.provider.fetchHistoricalKline(any(), anyInt(), any(), any()))
                 .thenAnswer(invocation -> series(invocation.getArgument(0), tradeDate, invocation.getArgument(3)));
         when(fixture.universeService.createSystemCoreSnapshot(any())).thenReturn(snapshotResult(tradeDate));
@@ -217,7 +224,8 @@ class AiHistoricalEvidenceImportServiceImplTest {
                 fixture.dataBatchMapper,
                 fixture.observationMapper,
                 fixture.securityDailyStateService,
-                new ObjectMapper().findAndRegisterModules());
+                new ObjectMapper().findAndRegisterModules(),
+                fixture.historicalUniverseCatalogService);
     }
 
     private static Fixture fixture() {
@@ -229,6 +237,7 @@ class AiHistoricalEvidenceImportServiceImplTest {
                 mock(AiDataBatchMapper.class),
                 mock(AiSourceObservationMapper.class),
                 mock(AiSecurityDailyStateService.class),
+                mock(HistoricalUniverseCatalogService.class),
                 new AtomicLong(100));
     }
 
@@ -241,6 +250,21 @@ class AiHistoricalEvidenceImportServiceImplTest {
                 List.of(
                         new HistoricalMarketDataProvider.Security("000001", "平安银行", "SZ", listedOn.minusYears(10)),
                         new HistoricalMarketDataProvider.Security("600519", "贵州茅台", "SH", listedOn.minusYears(20))));
+    }
+
+    private static HistoricalUniverseCatalogService.CatalogPlan historicalCatalog(LocalDate date) {
+        AiResearchUniverseService.SnapshotResult snapshot = snapshotResult(date);
+        List<HistoricalMarketDataProvider.Security> securities = snapshot.items().stream()
+                .map(item -> new HistoricalMarketDataProvider.Security(
+                        item.stockCode, item.stockName, item.market, date.minusYears(10)))
+                .toList();
+        HistoricalUniverseCatalogService.DayCatalog day = new HistoricalUniverseCatalogService.DayCatalog(
+                date, snapshot.snapshot().id, "TUSHARE", "TEST-REVISION", REQUESTED_AT,
+                "historical-universe-fingerprint", snapshot.items(), securities);
+        Map<LocalDate, HistoricalUniverseCatalogService.DayCatalog> byDate = new LinkedHashMap<>();
+        byDate.put(date, day);
+        return new HistoricalUniverseCatalogService.CatalogPlan(
+                byDate, securities, "historical-plan-fingerprint");
     }
 
     private static KlineSeriesSnapshot series(String code, LocalDate date, String adjustmentMode) {
@@ -322,6 +346,7 @@ class AiHistoricalEvidenceImportServiceImplTest {
             AiDataBatchMapper dataBatchMapper,
             AiSourceObservationMapper observationMapper,
             AiSecurityDailyStateService securityDailyStateService,
+            HistoricalUniverseCatalogService historicalUniverseCatalogService,
             AtomicLong ids
     ) {
     }

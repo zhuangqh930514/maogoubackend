@@ -359,7 +359,7 @@ class AiTrainingDatasetServiceImplTest {
         dataset.testStartDate = LocalDate.of(2026, 3, 1);
         dataset.testEndDate = LocalDate.of(2026, 3, 31);
         dataset.rowCount = 120;
-        dataset.status = "READY";
+        dataset.status = "FROZEN";
         return dataset;
     }
 

@@ -28,8 +28,16 @@ public interface AiHistoricalEvidenceImportService {
     record ImportRequest(
             ColdStartPlan plan,
             String idempotencyKey,
-            LocalDateTime requestedAt
+            LocalDateTime requestedAt,
+            Long backfillRunId
     ) {
+        public ImportRequest(
+                ColdStartPlan plan,
+                String idempotencyKey,
+                LocalDateTime requestedAt
+        ) {
+            this(plan, idempotencyKey, requestedAt, null);
+        }
     }
 
     record ImportResult(

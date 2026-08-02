@@ -5,19 +5,23 @@ import com.maogou.stock.domain.entity.research.AiTrainingDataset;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
+
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 
 public interface AiTrainingDatasetMapper extends BaseMapper<AiTrainingDataset> {
 
     @Insert("""
             INSERT INTO ai_training_dataset (
-                research_universe_id, dataset_key, version_no, model_family, purpose, feature_version, label_version,
+                backfill_run_id, research_universe_id, dataset_key, version_no, model_family, purpose, feature_version, label_version,
                 calendar_version, as_of_time, train_start_date, train_end_date,
                 validation_start_date, validation_end_date, test_start_date, test_end_date,
                 max_horizon_days, purge_trading_days, embargo_trading_days,
                 source_query_json, selection_policy_json, lineage_fingerprint,
                 artifact_uri, artifact_checksum, row_count, status, finalized_at, created_at
             ) VALUES (
-                #{item.researchUniverseId}, #{item.datasetKey}, #{item.versionNo}, #{item.modelFamily}, #{item.purpose},
+                #{item.backfillRunId}, #{item.researchUniverseId}, #{item.datasetKey}, #{item.versionNo}, #{item.modelFamily}, #{item.purpose},
                 #{item.featureVersion}, #{item.labelVersion}, #{item.calendarVersion},
                 #{item.asOfTime}, #{item.trainStartDate}, #{item.trainEndDate},
                 #{item.validationStartDate}, #{item.validationEndDate}, #{item.testStartDate},
@@ -38,5 +42,43 @@ public interface AiTrainingDatasetMapper extends BaseMapper<AiTrainingDataset> {
     AiTrainingDataset selectByVersionForShare(
             @Param("datasetKey") String datasetKey,
             @Param("versionNo") String versionNo
+    );
+
+    @Select("""
+            SELECT * FROM ai_training_dataset
+            WHERE status = 'READY'
+              AND backfill_run_id = #{backfillRunId}
+              AND feature_version = #{featureVersion}
+              AND label_version = #{labelVersion}
+              AND calendar_version = #{calendarVersion}
+              AND test_end_date <= #{endDate}
+              AND as_of_time <= #{asOfTime}
+            ORDER BY as_of_time DESC, id DESC
+            LIMIT 1
+            FOR SHARE
+            """)
+    AiTrainingDataset selectLatestReadyForFreeze(
+            @Param("backfillRunId") Long backfillRunId,
+            @Param("featureVersion") String featureVersion,
+            @Param("labelVersion") String labelVersion,
+            @Param("calendarVersion") String calendarVersion,
+            @Param("endDate") LocalDate endDate,
+            @Param("asOfTime") LocalDateTime asOfTime
+    );
+
+    @Update("""
+            UPDATE ai_training_dataset
+            SET status = 'FROZEN', freeze_manifest_json = #{manifestJson},
+                freeze_checksum = #{checksum}, frozen_at = #{frozenAt}, frozen_by = #{frozenBy}
+            WHERE id = #{datasetId}
+              AND status = 'READY'
+              AND (freeze_checksum IS NULL OR freeze_checksum = '')
+            """)
+    int freezeImmutable(
+            @Param("datasetId") Long datasetId,
+            @Param("manifestJson") String manifestJson,
+            @Param("checksum") String checksum,
+            @Param("frozenAt") LocalDateTime frozenAt,
+            @Param("frozenBy") Long frozenBy
     );
 }

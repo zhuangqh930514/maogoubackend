@@ -28,7 +28,8 @@ public interface AiGlobalDailyResearchExecutor {
             LocalDateTime startedAt,
             int attemptNo,
             Map<String, String> checkpoints,
-            LeaseGuard leaseGuard
+            LeaseGuard leaseGuard,
+            Long historicalBackfillRunId
     ) {
         public PipelineContext(
                 Long pipelineRunId,
@@ -40,7 +41,24 @@ public interface AiGlobalDailyResearchExecutor {
                 LocalDateTime startedAt
         ) {
             this(pipelineRunId, tradeDate, strategyReleaseId, modelVersionId,
-                    idempotencyKey, inputFingerprint, startedAt, 0, Map.of(), LeaseGuard.NOOP);
+                    idempotencyKey, inputFingerprint, startedAt, 0, Map.of(), LeaseGuard.NOOP, null);
+        }
+
+        public PipelineContext(
+                Long pipelineRunId,
+                LocalDate tradeDate,
+                Long strategyReleaseId,
+                Long modelVersionId,
+                String idempotencyKey,
+                String inputFingerprint,
+                LocalDateTime startedAt,
+                int attemptNo,
+                Map<String, String> checkpoints,
+                LeaseGuard leaseGuard
+        ) {
+            this(pipelineRunId, tradeDate, strategyReleaseId, modelVersionId,
+                    idempotencyKey, inputFingerprint, startedAt, attemptNo, checkpoints,
+                    leaseGuard, null);
         }
 
         public PipelineContext {

@@ -17,7 +17,9 @@ class AiPredictionMapperAnnotationTest {
         for (String methodName : List.of(
                 "selectByIdempotencyKeysForShare",
                 "selectUnevaluatedCandidates",
+                "selectUnevaluatedCandidatesForBackfillRun",
                 "selectDueDailyUnevaluatedCandidates",
+                "selectDueDailyUnevaluatedCandidatesForBackfillRun",
                 "selectForDailyDecision",
                 "selectForAnalysis")) {
             Method method = java.util.Arrays.stream(AiPredictionMapper.class.getMethods())
@@ -48,6 +50,19 @@ class AiPredictionMapperAnnotationTest {
                 .contains("p.horizon_trading_days IN (1, 2, 3)")
                 .contains("p.trade_date DESC")
                 .doesNotContain("SELECT p.*");
+        for (String methodName : List.of(
+                "selectUnevaluatedCandidatesForBackfillRun",
+                "selectDueDailyUnevaluatedCandidatesForBackfillRun")) {
+            Method runAwareMethod = java.util.Arrays.stream(AiPredictionMapper.class.getMethods())
+                    .filter(candidate -> methodName.equals(candidate.getName()))
+                    .findFirst().orElseThrow();
+            String runAwareSql = String.join("\n", runAwareMethod.getAnnotation(Select.class).value());
+            assertThat(runAwareSql)
+                    .as(methodName)
+                    .contains("INNER JOIN ai_data_batch b")
+                    .contains("b.backfill_run_id = #{historicalBackfillRunId}")
+                    .contains("INNER JOIN ai_sample s");
+        }
         assertThatCode(() -> new MybatisConfiguration().addMapper(AiPredictionMapper.class))
                 .doesNotThrowAnyException();
     }

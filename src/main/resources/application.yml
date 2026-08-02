@@ -105,6 +105,7 @@ maogou:
     weekly-lookback-days: ${MAOGOU_WEEKLY_LOOKBACK_DAYS:180}
     monthly-minimum-samples: ${MAOGOU_MONTHLY_MINIMUM_SAMPLES:1000}
     training-artifact-root: "${MAOGOU_TRAINING_ARTIFACT_ROOT:./data/ai-training}"
+    historical-raw-evidence-root: "${MAOGOU_HISTORICAL_RAW_EVIDENCE_ROOT:./data/ai-research/raw}"
     model-package-max-bytes: ${MAOGOU_MODEL_PACKAGE_MAX_BYTES:536870912}
     historical-state-import-max-bytes: ${MAOGOU_HISTORICAL_STATE_IMPORT_MAX_BYTES:134217728}
     trainer-python-executable: "${MAOGOU_TRAINER_PYTHON_EXECUTABLE:python3}"

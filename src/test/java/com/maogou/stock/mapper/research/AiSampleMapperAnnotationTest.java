@@ -48,4 +48,19 @@ class AiSampleMapperAnnotationTest {
         assertThatCode(() -> new MybatisConfiguration().addMapper(AiSampleMapper.class))
                 .doesNotThrowAnyException();
     }
+
+    @Test
+    void historicalPendingLabelCandidatesJoinTheOwningBackfillRun() throws Exception {
+        Method method = AiSampleMapper.class.getMethod(
+                "selectLabelCandidateScanPageForBackfillRun", java.time.LocalDate.class,
+                String.class, java.time.LocalDate.class, String.class, Long.class, int.class, Long.class);
+        String sql = String.join("\n", method.getAnnotation(Select.class).value());
+
+        assertThat(sql)
+                .contains("INNER JOIN ai_data_batch b")
+                .contains("b.backfill_run_id = #{historicalBackfillRunId}")
+                .doesNotContain("CURRENT_LISTED");
+        assertThatCode(() -> new MybatisConfiguration().addMapper(AiSampleMapper.class))
+                .doesNotThrowAnyException();
+    }
 }

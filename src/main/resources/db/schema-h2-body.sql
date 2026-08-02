@@ -324,6 +324,7 @@ CREATE TABLE IF NOT EXISTS ai_research_universe_item_lineage (
 
 CREATE TABLE IF NOT EXISTS ai_data_batch (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    backfill_run_id BIGINT NULL,
     universe_snapshot_id BIGINT NOT NULL,
     trade_date DATE NOT NULL,
     sample_phase VARCHAR(32) NOT NULL,
@@ -350,6 +351,7 @@ CREATE TABLE IF NOT EXISTS ai_data_batch (
     UNIQUE KEY uk_data_batch_idempotency (idempotency_key),
     KEY idx_data_batch_trade_phase (trade_date, sample_phase, status),
     KEY idx_data_batch_universe (universe_snapshot_id, as_of_time),
+    KEY idx_data_batch_backfill_trade (backfill_run_id, trade_date, sample_phase, status),
     CONSTRAINT fk_data_batch_universe_snapshot
         FOREIGN KEY (universe_snapshot_id) REFERENCES ai_research_universe_snapshot (id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
@@ -578,6 +580,7 @@ CREATE TABLE IF NOT EXISTS ai_trading_calendar (
 
 CREATE TABLE IF NOT EXISTS ai_training_dataset (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    backfill_run_id BIGINT NULL,
     research_universe_id BIGINT NOT NULL,
     dataset_key VARCHAR(96) NOT NULL,
     version_no VARCHAR(64) NOT NULL,
@@ -604,11 +607,17 @@ CREATE TABLE IF NOT EXISTS ai_training_dataset (
     row_count INT NOT NULL DEFAULT 0,
     status VARCHAR(32) NOT NULL DEFAULT 'BUILDING',
     finalized_at DATETIME(3) NULL,
+    freeze_manifest_json CLOB NULL,
+    freeze_checksum VARCHAR(128) NULL,
+    frozen_at DATETIME(3) NULL,
+    frozen_by BIGINT NULL,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     UNIQUE KEY uk_training_dataset_version (dataset_key, version_no),
     UNIQUE KEY uk_training_dataset_lineage (lineage_fingerprint),
+    UNIQUE KEY uk_training_dataset_freeze_checksum (freeze_checksum),
     KEY idx_training_dataset_status (model_family, status, as_of_time),
     KEY idx_training_dataset_universe (research_universe_id, as_of_time),
+    KEY idx_training_dataset_backfill_status (backfill_run_id, status, as_of_time),
     CONSTRAINT chk_training_dataset_dates CHECK (
         train_start_date <= train_end_date
         AND train_end_date < validation_start_date
@@ -2301,3 +2310,201 @@ CREATE TABLE IF NOT EXISTS ai_conditional_rule_governance_event (
 );
 CREATE INDEX IF NOT EXISTS idx_conditional_rule_governance_config
     ON ai_conditional_rule_governance_event (user_id, trade_rule_config_id, occurred_at DESC);
+
+CREATE TABLE IF NOT EXISTS ai_historical_backfill_run (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    pipeline_run_id BIGINT,
+    run_key VARCHAR(160) NOT NULL,
+    mode VARCHAR(32) NOT NULL,
+    requested_start_date DATE,
+    requested_end_date DATE NOT NULL,
+    effective_sample_start_date DATE,
+    effective_sample_end_date DATE,
+    target_trading_days INT NOT NULL DEFAULT 0,
+    target_stocks_per_day INT NOT NULL DEFAULT 0,
+    feature_version VARCHAR(64) NOT NULL,
+    factor_version VARCHAR(64) NOT NULL,
+    label_version VARCHAR(64) NOT NULL,
+    calendar_version VARCHAR(64) NOT NULL,
+    industry_standard VARCHAR(32) NOT NULL,
+    source_manifest_checksum VARCHAR(128),
+    run_config_json CLOB NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'PLANNED',
+    current_stage VARCHAR(64),
+    total_shards INT NOT NULL DEFAULT 0,
+    succeeded_shards INT NOT NULL DEFAULT 0,
+    quarantined_shards INT NOT NULL DEFAULT 0,
+    failed_shards INT NOT NULL DEFAULT 0,
+    readiness_snapshot_id BIGINT,
+    lease_owner VARCHAR(64),
+    lease_until TIMESTAMP(3),
+    last_heartbeat_at TIMESTAMP(3),
+    error_summary CLOB,
+    requested_by BIGINT NOT NULL,
+    created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    started_at TIMESTAMP(3),
+    finished_at TIMESTAMP(3),
+    updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    UNIQUE (run_key),
+    FOREIGN KEY (pipeline_run_id) REFERENCES ai_pipeline_run (id),
+    FOREIGN KEY (requested_by) REFERENCES user_account (id)
+);
+CREATE INDEX IF NOT EXISTS idx_historical_backfill_run_status
+    ON ai_historical_backfill_run (status, lease_until, updated_at);
+CREATE INDEX IF NOT EXISTS idx_historical_backfill_run_date
+    ON ai_historical_backfill_run (requested_end_date, label_version, status);
+
+CREATE TABLE IF NOT EXISTS ai_historical_backfill_shard (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    backfill_run_id BIGINT NOT NULL,
+    stage_key VARCHAR(64) NOT NULL,
+    trade_date DATE,
+    bucket_no INT NOT NULL DEFAULT 0,
+    idempotency_key VARCHAR(160) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+    attempt_no INT NOT NULL DEFAULT 0,
+    max_attempts INT NOT NULL DEFAULT 5,
+    input_count INT NOT NULL DEFAULT 0,
+    output_count INT NOT NULL DEFAULT 0,
+    rejected_count INT NOT NULL DEFAULT 0,
+    checkpoint_json CLOB,
+    input_fingerprint VARCHAR(128),
+    output_fingerprint VARCHAR(128),
+    provider_code VARCHAR(64),
+    endpoint_type VARCHAR(96),
+    next_retry_at TIMESTAMP(3),
+    lease_owner VARCHAR(64),
+    lease_until TIMESTAMP(3),
+    started_at TIMESTAMP(3),
+    finished_at TIMESTAMP(3),
+    error_code VARCHAR(64),
+    error_message VARCHAR(2048),
+    error_detail CLOB,
+    created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    UNIQUE (idempotency_key),
+    UNIQUE (backfill_run_id, stage_key, trade_date, bucket_no),
+    FOREIGN KEY (backfill_run_id) REFERENCES ai_historical_backfill_run (id)
+);
+CREATE INDEX IF NOT EXISTS idx_historical_backfill_shard_claim
+    ON ai_historical_backfill_shard (status, next_retry_at, lease_until);
+CREATE INDEX IF NOT EXISTS idx_historical_backfill_shard_run
+    ON ai_historical_backfill_shard (backfill_run_id, stage_key, status, trade_date);
+
+CREATE TABLE IF NOT EXISTS ai_raw_evidence_manifest (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    backfill_run_id BIGINT,
+    provider_code VARCHAR(64) NOT NULL,
+    dataset_code VARCHAR(96) NOT NULL,
+    source_revision VARCHAR(128) NOT NULL,
+    object_uri VARCHAR(1024) NOT NULL,
+    object_size BIGINT NOT NULL DEFAULT 0,
+    object_checksum VARCHAR(128) NOT NULL,
+    schema_version VARCHAR(64) NOT NULL,
+    row_count BIGINT NOT NULL DEFAULT 0,
+    range_start_date DATE,
+    range_end_date DATE,
+    observed_at TIMESTAMP(3) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'STAGED',
+    manifest_json CLOB NOT NULL,
+    created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    UNIQUE (provider_code, dataset_code, source_revision, object_checksum),
+    FOREIGN KEY (backfill_run_id) REFERENCES ai_historical_backfill_run (id)
+);
+
+CREATE TABLE IF NOT EXISTS ai_data_quarantine (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    backfill_run_id BIGINT NOT NULL,
+    shard_id BIGINT,
+    provider_code VARCHAR(64) NOT NULL,
+    dataset_code VARCHAR(96) NOT NULL,
+    trade_date DATE,
+    stock_code VARCHAR(16),
+    industry_code VARCHAR(32),
+    source_row_number BIGINT,
+    field_name VARCHAR(96),
+    reason_code VARCHAR(64) NOT NULL,
+    reason_message VARCHAR(2048) NOT NULL,
+    raw_fingerprint VARCHAR(128),
+    quarantine_fingerprint VARCHAR(128) NOT NULL,
+    retryable TINYINT NOT NULL DEFAULT 0,
+    resolution_status VARCHAR(32) NOT NULL DEFAULT 'OPEN',
+    created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    resolved_at TIMESTAMP(3),
+    UNIQUE (backfill_run_id, quarantine_fingerprint),
+    FOREIGN KEY (backfill_run_id) REFERENCES ai_historical_backfill_run (id),
+    FOREIGN KEY (shard_id) REFERENCES ai_historical_backfill_shard (id)
+);
+CREATE INDEX IF NOT EXISTS idx_data_quarantine_run
+    ON ai_data_quarantine (backfill_run_id, resolution_status, reason_code);
+CREATE INDEX IF NOT EXISTS idx_data_quarantine_stock
+    ON ai_data_quarantine (stock_code, trade_date, dataset_code);
+
+CREATE TABLE IF NOT EXISTS ai_training_readiness_snapshot (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    backfill_run_id BIGINT,
+    pipeline_run_id BIGINT,
+    as_of_time TIMESTAMP(3) NOT NULL,
+    feature_version VARCHAR(64) NOT NULL,
+    factor_version VARCHAR(64) NOT NULL,
+    label_version VARCHAR(64) NOT NULL,
+    calendar_version VARCHAR(64) NOT NULL,
+    trading_days INT NOT NULL DEFAULT 0,
+    stock_count INT NOT NULL DEFAULT 0,
+    horizon_counts_json CLOB NOT NULL,
+    regime_days_json CLOB NOT NULL,
+    tradability_eligible INT NOT NULL DEFAULT 0,
+    tradability_ready INT NOT NULL DEFAULT 0,
+    tradability_coverage DECIMAL(10, 6) NOT NULL DEFAULT 0,
+    universe_eligible INT NOT NULL DEFAULT 0,
+    universe_ready INT NOT NULL DEFAULT 0,
+    universe_coverage DECIMAL(10, 6) NOT NULL DEFAULT 0,
+    sector_eligible INT NOT NULL DEFAULT 0,
+    sector_ready INT NOT NULL DEFAULT 0,
+    sector_coverage DECIMAL(10, 6) NOT NULL DEFAULT 0,
+    feature_coverage_json CLOB NOT NULL,
+    class_distribution_json CLOB NOT NULL,
+    leakage_violation_count INT NOT NULL DEFAULT 0,
+    duplicate_count INT NOT NULL DEFAULT 0,
+    mock_source_count INT NOT NULL DEFAULT 0,
+    stale_source_count INT NOT NULL DEFAULT 0,
+    inferred_fact_count INT NOT NULL DEFAULT 0,
+    status VARCHAR(32) NOT NULL DEFAULT 'INSUFFICIENT_DATA',
+    blocking_gaps_json CLOB NOT NULL,
+    evidence_checksum VARCHAR(128) NOT NULL,
+    created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    UNIQUE (evidence_checksum),
+    FOREIGN KEY (backfill_run_id) REFERENCES ai_historical_backfill_run (id),
+    FOREIGN KEY (pipeline_run_id) REFERENCES ai_pipeline_run (id)
+);
+CREATE INDEX IF NOT EXISTS idx_training_readiness_status
+    ON ai_training_readiness_snapshot (status, as_of_time);
+CREATE INDEX IF NOT EXISTS idx_training_readiness_version
+    ON ai_training_readiness_snapshot (label_version, as_of_time);
+
+CREATE TABLE IF NOT EXISTS ai_artifact_package_registry (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    package_type VARCHAR(32) NOT NULL,
+    package_format VARCHAR(96) NOT NULL,
+    package_version VARCHAR(32) NOT NULL,
+    package_checksum VARCHAR(128) NOT NULL,
+    signature_key_id VARCHAR(128),
+    signature_status VARCHAR(32) NOT NULL DEFAULT 'UNVERIFIED',
+    source_schema_version VARCHAR(64),
+    source_git_commit VARCHAR(64),
+    preview_status VARCHAR(32) NOT NULL DEFAULT 'NOT_PREVIEWED',
+    preview_token_hash VARCHAR(128),
+    preview_expires_at TIMESTAMP(3),
+    import_status VARCHAR(32) NOT NULL DEFAULT 'NOT_IMPORTED',
+    imported_by BIGINT,
+    imported_at TIMESTAMP(3),
+    manifest_json CLOB NOT NULL,
+    validation_json CLOB,
+    error_message VARCHAR(2048),
+    created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    UNIQUE (package_checksum),
+    FOREIGN KEY (imported_by) REFERENCES user_account (id)
+);
+CREATE INDEX IF NOT EXISTS idx_artifact_package_status
+    ON ai_artifact_package_registry (package_type, import_status, created_at);

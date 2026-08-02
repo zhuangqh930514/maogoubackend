@@ -117,4 +117,52 @@ public interface AiSampleMapper extends BaseMapper<AiSample> {
             @Param("afterId") Long afterId,
             @Param("limit") int limit
     );
+
+    @Select("""
+            <script>
+            SELECT s.id, s.data_batch_id, s.stock_code, s.trade_date,
+                   s.tradable_status, s.source_fingerprint,
+                   CASE WHEN EXISTS (
+                       SELECT 1
+                       FROM ai_sample_label current_label
+                       INNER JOIN ai_security_daily_state state
+                         ON state.stock_code = s.stock_code
+                        AND state.trade_date BETWEEN current_label.entry_trade_date AND current_label.exit_trade_date
+                        AND state.is_current = 1
+                        AND state.quality_status = 'READY'
+                       WHERE current_label.sample_id = s.id
+                         AND current_label.label_version = #{labelVersion}
+                         AND current_label.is_current = 1
+                         AND LOCATE(state.source_fingerprint, COALESCE(current_label.market_evidence_json, '')) = 0
+                   ) THEN 1 ELSE 0 END AS state_refresh_required
+            FROM ai_sample s FORCE INDEX (idx_sample_pending_labels)
+            INNER JOIN ai_data_batch b
+              ON b.id = s.data_batch_id
+             AND b.backfill_run_id = #{historicalBackfillRunId}
+            WHERE s.trade_date &lt; #{tradeDate}
+              AND s.quality_status IN ('READY', 'PARTIAL')
+              AND s.tradable_status = 'TRADABLE'
+              <if test="afterTradeDate != null">
+                AND (
+                    s.trade_date &lt; #{afterTradeDate,jdbcType=DATE}
+                    OR (s.trade_date = #{afterTradeDate,jdbcType=DATE}
+                        AND s.stock_code &lt; #{afterStockCode,jdbcType=VARCHAR})
+                    OR (s.trade_date = #{afterTradeDate,jdbcType=DATE}
+                        AND s.stock_code = #{afterStockCode,jdbcType=VARCHAR}
+                        AND s.id &lt; #{afterId,jdbcType=BIGINT})
+                )
+              </if>
+            ORDER BY s.trade_date DESC, s.stock_code DESC, s.id DESC
+            LIMIT #{limit}
+            </script>
+            """)
+    List<AiSample> selectLabelCandidateScanPageForBackfillRun(
+            @Param("tradeDate") LocalDate tradeDate,
+            @Param("labelVersion") String labelVersion,
+            @Param("afterTradeDate") LocalDate afterTradeDate,
+            @Param("afterStockCode") String afterStockCode,
+            @Param("afterId") Long afterId,
+            @Param("limit") int limit,
+            @Param("historicalBackfillRunId") Long historicalBackfillRunId
+    );
 }

@@ -218,6 +218,7 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
         AiDataBatch batch = sampleSnapshotService.startOrGetBatch(
                 snapshotId, context.tradeDate(), "AFTER_CLOSE", fetchStartedAt,
                 batchIdempotencyKey(context));
+        bindHistoricalBackfill(batch, context);
         List<AiSourceObservation> existingObservations = observations(batch.id);
         if (!existingObservations.isEmpty() && hasCompleteCoreEvidence(items, existingObservations)) {
             return resumeExistingSourceData(batch, items, existingObservations);
@@ -857,11 +858,19 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
     }
 
     private StepOutcome matureSampleLabels(PipelineContext context, String stepKey, Integer candidateLimit) {
-        AiLabelVerificationCoordinator.VerificationResult result =
-                candidateLimit == null
-                        ? labelCoordinator.matureSampleLabels(context.tradeDate(), context.startedAt())
-                        : labelCoordinator.matureSampleLabels(
-                                context.tradeDate(), context.startedAt(), candidateLimit);
+        AiLabelVerificationCoordinator.VerificationResult result;
+        Long backfillRunId = context.historicalBackfillRunId();
+        if (backfillRunId != null) {
+            result = labelCoordinator.matureSampleLabels(
+                    context.tradeDate(), context.startedAt(),
+                    candidateLimit == null ? HISTORICAL_FINALIZE_BATCH_SIZE : candidateLimit,
+                    backfillRunId);
+        } else {
+            result = candidateLimit == null
+                    ? labelCoordinator.matureSampleLabels(context.tradeDate(), context.startedAt())
+                    : labelCoordinator.matureSampleLabels(
+                            context.tradeDate(), context.startedAt(), candidateLimit);
+        }
         Map<String, Object> checkpoint = new LinkedHashMap<>();
         checkpoint.put("maturedCount", result.successCount());
         checkpoint.put("failedCount", result.failedCount());
@@ -1002,8 +1011,13 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
     }
 
     private StepOutcome evaluateHistoricalPredictions(PipelineContext context) {
-        AiLabelVerificationCoordinator.VerificationResult result = labelCoordinator.evaluateHistoricalBacklog(
-                context.tradeDate(), LocalDateTime.now(), HISTORICAL_FINALIZE_BATCH_SIZE);
+        LocalDateTime evaluatedAt = LocalDateTime.now();
+        AiLabelVerificationCoordinator.VerificationResult result = context.historicalBackfillRunId() == null
+                ? labelCoordinator.evaluateHistoricalBacklog(
+                        context.tradeDate(), evaluatedAt, HISTORICAL_FINALIZE_BATCH_SIZE)
+                : labelCoordinator.evaluateHistoricalBacklog(
+                        context.tradeDate(), evaluatedAt, HISTORICAL_FINALIZE_BATCH_SIZE,
+                        context.historicalBackfillRunId());
         return evaluationOutcome("EVALUATE_HISTORICAL_PREDICTIONS", result);
     }
 
@@ -1235,6 +1249,21 @@ public class GlobalDailyResearchExecutor implements AiGlobalDailyResearchExecuto
     private static String batchIdempotencyKey(PipelineContext context) {
         return "BATCH:" + fingerprint(
                 context.pipelineRunId(), context.idempotencyKey(), context.tradeDate(), context.attemptNo());
+    }
+
+    private void bindHistoricalBackfill(AiDataBatch batch, PipelineContext context) {
+        Long runId = context.historicalBackfillRunId();
+        if (runId == null) {
+            return;
+        }
+        if (batch.backfillRunId != null && !runId.equals(batch.backfillRunId)) {
+            throw new IllegalStateException("数据批次已绑定其他历史运行，拒绝混用：batch="
+                    + batch.id + ", existingRun=" + batch.backfillRunId + ", requestedRun=" + runId);
+        }
+        if (!runId.equals(batch.backfillRunId)) {
+            batch.backfillRunId = runId;
+            dataBatchMapper.updateById(batch);
+        }
     }
 
     private static String marketRegime(KlineSeriesSnapshot series) {

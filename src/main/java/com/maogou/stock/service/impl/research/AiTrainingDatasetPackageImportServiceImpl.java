@@ -236,10 +236,16 @@ public class AiTrainingDatasetPackageImportServiceImpl implements AiTrainingData
         }
         JsonNode packageManifest = json(root.resolve("package-manifest.json"), "训练数据包清单");
         require("MAOGOU_TRAINING_DATASET_PACKAGE_V1", text(packageManifest, "format"), "训练数据包格式");
+        require("FROZEN", text(packageManifest, "datasetStatus"), "训练数据集冻结状态");
         String sourceSchemaVersion = safeIdentifier(text(packageManifest, "sourceSchemaVersion"), "来源 schema 版本");
         JsonNode manifest = json(root.resolve("dataset-manifest.json"), "训练数据集清单");
         require("MAOGOU_TRAINING_DATASET_MANIFEST_V1", text(manifest, "format"), "训练数据集清单格式");
         JsonNode dataset = object(manifest, "dataset");
+        require("FROZEN", text(dataset, "status"), "训练数据集冻结状态");
+        String freezeChecksum = checksum(text(dataset, "freezeChecksum"), "freezeChecksum");
+        LocalDateTime frozenAt = dateTime(dataset, "frozenAt");
+        String freezeManifestJson = text(dataset, "freezeManifestJson");
+        verifyFreezeManifest(freezeManifestJson, freezeChecksum, dataset);
         JsonNode universe = object(manifest, "researchUniverse");
         JsonNode sourceSnapshot = object(manifest, "sourceSnapshot");
         require(sourceSchemaVersion, text(sourceSnapshot, "schemaVersion"), "来源快照 schema 版本");
@@ -264,8 +270,8 @@ public class AiTrainingDatasetPackageImportServiceImpl implements AiTrainingData
                 date(dataset, "testStartDate"), date(dataset, "testEndDate"),
                 positiveInt(dataset, "maxHorizonDays"), nonNegativeInt(dataset, "purgeTradingDays"),
                 nonNegativeInt(dataset, "embargoTradingDays"), checksum(text(dataset, "lineageFingerprint"), "lineageFingerprint"),
-                checksum(artifactChecksum, "artifactChecksum"), safeIdentifier(text(universe, "universeCode"), "universeCode"),
-                items, sourceSnapshot);
+                checksum(artifactChecksum, "artifactChecksum"), freezeChecksum, frozenAt, freezeManifestJson,
+                safeIdentifier(text(universe, "universeCode"), "universeCode"), items, sourceSnapshot);
         validateDatasetWindows(parsed);
         return parsed;
     }
@@ -389,7 +395,10 @@ public class AiTrainingDatasetPackageImportServiceImpl implements AiTrainingData
         value.artifactUri = artifactRoot.resolve("dataset.jsonl").toUri().toString();
         value.artifactChecksum = source.artifactChecksum();
         value.rowCount = source.items().size();
-        value.status = "READY";
+        value.status = "FROZEN";
+        value.freezeManifestJson = source.freezeManifestJson();
+        value.freezeChecksum = source.freezeChecksum();
+        value.frozenAt = source.frozenAt();
         value.finalizedAt = source.asOfTime();
         value.createdAt = LocalDateTime.now();
         return value;
@@ -414,7 +423,8 @@ public class AiTrainingDatasetPackageImportServiceImpl implements AiTrainingData
                 || !Objects.equals(existing.labelVersion, source.labelVersion())
                 || !Objects.equals(existing.calendarVersion, source.calendarVersion())
                 || !Objects.equals(existing.rowCount, source.items().size())
-                || !"READY".equals(existing.status)) {
+                || !Objects.equals(existing.freezeChecksum, source.freezeChecksum())
+                || !"FROZEN".equals(existing.status)) {
             throw new IllegalStateException("不可变训练数据集冲突：" + source.datasetKey() + "/" + source.versionNo());
         }
     }
@@ -635,6 +645,23 @@ public class AiTrainingDatasetPackageImportServiceImpl implements AiTrainingData
         }
     }
 
+    private void verifyFreezeManifest(String manifestJson, String checksum, JsonNode dataset) {
+        try {
+            if (!checksum.equalsIgnoreCase(sha256(manifestJson.getBytes(StandardCharsets.UTF_8)))) {
+                throw new IllegalArgumentException("训练数据集冻结 manifest checksum 不一致");
+            }
+            JsonNode manifest = objectMapper.readTree(manifestJson);
+            if (manifest == null || !manifest.isObject()
+                    || !"MAOGOU_FROZEN_DATASET_MANIFEST_V1".equals(manifest.path("format").asText())
+                    || !Objects.equals(text(dataset, "datasetKey"), manifest.path("datasetKey").asText())
+                    || !Objects.equals(text(dataset, "versionNo"), manifest.path("versionNo").asText())) {
+                throw new IllegalArgumentException("训练数据集冻结 manifest 内容无效");
+            }
+        } catch (IOException exception) {
+            throw new IllegalArgumentException("训练数据集冻结 manifest 不是有效 JSON", exception);
+        }
+    }
+
     private static void assertExistingArtifactMatches(Path target, Path unpacked) throws IOException {
         for (String file : REQUIRED_FILES) {
             Path expected = unpacked.resolve(file);
@@ -664,6 +691,14 @@ public class AiTrainingDatasetPackageImportServiceImpl implements AiTrainingData
                 }
             }
             return HexFormat.of().formatHex(digest.digest());
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 不可用", exception);
+        }
+    }
+
+    private static String sha256(byte[] value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value));
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("SHA-256 不可用", exception);
         }
@@ -707,6 +742,9 @@ public class AiTrainingDatasetPackageImportServiceImpl implements AiTrainingData
             int embargoTradingDays,
             String lineageFingerprint,
             String artifactChecksum,
+            String freezeChecksum,
+            LocalDateTime frozenAt,
+            String freezeManifestJson,
             String universeCode,
             List<PackageItem> items,
             JsonNode sourceSnapshot

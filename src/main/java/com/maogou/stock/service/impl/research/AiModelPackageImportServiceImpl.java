@@ -335,7 +335,9 @@ public class AiModelPackageImportServiceImpl implements AiModelPackageImportServ
         require(datasetVersion, text(dataset, "versionNo"), "训练数据集 version");
         require(lineage, text(dataset, "lineageFingerprint"), "训练数据集血缘");
         require(featureVersion, text(dataset, "featureVersion"), "训练数据集特征版本");
-        require("READY", text(dataset, "status"), "本地训练数据集状态");
+        require("FROZEN", text(dataset, "status"), "本地训练数据集状态");
+        String datasetFreezeChecksum = checksum(text(dataset, "freezeChecksum"), "训练数据集冻结 checksum");
+        dateTime(dataset, "frozenAt");
         if (sampleCount != positiveInt(dataset, "rowCount")) {
             throw new IllegalArgumentException("模型样本数与训练数据集行数不一致");
         }
@@ -361,7 +363,7 @@ public class AiModelPackageImportServiceImpl implements AiModelPackageImportServ
         }
         return new CandidatePackage(root, packageChecksum, modelFamily, modelKey, versionNo, modelType, algorithm,
                 featureVersion, trainerVersion, randomSeed, sampleCount, datasetKey, datasetVersion, lineage,
-                checksums.get("model.onnx"), checksums.get("feature-manifest.json"), sourceSchemaVersion,
+                datasetFreezeChecksum, checksums.get("model.onnx"), checksums.get("feature-manifest.json"), sourceSchemaVersion,
                 metrics, calibration);
     }
 
@@ -379,8 +381,9 @@ public class AiModelPackageImportServiceImpl implements AiModelPackageImportServ
                 .eq("lineage_fingerprint", candidate.datasetLineageFingerprint())
                 .eq("model_family", candidate.modelFamily())
                 .eq("feature_version", candidate.featureVersion())
+                .eq("freeze_checksum", candidate.datasetFreezeChecksum())
                 .eq("row_count", candidate.sampleCount())
-                .eq("status", "READY"));
+                .eq("status", "FROZEN"));
         if (dataset == null || dataset.id == null) {
             throw new IllegalArgumentException("生产环境不存在完全匹配的 READY 训练数据集血缘，拒绝导入");
         }
@@ -457,6 +460,21 @@ public class AiModelPackageImportServiceImpl implements AiModelPackageImportServ
         }
     }
 
+    private static String checksum(String value, String label) {
+        if (value == null || !value.matches("[0-9a-fA-F]{64}")) {
+            throw new IllegalArgumentException(label + "无效");
+        }
+        return value.toLowerCase();
+    }
+
+    private static void dateTime(JsonNode parent, String field) {
+        try {
+            java.time.LocalDateTime.parse(text(parent, field));
+        } catch (java.time.format.DateTimeParseException exception) {
+            throw new IllegalArgumentException("模型包时间字段无效：" + field);
+        }
+    }
+
     private static void requireSafeIdentifier(String value, String label) {
         if (!SAFE_IDENTIFIER.matcher(value).matches()) {
             throw new IllegalArgumentException(label + "包含不安全字符");
@@ -519,6 +537,7 @@ public class AiModelPackageImportServiceImpl implements AiModelPackageImportServ
             String datasetKey,
             String datasetVersion,
             String datasetLineageFingerprint,
+            String datasetFreezeChecksum,
             String modelChecksum,
             String featureManifestChecksum,
             String sourceSchemaVersion,
@@ -536,7 +555,7 @@ public class AiModelPackageImportServiceImpl implements AiModelPackageImportServ
         CandidatePackage relocate(Path newRoot) {
             return new CandidatePackage(newRoot, packageChecksum, modelFamily, modelKey, versionNo, modelType,
                     algorithm, featureVersion, trainerVersion, randomSeed, sampleCount, datasetKey,
-                    datasetVersion, datasetLineageFingerprint, modelChecksum, featureManifestChecksum,
+                    datasetVersion, datasetLineageFingerprint, datasetFreezeChecksum, modelChecksum, featureManifestChecksum,
                     sourceSchemaVersion, metrics, calibration);
         }
     }

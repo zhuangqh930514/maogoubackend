@@ -87,6 +87,31 @@ class HistoricalUniverseSourceServiceImplTest {
     }
 
     @Test
+    void rejectsPointInTimePartialSnapshotEvenWhenOtherFieldsLookReady() {
+        Fixture fixture = readyFixture();
+        when(fixture.snapshotMapper.selectOne(any()))
+                .thenReturn(snapshot("TUSHARE_HISTORICAL_UNIVERSE", "PARTIAL"));
+
+        HistoricalUniverseSourceService.HistoricalDayEvidence result = service(fixture).load(TRADE_DATE, AS_OF);
+
+        assertThat(result.status()).isEqualTo("MISSING_HISTORICAL_UNIVERSE");
+        assertThat(result.missingEvidence()).anyMatch(reason -> reason.contains("PIT 状态"));
+    }
+
+    @Test
+    void rejectsCurrentUniverseSourceEvenWhenItIsMarkedReady() {
+        Fixture fixture = readyFixture();
+        AiResearchUniverseItem item = item();
+        item.sourceType = "SYSTEM_CURRENT_LISTED";
+        when(fixture.itemMapper.selectList(any())).thenReturn(List.of(item));
+
+        HistoricalUniverseSourceService.HistoricalDayEvidence result = service(fixture).load(TRADE_DATE, AS_OF);
+
+        assertThat(result.status()).isEqualTo("MISSING_HISTORICAL_UNIVERSE");
+        assertThat(result.missingEvidence()).anyMatch(reason -> reason.contains("历史成分来源"));
+    }
+
+    @Test
     void rejectsLateOrMockAdjustmentEvidence() {
         Fixture fixture = readyFixture();
         when(fixture.itemMapper.selectList(any())).thenReturn(List.of(item()));
@@ -107,13 +132,7 @@ class HistoricalUniverseSourceServiceImplTest {
     private static Fixture readyFixture() {
         Fixture fixture = fixture();
         when(fixture.calendarMapper.selectByDates(any(), any(), any())).thenReturn(List.of(calendar(1)));
-        AiResearchUniverseSnapshot snapshot = new AiResearchUniverseSnapshot();
-        snapshot.id = 11L;
-        snapshot.tradeDate = TRADE_DATE;
-        snapshot.asOfTime = AS_OF;
-        snapshot.qualityStatus = "READY";
-        snapshot.status = "FINALIZED";
-        snapshot.sourceFingerprint = "universe-fingerprint";
+        AiResearchUniverseSnapshot snapshot = snapshot("TUSHARE_HISTORICAL_UNIVERSE", "READY");
         when(fixture.snapshotMapper.selectOne(any())).thenReturn(snapshot);
         AiDataBatch batch = new AiDataBatch();
         batch.id = 21L;
@@ -124,6 +143,21 @@ class HistoricalUniverseSourceServiceImplTest {
         batch.status = "SUCCESS";
         when(fixture.batchMapper.selectOne(any())).thenReturn(batch);
         return fixture;
+    }
+
+    private static AiResearchUniverseSnapshot snapshot(String sourceName, String pointInTimeStatus) {
+        AiResearchUniverseSnapshot snapshot = new AiResearchUniverseSnapshot();
+        snapshot.id = 11L;
+        snapshot.tradeDate = TRADE_DATE;
+        snapshot.asOfTime = AS_OF;
+        snapshot.membershipSourceName = sourceName;
+        snapshot.membershipSourceRevision = "REVISION-1";
+        snapshot.sourceObservedAt = TRADE_DATE.atTime(15, 0);
+        snapshot.pointInTimeStatus = pointInTimeStatus;
+        snapshot.qualityStatus = "READY";
+        snapshot.status = "FINALIZED";
+        snapshot.sourceFingerprint = "universe-fingerprint";
+        return snapshot;
     }
 
     private static Fixture fixture() {
@@ -156,8 +190,10 @@ class HistoricalUniverseSourceServiceImplTest {
         item.stockName = "贵州茅台";
         item.market = "SH";
         item.listedStatus = "LISTED";
+        item.sourceType = "TUSHARE_HISTORICAL_MEMBERSHIP";
         item.included = 1;
         item.effectiveFrom = TRADE_DATE.minusYears(20);
+        item.evidenceJson = "{\"source\":\"historical\"}";
         item.sourceFingerprint = "item-fingerprint";
         return item;
     }

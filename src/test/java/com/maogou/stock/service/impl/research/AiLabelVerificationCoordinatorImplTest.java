@@ -100,6 +100,36 @@ class AiLabelVerificationCoordinatorImplTest {
     }
 
     @Test
+    void historicalLabelMaturationUsesOnlyTheOwningBackfillRun() {
+        Fixture fixture = fixture();
+        LocalDate tradeDate = LocalDate.of(2026, 7, 10);
+        LocalDateTime verifiedAt = tradeDate.atTime(16, 0);
+        when(fixture.sampleMapper.selectLabelCandidateScanPageForBackfillRun(
+                eq(tradeDate), anyString(), isNull(), isNull(), isNull(), eq(4), eq(77L)))
+                .thenReturn(List.of(sample(21L, "600519")));
+        when(fixture.marketDataService.klineAt("000300.SH", "day", 320, verifiedAt))
+                .thenReturn(series("000300.SH", verifiedAt));
+        when(fixture.marketDataService.klineAt("600519", "day", 320, verifiedAt))
+                .thenReturn(series("600519", verifiedAt));
+        when(fixture.calendarMapper.selectByDates(anyString(), anyString(), anyList()))
+                .thenReturn(List.of(calendar(91L, LocalDate.of(2026, 7, 8))));
+        AiSampleLabel label = new AiSampleLabel();
+        label.id = 81L;
+        label.sampleId = 21L;
+        label.labelStatus = "MATURED";
+        when(fixture.labelService.matureAndStore(any())).thenReturn(List.of(label));
+
+        AiLabelVerificationCoordinator.VerificationResult result = fixture.service.matureSampleLabels(
+                tradeDate, verifiedAt, 1, 77L);
+
+        assertThat(result.successCount()).isEqualTo(1);
+        verify(fixture.sampleMapper).selectLabelCandidateScanPageForBackfillRun(
+                eq(tradeDate), anyString(), isNull(), isNull(), isNull(), eq(4), eq(77L));
+        verify(fixture.sampleMapper, never()).selectLabelCandidateScanPage(
+                any(), anyString(), any(), anyString(), any(), any(Integer.class));
+    }
+
+    @Test
     void countsAllStoredLabelsAsProcessedWork() {
         Fixture fixture = fixture();
         LocalDate tradeDate = LocalDate.of(2026, 7, 10);
@@ -428,6 +458,34 @@ class AiLabelVerificationCoordinatorImplTest {
         assertThat(result.successCount()).isEqualTo(1);
         verify(fixture.labelService, never()).matureAndStore(any());
         verify(fixture.marketDataService, never()).klineAt(anyString(), anyString(), any(Integer.class), any());
+    }
+
+    @Test
+    void historicalPredictionEvaluationUsesOnlyTheOwningBackfillRun() {
+        Fixture fixture = fixture();
+        LocalDate tradeDate = LocalDate.of(2026, 7, 10);
+        AiPrediction prediction = prediction(31L, 21L, "600519");
+        when(fixture.predictionMapper.selectUnevaluatedCandidatesForBackfillRun(
+                tradeDate, "LABEL/1.1.0", AiPredictionEvaluationServiceImpl.VERSION, 2000, 77L))
+                .thenReturn(List.of(prediction), List.of());
+        AiSampleLabel label = new AiSampleLabel();
+        label.id = 81L;
+        label.sampleId = 21L;
+        label.labelStatus = "MATURED";
+        when(fixture.labelMapper.selectMaturedForSamples(List.of(21L), "LABEL/1.1.0"))
+                .thenReturn(List.of(label));
+        AiPredictionEvaluation evaluation = new AiPredictionEvaluation();
+        evaluation.id = 82L;
+        when(fixture.evaluationService.evaluateAndStore(any())).thenReturn(List.of(evaluation));
+
+        AiLabelVerificationCoordinator.VerificationResult result = fixture.service.evaluateHistoricalBacklog(
+                tradeDate, tradeDate.atTime(16, 0), 2000, 77L);
+
+        assertThat(result.successCount()).isEqualTo(1);
+        verify(fixture.predictionMapper).selectUnevaluatedCandidatesForBackfillRun(
+                tradeDate, "LABEL/1.1.0", AiPredictionEvaluationServiceImpl.VERSION, 2000, 77L);
+        verify(fixture.predictionMapper, never()).selectUnevaluatedCandidates(
+                any(), anyString(), anyString(), any(Integer.class));
     }
 
     @Test

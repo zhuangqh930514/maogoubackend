@@ -22,6 +22,7 @@ import com.maogou.stock.service.research.AiDailyDecisionPlanService;
 import com.maogou.stock.service.research.AiGlobalDailyResearchService;
 import com.maogou.stock.service.research.AiHistoricalBootstrapService;
 import com.maogou.stock.service.research.AiHistoricalEvidenceImportService;
+import com.maogou.stock.service.research.AiHistoricalFastStartService;
 import com.maogou.stock.service.research.AiLabelVerificationCoordinator;
 import com.maogou.stock.service.research.AiMonthlyTrainingRunner;
 import com.maogou.stock.service.research.AiResearchOperationsService;
@@ -60,6 +61,7 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
     private final AiGlobalDailyResearchService dailyResearchService;
     private final AiHistoricalBootstrapService bootstrapService;
     private final AiHistoricalEvidenceImportService historicalEvidenceImportService;
+    private final AiHistoricalFastStartService historicalFastStartService;
     private final AiLabelVerificationCoordinator labelCoordinator;
     private final AiWeeklyEvolutionRunner weeklyRunner;
     private final AiMonthlyTrainingRunner trainingRunner;
@@ -74,6 +76,56 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
     private final TransactionTemplate transactionTemplate;
     private final ObjectMapper objectMapper;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    public AiResearchOperationsServiceImpl(
+            AiPipelineRunMapper runMapper,
+            AiPipelineStepMapper stepMapper,
+            AiStrategyReleaseMapper releaseMapper,
+            AiStrategyGovernanceEventMapper eventMapper,
+            TradingCalendarService tradingCalendarService,
+            AiGlobalDailyResearchService dailyResearchService,
+            AiHistoricalBootstrapService bootstrapService,
+            AiHistoricalEvidenceImportService historicalEvidenceImportService,
+            AiLabelVerificationCoordinator labelCoordinator,
+            AiWeeklyEvolutionRunner weeklyRunner,
+            AiMonthlyTrainingRunner trainingRunner,
+            AiDailyReportGenerationService dailyReportGenerationService,
+            AiConditionalTradeStrategyService conditionalTradeStrategyService,
+            AiConditionalRuleGovernanceService conditionalRuleGovernanceService,
+            AiDailyDecisionPlanService dailyDecisionPlanService,
+            AiUserDailyProjectionService projectionService,
+            AiStrategyGovernanceService governanceService,
+            AppProperties properties,
+            @Qualifier("researchTaskExecutor") TaskExecutor taskExecutor,
+            TransactionTemplate transactionTemplate,
+            ObjectMapper objectMapper,
+            AiHistoricalFastStartService historicalFastStartService
+    ) {
+        this.runMapper = runMapper;
+        this.stepMapper = stepMapper;
+        this.releaseMapper = releaseMapper;
+        this.eventMapper = eventMapper;
+        this.tradingCalendarService = tradingCalendarService;
+        this.dailyResearchService = dailyResearchService;
+        this.bootstrapService = bootstrapService;
+        this.historicalEvidenceImportService = historicalEvidenceImportService;
+        this.historicalFastStartService = historicalFastStartService;
+        this.labelCoordinator = labelCoordinator;
+        this.weeklyRunner = weeklyRunner;
+        this.trainingRunner = trainingRunner;
+        this.dailyReportGenerationService = dailyReportGenerationService;
+        this.conditionalTradeStrategyService = conditionalTradeStrategyService;
+        this.conditionalRuleGovernanceService = conditionalRuleGovernanceService;
+        this.dailyDecisionPlanService = dailyDecisionPlanService;
+        this.projectionService = projectionService;
+        this.governanceService = governanceService;
+        this.properties = properties;
+        this.taskExecutor = taskExecutor;
+        this.transactionTemplate = transactionTemplate;
+        this.objectMapper = objectMapper;
+    }
+
+    /** Compatibility constructor retained for unit tests and non-Spring callers. */
     public AiResearchOperationsServiceImpl(
             AiPipelineRunMapper runMapper,
             AiPipelineStepMapper stepMapper,
@@ -97,27 +149,12 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
             TransactionTemplate transactionTemplate,
             ObjectMapper objectMapper
     ) {
-        this.runMapper = runMapper;
-        this.stepMapper = stepMapper;
-        this.releaseMapper = releaseMapper;
-        this.eventMapper = eventMapper;
-        this.tradingCalendarService = tradingCalendarService;
-        this.dailyResearchService = dailyResearchService;
-        this.bootstrapService = bootstrapService;
-        this.historicalEvidenceImportService = historicalEvidenceImportService;
-        this.labelCoordinator = labelCoordinator;
-        this.weeklyRunner = weeklyRunner;
-        this.trainingRunner = trainingRunner;
-        this.dailyReportGenerationService = dailyReportGenerationService;
-        this.conditionalTradeStrategyService = conditionalTradeStrategyService;
-        this.conditionalRuleGovernanceService = conditionalRuleGovernanceService;
-        this.dailyDecisionPlanService = dailyDecisionPlanService;
-        this.projectionService = projectionService;
-        this.governanceService = governanceService;
-        this.properties = properties;
-        this.taskExecutor = taskExecutor;
-        this.transactionTemplate = transactionTemplate;
-        this.objectMapper = objectMapper;
+        this(runMapper, stepMapper, releaseMapper, eventMapper, tradingCalendarService,
+                dailyResearchService, bootstrapService, historicalEvidenceImportService,
+                labelCoordinator, weeklyRunner, trainingRunner, dailyReportGenerationService,
+                conditionalTradeStrategyService, conditionalRuleGovernanceService,
+                dailyDecisionPlanService, projectionService, governanceService, properties,
+                taskExecutor, transactionTemplate, objectMapper, null);
     }
 
     @Override
@@ -162,6 +199,11 @@ public class AiResearchOperationsServiceImpl implements AiResearchOperationsServ
                 + ":" + plan.targetStockCount() + ":" + strategy.id);
         AiPipelineRun run = prepareRun("GLOBAL", null, null, plan.endDate(),
                 "GLOBAL_HISTORICAL_BOOTSTRAP", strategy.id, modelId, key, input, actorUserId, null);
+        if (historicalFastStartService != null) {
+            historicalFastStartService.createLegacy(new AiHistoricalFastStartService.LegacyCreateCommand(
+                    plan, strategy.id, modelId, key, run.id, actorUserId, LocalDateTime.now()));
+            return accepted(run);
+        }
         submitExistingRun(run, () -> bootstrapService.run(new AiHistoricalBootstrapService.BootstrapRequest(
                 plan.startDate(), plan.endDate(), strategy.id, modelId, key, LocalDateTime.now(), plan)));
         return accepted(run);

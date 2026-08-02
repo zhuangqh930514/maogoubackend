@@ -13,6 +13,8 @@ import java.time.LocalDateTime;
 public class AiDataBatch {
     @TableId(type = IdType.AUTO)
     public Long id;
+    /** Non-null only for historical replay facts; live runs remain unbound. */
+    public Long backfillRunId;
     public Long universeSnapshotId;
     @TableField(exist = false)
     public Long userId;

@@ -11,6 +11,7 @@ import java.time.LocalDateTime;
 public class AiTrainingDataset {
     @TableId(type = IdType.AUTO)
     public Long id;
+    public Long backfillRunId;
     public Long researchUniverseId;
     public String datasetKey;
     public String versionNo;
@@ -37,5 +38,9 @@ public class AiTrainingDataset {
     public Integer rowCount;
     public String status;
     public LocalDateTime finalizedAt;
+    public String freezeManifestJson;
+    public String freezeChecksum;
+    public LocalDateTime frozenAt;
+    public Long frozenBy;
     public LocalDateTime createdAt;
 }

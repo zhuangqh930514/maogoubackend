@@ -146,7 +146,8 @@ public class AiHistoricalBootstrapServiceImpl implements AiHistoricalBootstrapSe
                             evidenceImportService.importEvidence(
                                     new AiHistoricalEvidenceImportService.ImportRequest(
                                             importPlan(request.coldStartPlan(), reusable),
-                                            request.idempotencyKey(), request.requestedAt()));
+                                            request.idempotencyKey(), request.requestedAt(),
+                                            request.backfillRunId()));
                     int persistedCount = reusable == null ? 0 : reusable.evidenceLoad().evidence().size();
                     run.processedCount = persistedCount
                             + imported.importedTradingDays() + imported.reusedTradingDays();

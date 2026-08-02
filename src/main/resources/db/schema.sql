@@ -324,6 +324,7 @@ CREATE TABLE IF NOT EXISTS ai_research_universe_item_lineage (
 
 CREATE TABLE IF NOT EXISTS ai_data_batch (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    backfill_run_id BIGINT NULL,
     universe_snapshot_id BIGINT NOT NULL,
     trade_date DATE NOT NULL,
     sample_phase VARCHAR(32) NOT NULL,
@@ -350,6 +351,7 @@ CREATE TABLE IF NOT EXISTS ai_data_batch (
     UNIQUE KEY uk_data_batch_idempotency (idempotency_key),
     KEY idx_data_batch_trade_phase (trade_date, sample_phase, status),
     KEY idx_data_batch_universe (universe_snapshot_id, as_of_time),
+    KEY idx_data_batch_backfill_trade (backfill_run_id, trade_date, sample_phase, status),
     CONSTRAINT fk_data_batch_universe_snapshot
         FOREIGN KEY (universe_snapshot_id) REFERENCES ai_research_universe_snapshot (id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
@@ -592,6 +594,7 @@ CREATE TABLE IF NOT EXISTS ai_trading_calendar (
 
 CREATE TABLE IF NOT EXISTS ai_training_dataset (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    backfill_run_id BIGINT NULL,
     research_universe_id BIGINT NOT NULL,
     dataset_key VARCHAR(96) NOT NULL,
     version_no VARCHAR(64) NOT NULL,
@@ -618,11 +621,17 @@ CREATE TABLE IF NOT EXISTS ai_training_dataset (
     row_count INT NOT NULL DEFAULT 0,
     status VARCHAR(32) NOT NULL DEFAULT 'BUILDING',
     finalized_at DATETIME(3) NULL,
+    freeze_manifest_json MEDIUMTEXT NULL,
+    freeze_checksum VARCHAR(128) NULL,
+    frozen_at DATETIME(3) NULL,
+    frozen_by BIGINT NULL,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     UNIQUE KEY uk_training_dataset_version (dataset_key, version_no),
     UNIQUE KEY uk_training_dataset_lineage (lineage_fingerprint),
+    UNIQUE KEY uk_training_dataset_freeze_checksum (freeze_checksum),
     KEY idx_training_dataset_status (model_family, status, as_of_time),
     KEY idx_training_dataset_universe (research_universe_id, as_of_time),
+    KEY idx_training_dataset_backfill_status (backfill_run_id, status, as_of_time),
     CONSTRAINT chk_training_dataset_dates CHECK (
         train_start_date <= train_end_date
         AND train_end_date < validation_start_date
@@ -2346,4 +2355,210 @@ CREATE TABLE IF NOT EXISTS ai_conditional_rule_governance_event (
         FOREIGN KEY (experiment_id) REFERENCES ai_conditional_rule_experiment (id),
     CONSTRAINT fk_conditional_rule_governance_shadow
         FOREIGN KEY (shadow_observation_id) REFERENCES ai_conditional_rule_shadow_observation (id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_historical_backfill_run (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    pipeline_run_id BIGINT NULL,
+    run_key VARCHAR(160) NOT NULL,
+    mode VARCHAR(32) NOT NULL,
+    requested_start_date DATE NULL,
+    requested_end_date DATE NOT NULL,
+    effective_sample_start_date DATE NULL,
+    effective_sample_end_date DATE NULL,
+    target_trading_days INT NOT NULL,
+    target_stocks_per_day INT NOT NULL,
+    feature_version VARCHAR(64) NOT NULL,
+    factor_version VARCHAR(64) NOT NULL,
+    label_version VARCHAR(64) NOT NULL,
+    calendar_version VARCHAR(64) NOT NULL,
+    industry_standard VARCHAR(32) NOT NULL,
+    source_manifest_checksum VARCHAR(128) NULL,
+    run_config_json MEDIUMTEXT NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'PLANNED',
+    current_stage VARCHAR(64) NULL,
+    total_shards INT NOT NULL DEFAULT 0,
+    succeeded_shards INT NOT NULL DEFAULT 0,
+    quarantined_shards INT NOT NULL DEFAULT 0,
+    failed_shards INT NOT NULL DEFAULT 0,
+    readiness_snapshot_id BIGINT NULL,
+    lease_owner VARCHAR(64) NULL,
+    lease_until DATETIME(3) NULL,
+    last_heartbeat_at DATETIME(3) NULL,
+    error_summary TEXT NULL,
+    requested_by BIGINT NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    started_at DATETIME(3) NULL,
+    finished_at DATETIME(3) NULL,
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_historical_backfill_run_key (run_key),
+    KEY idx_historical_backfill_run_status (status, lease_until, updated_at),
+    KEY idx_historical_backfill_run_date (requested_end_date, label_version, status),
+    KEY idx_historical_backfill_run_pipeline (pipeline_run_id),
+    CONSTRAINT fk_historical_backfill_run_pipeline
+        FOREIGN KEY (pipeline_run_id) REFERENCES ai_pipeline_run (id),
+    CONSTRAINT fk_historical_backfill_run_operator
+        FOREIGN KEY (requested_by) REFERENCES user_account (id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_historical_backfill_shard (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    backfill_run_id BIGINT NOT NULL,
+    stage_key VARCHAR(64) NOT NULL,
+    trade_date DATE NULL,
+    bucket_no INT NOT NULL DEFAULT 0,
+    idempotency_key VARCHAR(160) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+    attempt_no INT NOT NULL DEFAULT 0,
+    max_attempts INT NOT NULL DEFAULT 5,
+    input_count INT NOT NULL DEFAULT 0,
+    output_count INT NOT NULL DEFAULT 0,
+    rejected_count INT NOT NULL DEFAULT 0,
+    checkpoint_json MEDIUMTEXT NULL,
+    input_fingerprint VARCHAR(128) NULL,
+    output_fingerprint VARCHAR(128) NULL,
+    provider_code VARCHAR(64) NULL,
+    endpoint_type VARCHAR(96) NULL,
+    next_retry_at DATETIME(3) NULL,
+    lease_owner VARCHAR(64) NULL,
+    lease_until DATETIME(3) NULL,
+    started_at DATETIME(3) NULL,
+    finished_at DATETIME(3) NULL,
+    error_code VARCHAR(64) NULL,
+    error_message VARCHAR(2048) NULL,
+    error_detail MEDIUMTEXT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_historical_backfill_shard_key (idempotency_key),
+    UNIQUE KEY uk_historical_backfill_shard_position
+        (backfill_run_id, stage_key, trade_date, bucket_no),
+    KEY idx_historical_backfill_shard_claim (status, next_retry_at, lease_until),
+    KEY idx_historical_backfill_shard_run (backfill_run_id, stage_key, status, trade_date),
+    CONSTRAINT fk_historical_backfill_shard_run
+        FOREIGN KEY (backfill_run_id) REFERENCES ai_historical_backfill_run (id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_raw_evidence_manifest (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    backfill_run_id BIGINT NULL,
+    provider_code VARCHAR(64) NOT NULL,
+    dataset_code VARCHAR(96) NOT NULL,
+    source_revision VARCHAR(128) NOT NULL,
+    object_uri VARCHAR(1024) NOT NULL,
+    object_size BIGINT NOT NULL DEFAULT 0,
+    object_checksum VARCHAR(128) NOT NULL,
+    schema_version VARCHAR(64) NOT NULL,
+    row_count BIGINT NOT NULL DEFAULT 0,
+    range_start_date DATE NULL,
+    range_end_date DATE NULL,
+    observed_at DATETIME(3) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'STAGED',
+    manifest_json MEDIUMTEXT NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_raw_evidence_object
+        (provider_code, dataset_code, source_revision, object_checksum),
+    KEY idx_raw_evidence_run (backfill_run_id, dataset_code, status),
+    KEY idx_raw_evidence_range (dataset_code, range_start_date, range_end_date),
+    CONSTRAINT fk_raw_evidence_run
+        FOREIGN KEY (backfill_run_id) REFERENCES ai_historical_backfill_run (id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_data_quarantine (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    backfill_run_id BIGINT NOT NULL,
+    shard_id BIGINT NULL,
+    provider_code VARCHAR(64) NOT NULL,
+    dataset_code VARCHAR(96) NOT NULL,
+    trade_date DATE NULL,
+    stock_code VARCHAR(16) NULL,
+    industry_code VARCHAR(32) NULL,
+    source_row_number BIGINT NULL,
+    field_name VARCHAR(96) NULL,
+    reason_code VARCHAR(64) NOT NULL,
+    reason_message VARCHAR(2048) NOT NULL,
+    raw_fingerprint VARCHAR(128) NULL,
+    quarantine_fingerprint VARCHAR(128) NOT NULL,
+    retryable TINYINT NOT NULL DEFAULT 0,
+    resolution_status VARCHAR(32) NOT NULL DEFAULT 'OPEN',
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    resolved_at DATETIME(3) NULL,
+    UNIQUE KEY uk_data_quarantine_fingerprint (backfill_run_id, quarantine_fingerprint),
+    KEY idx_data_quarantine_run (backfill_run_id, resolution_status, reason_code),
+    KEY idx_data_quarantine_stock (stock_code, trade_date, dataset_code),
+    KEY idx_data_quarantine_retry (retryable, resolution_status, created_at),
+    CONSTRAINT fk_data_quarantine_run
+        FOREIGN KEY (backfill_run_id) REFERENCES ai_historical_backfill_run (id),
+    CONSTRAINT fk_data_quarantine_shard
+        FOREIGN KEY (shard_id) REFERENCES ai_historical_backfill_shard (id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_training_readiness_snapshot (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    backfill_run_id BIGINT NULL,
+    pipeline_run_id BIGINT NULL,
+    as_of_time DATETIME(3) NOT NULL,
+    feature_version VARCHAR(64) NOT NULL,
+    factor_version VARCHAR(64) NOT NULL,
+    label_version VARCHAR(64) NOT NULL,
+    calendar_version VARCHAR(64) NOT NULL,
+    trading_days INT NOT NULL DEFAULT 0,
+    stock_count INT NOT NULL DEFAULT 0,
+    horizon_counts_json MEDIUMTEXT NOT NULL,
+    regime_days_json MEDIUMTEXT NOT NULL,
+    tradability_eligible INT NOT NULL DEFAULT 0,
+    tradability_ready INT NOT NULL DEFAULT 0,
+    tradability_coverage DECIMAL(10, 6) NOT NULL DEFAULT 0,
+    universe_eligible INT NOT NULL DEFAULT 0,
+    universe_ready INT NOT NULL DEFAULT 0,
+    universe_coverage DECIMAL(10, 6) NOT NULL DEFAULT 0,
+    sector_eligible INT NOT NULL DEFAULT 0,
+    sector_ready INT NOT NULL DEFAULT 0,
+    sector_coverage DECIMAL(10, 6) NOT NULL DEFAULT 0,
+    feature_coverage_json MEDIUMTEXT NOT NULL,
+    class_distribution_json MEDIUMTEXT NOT NULL,
+    leakage_violation_count INT NOT NULL DEFAULT 0,
+    duplicate_count INT NOT NULL DEFAULT 0,
+    mock_source_count INT NOT NULL DEFAULT 0,
+    stale_source_count INT NOT NULL DEFAULT 0,
+    inferred_fact_count INT NOT NULL DEFAULT 0,
+    status VARCHAR(32) NOT NULL DEFAULT 'INSUFFICIENT_DATA',
+    blocking_gaps_json MEDIUMTEXT NOT NULL,
+    evidence_checksum VARCHAR(128) NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_training_readiness_evidence (evidence_checksum),
+    KEY idx_training_readiness_status (status, as_of_time),
+    KEY idx_training_readiness_version (label_version, as_of_time),
+    KEY idx_training_readiness_run (backfill_run_id, created_at),
+    CONSTRAINT fk_training_readiness_backfill
+        FOREIGN KEY (backfill_run_id) REFERENCES ai_historical_backfill_run (id),
+    CONSTRAINT fk_training_readiness_pipeline
+        FOREIGN KEY (pipeline_run_id) REFERENCES ai_pipeline_run (id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ai_artifact_package_registry (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    package_type VARCHAR(32) NOT NULL,
+    package_format VARCHAR(96) NOT NULL,
+    package_version VARCHAR(32) NOT NULL,
+    package_checksum VARCHAR(128) NOT NULL,
+    signature_key_id VARCHAR(128) NULL,
+    signature_status VARCHAR(32) NOT NULL DEFAULT 'UNVERIFIED',
+    source_schema_version VARCHAR(64) NULL,
+    source_git_commit VARCHAR(64) NULL,
+    preview_status VARCHAR(32) NOT NULL DEFAULT 'NOT_PREVIEWED',
+    preview_token_hash VARCHAR(128) NULL,
+    preview_expires_at DATETIME(3) NULL,
+    import_status VARCHAR(32) NOT NULL DEFAULT 'NOT_IMPORTED',
+    imported_by BIGINT NULL,
+    imported_at DATETIME(3) NULL,
+    manifest_json MEDIUMTEXT NOT NULL,
+    validation_json MEDIUMTEXT NULL,
+    error_message VARCHAR(2048) NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_artifact_package_checksum (package_checksum),
+    KEY idx_artifact_package_status (package_type, import_status, created_at),
+    KEY idx_artifact_package_preview (preview_status, preview_expires_at),
+    CONSTRAINT fk_artifact_package_operator
+        FOREIGN KEY (imported_by) REFERENCES user_account (id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;

@@ -19,6 +19,7 @@ import com.maogou.stock.service.research.AiModelQualityGate;
 import com.maogou.stock.service.research.AiChallengerReleaseService;
 import com.maogou.stock.service.research.AiMonthlyTrainingRunner;
 import com.maogou.stock.service.research.AiTrainingDatasetService;
+import com.maogou.stock.service.research.AiTrainingDatasetFreezeService;
 import com.maogou.stock.service.research.AiTrainingReadinessService;
 import com.maogou.stock.service.research.ExternalIoTransactionGuard;
 import org.springframework.dao.DuplicateKeyException;
@@ -61,6 +62,7 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
     private final AiFactorPerformanceMapper factorPerformanceMapper;
     private final AiModelQualityGate qualityGate;
     private final AiChallengerReleaseService challengerReleaseService;
+    private final AiTrainingDatasetFreezeService datasetFreezeService;
 
     public AiMonthlyTrainingServiceImpl(
             AppProperties properties,
@@ -72,7 +74,7 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
             ObjectMapper objectMapper
     ) {
         this(properties, datasetItemMapper, readinessService, datasetService, modelTrainer,
-                strategyReleaseMapper, objectMapper, null);
+                strategyReleaseMapper, objectMapper, null, null, null);
     }
 
     public AiMonthlyTrainingServiceImpl(
@@ -86,7 +88,23 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
             AiFactorPerformanceMapper factorPerformanceMapper
     ) {
         this(properties, datasetItemMapper, readinessService, datasetService, modelTrainer, strategyReleaseMapper,
-                objectMapper, factorPerformanceMapper, null, null);
+                objectMapper, factorPerformanceMapper, null, null, null);
+    }
+
+    public AiMonthlyTrainingServiceImpl(
+            AppProperties properties,
+            AiTrainingDatasetItemMapper datasetItemMapper,
+            AiTrainingReadinessService readinessService,
+            AiTrainingDatasetService datasetService,
+            AiModelTrainer modelTrainer,
+            AiStrategyReleaseMapper strategyReleaseMapper,
+            ObjectMapper objectMapper,
+            AiFactorPerformanceMapper factorPerformanceMapper,
+            AiModelQualityGate qualityGate,
+            AiChallengerReleaseService challengerReleaseService
+    ) {
+        this(properties, datasetItemMapper, readinessService, datasetService, modelTrainer, strategyReleaseMapper,
+                objectMapper, factorPerformanceMapper, qualityGate, challengerReleaseService, null);
     }
 
     @Autowired
@@ -100,7 +118,8 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
             ObjectMapper objectMapper,
             AiFactorPerformanceMapper factorPerformanceMapper,
             AiModelQualityGate qualityGate,
-            AiChallengerReleaseService challengerReleaseService
+            AiChallengerReleaseService challengerReleaseService,
+            AiTrainingDatasetFreezeService datasetFreezeService
     ) {
         this.properties = properties;
         this.datasetItemMapper = datasetItemMapper;
@@ -112,6 +131,7 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
         this.factorPerformanceMapper = factorPerformanceMapper;
         this.qualityGate = qualityGate;
         this.challengerReleaseService = challengerReleaseService;
+        this.datasetFreezeService = datasetFreezeService;
     }
 
     @Override
@@ -174,6 +194,19 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
             return skipped("通过时间可见性校验的样本不足：" + selected + " / "
                     + minimumSamples);
         }
+
+        if (datasetFreezeService != null) {
+            AiTrainingDatasetFreezeService.FreezeResult freeze = datasetFreezeService.freeze(
+                    new AiTrainingDatasetFreezeService.FreezeRequest(
+                            dataset.backfillRunId, dataset.id, ignoredActorUserId, triggeredAt, false));
+            if (!"FROZEN".equals(freeze.status())) {
+                return skipped("训练数据集未通过冻结审计：" + String.join("；", freeze.blockingGaps()));
+            }
+        }
+        // Compatibility constructors are used only by isolated unit tests and
+        // migration callers. Spring production wiring always performs the
+        // auditable freeze above before model registration.
+        dataset.status = "FROZEN";
 
         AiModelTrainer.TrainingArtifacts artifacts = trainAndPublish(datasetPath, root);
         JsonNode metrics = readJson(artifacts.metricsPath(), "模型指标");

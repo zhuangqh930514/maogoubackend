@@ -3,6 +3,8 @@ package com.maogou.stock.service.impl.research;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.maogou.stock.domain.entity.research.AiDataBatch;
+import com.maogou.stock.domain.entity.research.AiDataQuarantine;
+import com.maogou.stock.domain.entity.research.AiRawEvidenceManifest;
 import com.maogou.stock.domain.entity.research.AiResearchUniverseItem;
 import com.maogou.stock.domain.entity.research.AiSourceObservation;
 import com.maogou.stock.domain.entity.research.AiTradingCalendar;
@@ -12,7 +14,10 @@ import com.maogou.stock.dto.market.KlineSeriesSnapshot;
 import com.maogou.stock.dto.market.StockDetailResponse;
 import com.maogou.stock.dto.market.StockQuoteResponse;
 import com.maogou.stock.infrastructure.market.HistoricalMarketDataProvider;
+import com.maogou.stock.infrastructure.market.HistoricalProviderRetryExecutor;
 import com.maogou.stock.mapper.research.AiDataBatchMapper;
+import com.maogou.stock.mapper.research.AiDataQuarantineMapper;
+import com.maogou.stock.mapper.research.AiRawEvidenceManifestMapper;
 import com.maogou.stock.mapper.research.AiSourceObservationMapper;
 import com.maogou.stock.mapper.research.AiTradingCalendarMapper;
 import com.maogou.stock.service.research.AiHistoricalEvidenceImportService;
@@ -20,6 +25,8 @@ import com.maogou.stock.service.research.AiResearchContract;
 import com.maogou.stock.service.research.AiResearchUniverseService;
 import com.maogou.stock.service.research.AiSecurityDailyStateService;
 import com.maogou.stock.service.research.AiSampleSnapshotService;
+import com.maogou.stock.service.research.HistoricalRawEvidenceStore;
+import com.maogou.stock.service.research.HistoricalUniverseCatalogService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
@@ -46,7 +53,6 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
 
     private static final int MINIMUM_TRAILING_BARS = 20;
     private static final int MAX_KLINE_LIMIT = 500;
-    private static final String CATALOG_SOURCE = "CURRENT_LISTED_HISTORICAL_COHORT";
 
     private final AiTradingCalendarMapper calendarMapper;
     private final List<HistoricalMarketDataProvider> marketDataProviders;
@@ -56,6 +62,11 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
     private final AiSourceObservationMapper observationMapper;
     private final AiSecurityDailyStateService securityDailyStateService;
     private final ObjectMapper objectMapper;
+    private final AiRawEvidenceManifestMapper rawEvidenceManifestMapper;
+    private final AiDataQuarantineMapper quarantineMapper;
+    private final HistoricalRawEvidenceStore rawEvidenceStore;
+    private final HistoricalProviderRetryExecutor retryExecutor;
+    private final HistoricalUniverseCatalogService historicalUniverseCatalogService;
 
     @Autowired
     public AiHistoricalEvidenceImportServiceImpl(
@@ -66,7 +77,12 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
             AiDataBatchMapper dataBatchMapper,
             AiSourceObservationMapper observationMapper,
             AiSecurityDailyStateService securityDailyStateService,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            AiRawEvidenceManifestMapper rawEvidenceManifestMapper,
+            AiDataQuarantineMapper quarantineMapper,
+            HistoricalRawEvidenceStore rawEvidenceStore,
+            HistoricalProviderRetryExecutor retryExecutor,
+            HistoricalUniverseCatalogService historicalUniverseCatalogService
     ) {
         this.calendarMapper = calendarMapper;
         this.marketDataProviders = orderedProviders(marketDataProviders);
@@ -76,6 +92,11 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
         this.observationMapper = observationMapper;
         this.securityDailyStateService = securityDailyStateService;
         this.objectMapper = objectMapper;
+        this.rawEvidenceManifestMapper = rawEvidenceManifestMapper;
+        this.quarantineMapper = quarantineMapper;
+        this.rawEvidenceStore = rawEvidenceStore;
+        this.retryExecutor = retryExecutor == null ? HistoricalProviderRetryExecutor.direct() : retryExecutor;
+        this.historicalUniverseCatalogService = historicalUniverseCatalogService;
     }
 
     AiHistoricalEvidenceImportServiceImpl(
@@ -88,7 +109,38 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
             ObjectMapper objectMapper
     ) {
         this(calendarMapper, marketDataProviders, universeService, snapshotService,
-                dataBatchMapper, observationMapper, null, objectMapper);
+                dataBatchMapper, observationMapper, null, objectMapper, null, null, null, null, null);
+    }
+
+    AiHistoricalEvidenceImportServiceImpl(
+            AiTradingCalendarMapper calendarMapper,
+            List<HistoricalMarketDataProvider> marketDataProviders,
+            AiResearchUniverseService universeService,
+            AiSampleSnapshotService snapshotService,
+            AiDataBatchMapper dataBatchMapper,
+            AiSourceObservationMapper observationMapper,
+            AiSecurityDailyStateService securityDailyStateService,
+            ObjectMapper objectMapper
+    ) {
+        this(calendarMapper, marketDataProviders, universeService, snapshotService,
+                dataBatchMapper, observationMapper, securityDailyStateService,
+                objectMapper, null, null, null, null, null);
+    }
+
+    AiHistoricalEvidenceImportServiceImpl(
+            AiTradingCalendarMapper calendarMapper,
+            List<HistoricalMarketDataProvider> marketDataProviders,
+            AiResearchUniverseService universeService,
+            AiSampleSnapshotService snapshotService,
+            AiDataBatchMapper dataBatchMapper,
+            AiSourceObservationMapper observationMapper,
+            AiSecurityDailyStateService securityDailyStateService,
+            ObjectMapper objectMapper,
+            HistoricalUniverseCatalogService historicalUniverseCatalogService
+    ) {
+        this(calendarMapper, marketDataProviders, universeService, snapshotService,
+                dataBatchMapper, observationMapper, securityDailyStateService,
+                objectMapper, null, null, null, null, historicalUniverseCatalogService);
     }
 
     AiHistoricalEvidenceImportServiceImpl(
@@ -101,7 +153,7 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
             ObjectMapper objectMapper
     ) {
         this(calendarMapper, List.of(marketDataProvider), universeService, snapshotService,
-                dataBatchMapper, observationMapper, null, objectMapper);
+                dataBatchMapper, observationMapper, null, objectMapper, null, null, null, null, null);
     }
 
     @Override
@@ -173,22 +225,37 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
         validate(request);
         ColdStartPlan plan = request.plan();
         java.util.Set<String> unavailableProviders = new java.util.LinkedHashSet<>();
+        if (historicalUniverseCatalogService == null) {
+            throw new IllegalStateException(
+                    "历史证据导入未配置按交易日读取的历史股票池服务；禁止使用当前上市目录回放过去");
+        }
         int requestedCatalogSize = Math.min(1000, Math.max(
                 plan.targetStockCount() + 200,
                 (int) Math.ceil(plan.targetStockCount() * 1.5d)));
-        HistoricalMarketDataProvider.UniverseCatalog catalog = fetchCatalog(
-                requestedCatalogSize, request.requestedAt(), unavailableProviders);
-        validateCatalog(catalog, plan);
+        HistoricalUniverseCatalogService.CatalogPlan catalogPlan =
+                historicalUniverseCatalogService.load(
+                        plan.tradingDates(), plan.endDate().atTime(16, 0), requestedCatalogSize);
+        if (catalogPlan == null || catalogPlan.byDate().size() != plan.tradingDates().size()
+                || catalogPlan.unionSecurities().size() < plan.targetStockCount()
+                || catalogPlan.sourceFingerprint() == null || catalogPlan.sourceFingerprint().isBlank()) {
+            throw new IllegalStateException(
+                    "历史股票池证据不足或来源指纹缺失；未生成正式历史事实");
+        }
+        for (HistoricalUniverseCatalogService.DayCatalog day : catalogPlan.byDate().values()) {
+            storeRawEvidence(request, day.asEvidenceCatalog(), "HISTORICAL_UNIVERSE",
+                    day.sourceRevision());
+        }
 
         int historyLimit = Math.min(MAX_KLINE_LIMIT,
                 plan.replayTradingDays() + MINIMUM_TRAILING_BARS + 40);
         KlineSeriesSnapshot benchmark = fetchHistoricalKline(
-                AiResearchContract.BENCHMARK_SYMBOL, historyLimit,
+                request, AiResearchContract.BENCHMARK_SYMBOL, historyLimit,
                 plan.endDate().atTime(16, 0), "NONE", unavailableProviders);
+        storeRawEvidence(request, benchmark, "DAILY_BAR_NONE", "BENCHMARK_" + plan.endDate());
 
         Map<String, PreparedSecurity> prepared = new LinkedHashMap<>();
         List<String> warnings = new ArrayList<>();
-        for (HistoricalMarketDataProvider.Security security : catalog.securities()) {
+        for (HistoricalMarketDataProvider.Security security : catalogPlan.unionSecurities()) {
             if (prepared.size() >= requestedCatalogSize) {
                 break;
             }
@@ -197,10 +264,17 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
             }
             try {
                 PreparedSecurity value = fetchPreparedSecurity(
-                        security, historyLimit, plan.endDate().atTime(16, 0), unavailableProviders);
+                        request, security, historyLimit, plan.endDate().atTime(16, 0), unavailableProviders);
+                storeRawEvidence(request, value.raw(), "DAILY_BAR_NONE",
+                        "STOCK_" + security.stockCode() + "_" + plan.endDate() + "_NONE");
+                storeRawEvidence(request, value.adjusted(), "DAILY_BAR_QFQ",
+                        "STOCK_" + security.stockCode() + "_" + plan.endDate() + "_QFQ");
                 prepared.put(security.stockCode(), value);
             } catch (RuntimeException exception) {
                 warnings.add(security.stockCode() + "：" + rootMessage(exception));
+                quarantine(request, null, security.stockCode(), null,
+                        "HISTORICAL_EVIDENCE_REJECTED", rootMessage(exception),
+                        retryable(exception), null, null);
             }
         }
 
@@ -208,9 +282,20 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
         int reused = 0;
         int maximumPrepared = 0;
         for (LocalDate tradeDate : plan.tradingDates()) {
-            List<PreparedSecurity> selected = prepared.values().stream()
-                    .filter(value -> value.security().listedOn() != null
-                            && !value.security().listedOn().isAfter(tradeDate))
+            HistoricalUniverseCatalogService.DayCatalog dayCatalog = catalogPlan.byDate().get(tradeDate);
+            if (dayCatalog == null) {
+                throw new IllegalStateException("交易日 " + tradeDate + " 缺少历史股票池快照");
+            }
+            Map<String, HistoricalMarketDataProvider.Security> daySecurities = dayCatalog.securities().stream()
+                    .collect(java.util.stream.Collectors.toMap(
+                            HistoricalMarketDataProvider.Security::stockCode,
+                            value -> value,
+                            (first, ignored) -> first,
+                            LinkedHashMap::new));
+            List<PreparedSecurity> selected = dayCatalog.securities().stream()
+                    .map(security -> prepared.get(security.stockCode()))
+                    .filter(Objects::nonNull)
+                    .map(value -> rebind(value, daySecurities.get(value.security().stockCode())))
                     .filter(value -> usableAt(value, tradeDate))
                     .sorted(Comparator.comparing(value -> sha256(value.security().stockCode())))
                     .limit(plan.targetStockCount())
@@ -220,7 +305,7 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
                         + " 只股票具备完整未复权和复权证据，目标为 " + plan.targetStockCount());
             }
             maximumPrepared = Math.max(maximumPrepared, selected.size());
-            DayImportResult day = importDay(request, catalog, benchmark, tradeDate, selected);
+            DayImportResult day = importDay(request, dayCatalog, benchmark, tradeDate, selected);
             if (day.reused()) {
                 reused++;
             } else {
@@ -229,32 +314,23 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
         }
         return new ImportResult(
                 imported, reused, maximumPrepared,
-                sha256(catalog.sourceFingerprint() + "|" + plan.tradingDates() + "|" + maximumPrepared),
+                sha256(catalogPlan.sourceFingerprint() + "|" + plan.tradingDates()
+                        + "|" + maximumPrepared),
                 warnings);
     }
 
-    private HistoricalMarketDataProvider.UniverseCatalog fetchCatalog(
+    private KlineSeriesSnapshot fetchHistoricalKline(
+            String symbol,
             int limit,
-            LocalDateTime requestedAt,
+            LocalDateTime asOfTime,
+            String adjustmentMode,
             java.util.Set<String> unavailableProviders
     ) {
-        RuntimeException lastFailure = null;
-        for (HistoricalMarketDataProvider provider : marketDataProviders) {
-            if (unavailableProviders.contains(provider.providerCode())) {
-                continue;
-            }
-            try {
-                return provider.fetchCurrentListedUniverse(limit, requestedAt);
-            } catch (RuntimeException exception) {
-                unavailableProviders.add(provider.providerCode());
-                lastFailure = exception;
-            }
-        }
-        throw new IllegalStateException(
-                "所有真实历史股票目录来源均不可用：" + rootMessage(lastFailure), lastFailure);
+        return fetchHistoricalKline(null, symbol, limit, asOfTime, adjustmentMode, unavailableProviders);
     }
 
     private KlineSeriesSnapshot fetchHistoricalKline(
+            ImportRequest request,
             String symbol,
             int limit,
             LocalDateTime asOfTime,
@@ -267,13 +343,18 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
                 continue;
             }
             try {
-                KlineSeriesSnapshot result = provider.fetchHistoricalKline(
-                        symbol, limit, asOfTime, adjustmentMode);
+                KlineSeriesSnapshot result = retryExecutor.execute(
+                        provider.providerCode(), "DAILY_BAR_" + adjustmentMode,
+                        () -> provider.fetchHistoricalKline(symbol, limit, asOfTime, adjustmentMode));
                 validateSeries(result, adjustmentMode);
                 return result;
             } catch (RuntimeException exception) {
                 unavailableProviders.add(provider.providerCode());
                 lastFailure = exception;
+                quarantine(request, null, symbol, null, "PROVIDER_REQUEST_FAILED",
+                        provider.providerCode() + " / DAILY_BAR_" + adjustmentMode
+                                + " / attempt=1 / nextRetryAt=not-scheduled / " + rootMessage(exception),
+                        retryable(exception), provider.providerCode(), null);
             }
         }
         throw new IllegalStateException(
@@ -281,6 +362,7 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
     }
 
     private PreparedSecurity fetchPreparedSecurity(
+            ImportRequest request,
             HistoricalMarketDataProvider.Security security,
             int limit,
             LocalDateTime asOfTime,
@@ -292,10 +374,12 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
                 continue;
             }
             try {
-                KlineSeriesSnapshot raw = provider.fetchHistoricalKline(
-                        security.stockCode(), limit, asOfTime, "NONE");
-                KlineSeriesSnapshot adjusted = provider.fetchHistoricalKline(
-                        security.stockCode(), limit, asOfTime, "QFQ");
+                KlineSeriesSnapshot raw = retryExecutor.execute(
+                        provider.providerCode(), "DAILY_BAR_NONE",
+                        () -> provider.fetchHistoricalKline(security.stockCode(), limit, asOfTime, "NONE"));
+                KlineSeriesSnapshot adjusted = retryExecutor.execute(
+                        provider.providerCode(), "DAILY_BAR_QFQ",
+                        () -> provider.fetchHistoricalKline(security.stockCode(), limit, asOfTime, "QFQ"));
                 validateSeries(raw, "NONE");
                 validateSeries(adjusted, "QFQ");
                 LocalDate observedSince = raw.points().stream()
@@ -312,6 +396,10 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
                 if (providerUnavailable(exception)) {
                     unavailableProviders.add(provider.providerCode());
                 }
+                quarantine(request, null, security.stockCode(), null, "PROVIDER_REQUEST_FAILED",
+                        provider.providerCode() + " / DAILY_BAR_NONE_QFQ / attempt=1"
+                                + " / nextRetryAt=not-scheduled / " + rootMessage(exception),
+                        retryable(exception), provider.providerCode(), null);
                 lastFailure = exception;
             }
         }
@@ -322,38 +410,27 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
 
     private DayImportResult importDay(
             ImportRequest request,
-            HistoricalMarketDataProvider.UniverseCatalog catalog,
+            HistoricalUniverseCatalogService.DayCatalog catalog,
             KlineSeriesSnapshot benchmark,
             LocalDate tradeDate,
             List<PreparedSecurity> selected
     ) {
         LocalDateTime researchAsOf = tradeDate.atTime(16, 0);
-        List<AiResearchUniverseService.UniverseCandidate> candidates = selected.stream()
-                .map(value -> new AiResearchUniverseService.UniverseCandidate(
-                        value.security().stockCode(), value.security().stockName(), value.security().market(),
-                        CATALOG_SOURCE, true, null, value.security().listedOn()))
-                .toList();
-        AiResearchUniverseService.SnapshotResult snapshot = universeService.createSystemCoreSnapshot(
-                new AiResearchUniverseService.SnapshotRequest(
-                        tradeDate, researchAsOf, AiResearchContract.CALENDAR_VERSION, candidates, false,
-                        CATALOG_SOURCE, catalog.sourceFingerprint(), request.requestedAt(), "PARTIAL",
-                        "历史股票池来自当前上市目录，不能证明目标交易日成分完整性"));
-        if (snapshot.snapshot() == null || snapshot.snapshot().id == null
-                || !"READY".equals(snapshot.snapshot().qualityStatus)
-                || snapshot.snapshot().sourceFingerprint == null
-                || snapshot.snapshot().sourceFingerprint.isBlank()) {
-            throw new IllegalStateException("交易日 " + tradeDate + " 的历史股票池未达到 READY");
+        if (catalog.snapshotId() == null || catalog.sourceFingerprint() == null
+                || catalog.sourceFingerprint().isBlank() || catalog.items().isEmpty()) {
+            throw new IllegalStateException("交易日 " + tradeDate + " 的历史股票池没有可复用的正式快照");
         }
         String dayKey = "HISTORICAL_EVIDENCE/1.0.0:" + tradeDate + ":"
                 + fingerprint(List.of(
-                        snapshot.snapshot().sourceFingerprint,
+                        catalog.sourceFingerprint(),
                         catalog.sourceFingerprint(),
                         selected.stream().map(value -> value.security().stockCode()).toList()));
         AiDataBatch batch = snapshotService.startOrGetBatch(
-                snapshot.snapshot().id, tradeDate, "AFTER_CLOSE", researchAsOf, dayKey);
+                catalog.snapshotId(), tradeDate, "AFTER_CLOSE", researchAsOf, dayKey);
         if (batch == null || batch.id == null) {
             throw new IllegalStateException("历史数据批次创建失败：" + tradeDate);
         }
+        bindBackfillRun(batch, request.backfillRunId());
         if ("READY".equals(batch.qualityStatus)
                 && "SUCCESS".equals(batch.status)
                 && value(batch.successCount) >= selected.size()) {
@@ -366,7 +443,7 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
                 pointInTimeSeries(benchmark, tradeDate, 80), sourceUri(benchmark.source())));
 
         Map<String, AiResearchUniverseItem> items = new LinkedHashMap<>();
-        for (AiResearchUniverseItem item : snapshot.items()) {
+        for (AiResearchUniverseItem item : catalog.items()) {
             if (item != null && Integer.valueOf(1).equals(item.included)) {
                 items.put(item.stockCode, item);
             }
@@ -394,7 +471,7 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
                 "HISTORICAL", BigDecimal.valueOf(100), "READY",
                 selected.size(), selected.size(), 0, null, request.requestedAt()));
         AiDataBatch persisted = completed == null ? batch : completed;
-        persisted.universeSnapshotId = snapshot.snapshot().id;
+        persisted.universeSnapshotId = catalog.snapshotId();
         persisted.tradeDate = tradeDate;
         persisted.samplePhase = "AFTER_CLOSE";
         persisted.asOfTime = researchAsOf;
@@ -411,6 +488,20 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
         persisted.completedAt = request.requestedAt();
         dataBatchMapper.updateById(persisted);
         return new DayImportResult(false);
+    }
+
+    private void bindBackfillRun(AiDataBatch batch, Long backfillRunId) {
+        if (backfillRunId == null) {
+            return;
+        }
+        if (batch.backfillRunId != null && !backfillRunId.equals(batch.backfillRunId)) {
+            throw new IllegalStateException("历史数据批次已绑定其他运行，拒绝混用：batch="
+                    + batch.id + ", existingRun=" + batch.backfillRunId + ", requestedRun=" + backfillRunId);
+        }
+        if (!backfillRunId.equals(batch.backfillRunId)) {
+            batch.backfillRunId = backfillRunId;
+            dataBatchMapper.updateById(batch);
+        }
     }
 
     private AiSourceObservation observation(
@@ -449,6 +540,100 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
         observation.qualityStatus = "READY";
         observation.createdAt = fetchedAt;
         return observation;
+    }
+
+    private void storeRawEvidence(
+            ImportRequest request,
+            Object payload,
+            String datasetCode,
+            String sourceRevision
+    ) {
+        if (request == null || request.backfillRunId() == null || rawEvidenceStore == null
+                || rawEvidenceManifestMapper == null || payload == null) {
+            return;
+        }
+        String provider = payload instanceof HistoricalMarketDataProvider.UniverseCatalog catalog
+                ? catalog.providerCode()
+                : payload instanceof KlineSeriesSnapshot series ? series.source() : "UNKNOWN";
+        LocalDateTime observedAt = payload instanceof HistoricalMarketDataProvider.UniverseCatalog catalog
+                ? catalog.fetchedAt()
+                : payload instanceof KlineSeriesSnapshot series ? series.fetchedAt() : request.requestedAt();
+        HistoricalRawEvidenceStore.RawArtifact artifact = rawEvidenceStore.stage(
+                request.backfillRunId(), provider, datasetCode, sourceRevision, payload, observedAt);
+        AiRawEvidenceManifest manifest = new AiRawEvidenceManifest();
+        manifest.backfillRunId = request.backfillRunId();
+        manifest.providerCode = provider;
+        manifest.datasetCode = datasetCode;
+        manifest.sourceRevision = sourceRevision;
+        manifest.objectUri = artifact.objectUri();
+        manifest.objectSize = artifact.objectSize();
+        manifest.objectChecksum = artifact.objectChecksum();
+        manifest.schemaVersion = artifact.schemaVersion();
+        manifest.rowCount = artifact.rowCount();
+        manifest.rangeStartDate = artifact.rangeStartDate();
+        manifest.rangeEndDate = artifact.rangeEndDate();
+        manifest.observedAt = artifact.observedAt();
+        manifest.status = "READY";
+        manifest.manifestJson = artifact.manifestJson();
+        manifest.createdAt = request.requestedAt() == null ? LocalDateTime.now() : request.requestedAt();
+        rawEvidenceManifestMapper.insertIgnore(manifest);
+    }
+
+    private void quarantine(
+            ImportRequest request,
+            Long shardId,
+            String stockCode,
+            LocalDate tradeDate,
+            String reasonCode,
+            String reasonMessage,
+            boolean retryable,
+            String providerCode,
+            String rawFingerprint
+    ) {
+        if (request == null || request.backfillRunId() == null || quarantineMapper == null) {
+            return;
+        }
+        AiDataQuarantine issue = new AiDataQuarantine();
+        issue.backfillRunId = request.backfillRunId();
+        issue.shardId = shardId;
+        issue.providerCode = normalize(providerCode, "UNKNOWN");
+        issue.datasetCode = datasetFromReason(reasonCode);
+        issue.tradeDate = tradeDate;
+        issue.stockCode = stockCode;
+        issue.reasonCode = normalize(reasonCode, "HISTORICAL_DATA_REJECTED");
+        issue.reasonMessage = truncate(reasonMessage, 2048);
+        issue.rawFingerprint = rawFingerprint;
+        issue.quarantineFingerprint = sha256(String.join("|",
+                String.valueOf(issue.backfillRunId), String.valueOf(shardId), issue.providerCode,
+                issue.datasetCode, String.valueOf(tradeDate), String.valueOf(stockCode),
+                issue.reasonCode, issue.reasonMessage));
+        issue.retryable = retryable ? 1 : 0;
+        issue.resolutionStatus = "OPEN";
+        issue.createdAt = request.requestedAt() == null ? LocalDateTime.now() : request.requestedAt();
+        quarantineMapper.insertIgnore(issue);
+    }
+
+    private static String datasetFromReason(String reasonCode) {
+        if (reasonCode == null) {
+            return "UNKNOWN";
+        }
+        if (reasonCode.contains("CATALOG")) {
+            return "SECURITY_CATALOG";
+        }
+        if (reasonCode.contains("QFQ")) {
+            return "DAILY_BAR_QFQ";
+        }
+        if (reasonCode.contains("EVIDENCE")) {
+            return "HISTORICAL_EVIDENCE";
+        }
+        return "DAILY_BAR_NONE";
+    }
+
+    private static String truncate(String value, int maxLength) {
+        if (value == null || value.length() <= maxLength) {
+            return value == null ? "未知失败原因" : value;
+        }
+        return value.substring(0, maxLength);
     }
 
     private void store(AiSourceObservation observation) {
@@ -649,6 +834,19 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
                 && (security.listedOn() == null || !security.listedOn().isAfter(endDate));
     }
 
+    private static PreparedSecurity rebind(
+            PreparedSecurity prepared,
+            HistoricalMarketDataProvider.Security historicalSecurity
+    ) {
+        if (prepared == null || historicalSecurity == null
+                || prepared.security().stockCode().equals(historicalSecurity.stockCode())
+                && Objects.equals(prepared.security().stockName(), historicalSecurity.stockName())
+                && Objects.equals(prepared.security().listedOn(), historicalSecurity.listedOn())) {
+            return prepared;
+        }
+        return new PreparedSecurity(historicalSecurity, prepared.raw(), prepared.adjusted());
+    }
+
     private static List<HistoricalMarketDataProvider> orderedProviders(
             List<HistoricalMarketDataProvider> providers
     ) {
@@ -687,6 +885,18 @@ public class AiHistoricalEvidenceImportServiceImpl implements AiHistoricalEviden
                 || message.contains("remote host terminated")
                 || message.contains("status code 403")
                 || message.contains("status code 429");
+    }
+
+    private static boolean retryable(Throwable throwable) {
+        String message = rootMessage(throwable).toLowerCase(Locale.ROOT);
+        if (message.contains("401") || message.contains("403") || message.contains("forbidden")
+                || message.contains("permission") || message.contains("权限")
+                || message.contains("schema") || message.contains("字段")) {
+            return false;
+        }
+        return providerUnavailable(throwable) || message.contains("temporarily")
+                || message.contains("server error") || message.contains("503")
+                || message.contains("502") || message.contains("504");
     }
 
     private static boolean validCalendar(AiTradingCalendar calendar) {

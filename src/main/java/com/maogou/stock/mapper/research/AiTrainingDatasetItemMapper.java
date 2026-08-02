@@ -18,6 +18,55 @@ import java.time.LocalDateTime;
 public interface AiTrainingDatasetItemMapper extends BaseMapper<AiTrainingDatasetItem> {
 
     @Select("""
+            SELECT COUNT(*)
+            FROM ai_training_dataset_item
+            WHERE training_dataset_id = #{datasetId}
+            """)
+    long countByDataset(@Param("datasetId") Long datasetId);
+
+    @Select("""
+            SELECT i.*, s.trade_date, s.quality_status AS sample_quality_status,
+                   s.tradable_status AS sample_tradable_status,
+                   l.horizon_trading_days AS label_horizon,
+                   l.label_status, l.execution_status, l.fill_status,
+                   l.is_current AS label_is_current,
+                   b.backfill_run_id AS sample_backfill_run_id,
+                   CASE WHEN EXISTS (
+                       SELECT 1 FROM ai_source_observation o
+                       WHERE o.data_batch_id = s.data_batch_id
+                         AND (
+                              UPPER(COALESCE(o.quality_status, '')) IN ('MOCK', 'STALE', 'INFERRED', 'ASSUMED')
+                              OR UPPER(COALESCE(o.freshness_status, '')) IN ('STALE', 'INFERRED')
+                         )
+                   ) THEN 1 ELSE 0 END AS source_bad_count
+            FROM ai_training_dataset_item i
+            INNER JOIN ai_sample s ON s.id = i.sample_id
+            INNER JOIN ai_data_batch b ON b.id = s.data_batch_id
+            INNER JOIN ai_sample_label l ON l.id = i.sample_label_id
+            WHERE i.training_dataset_id = #{datasetId}
+            ORDER BY i.id
+            LIMIT #{offset}, #{limit}
+            """)
+    List<DatasetFreezeAuditRow> selectFreezeAuditPage(
+            @Param("datasetId") Long datasetId,
+            @Param("offset") long offset,
+            @Param("limit") int limit
+    );
+
+    class DatasetFreezeAuditRow extends AiTrainingDatasetItem {
+        public LocalDate tradeDate;
+        public String sampleQualityStatus;
+        public String sampleTradableStatus;
+        public Integer labelHorizon;
+        public String labelStatus;
+        public String executionStatus;
+        public String fillStatus;
+        public Integer labelIsCurrent;
+        public Long sampleBackfillRunId;
+        public Integer sourceBadCount;
+    }
+
+    @Select("""
             SELECT CONVERT('TRADING_DAYS' USING utf8mb4) COLLATE utf8mb4_unicode_ci AS dimension_type,
                    CONVERT('ALL' USING utf8mb4) COLLATE utf8mb4_unicode_ci AS dimension_key,
                    COUNT(DISTINCT trade_date) AS metric_count
@@ -260,6 +309,7 @@ public interface AiTrainingDatasetItemMapper extends BaseMapper<AiTrainingDatase
             SELECT
                 s.id AS sample_id,
                 l.id AS sample_label_id,
+                b.backfill_run_id,
                 s.stock_code,
                 s.market_regime,
                 s.sector_code,
@@ -303,6 +353,7 @@ public interface AiTrainingDatasetItemMapper extends BaseMapper<AiTrainingDatase
             FROM ai_sample s FORCE INDEX (idx_sample_training_source_page)
             STRAIGHT_JOIN ai_sample_label l FORCE INDEX (uk_sample_label_version)
               ON l.sample_id = s.id
+            INNER JOIN ai_data_batch b ON b.id = s.data_batch_id
             INNER JOIN ai_security_daily_state entry_state FORCE INDEX (idx_security_daily_state_stock_date)
               ON entry_state.stock_code = s.stock_code
              AND entry_state.trade_date = l.entry_trade_date
@@ -350,6 +401,7 @@ public interface AiTrainingDatasetItemMapper extends BaseMapper<AiTrainingDatase
             SELECT
                 s.id AS sample_id,
                 l.id AS sample_label_id,
+                b.backfill_run_id,
                 s.stock_code,
                 s.market_regime,
                 s.sector_code,
@@ -393,6 +445,7 @@ public interface AiTrainingDatasetItemMapper extends BaseMapper<AiTrainingDatase
             FROM ai_sample s FORCE INDEX (idx_sample_training_source_page)
             STRAIGHT_JOIN ai_sample_label l FORCE INDEX (uk_sample_label_version)
               ON l.sample_id = s.id
+            INNER JOIN ai_data_batch b ON b.id = s.data_batch_id
             INNER JOIN ai_security_daily_state entry_state FORCE INDEX (idx_security_daily_state_stock_date)
               ON entry_state.stock_code = s.stock_code
              AND entry_state.trade_date = l.entry_trade_date

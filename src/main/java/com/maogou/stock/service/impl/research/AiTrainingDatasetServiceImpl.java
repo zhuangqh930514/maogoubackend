@@ -82,6 +82,7 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
 
         AiTrainingDataset expected = dataset(request, sourceQueryJson, selectionPolicyJson,
                 lineageFingerprint, artifact.checksum(), selected.size());
+        expected.backfillRunId = singleBackfillRunId(selected);
         datasetMapper.insertImmutable(expected);
         AiTrainingDataset persisted = datasetMapper.selectByVersionForShare(
                 request.datasetKey(), request.versionNo());
@@ -104,8 +105,8 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
         if (dataset == null || !Objects.equals(dataset.modelFamily, registration.modelFamily())) {
             throw new IllegalArgumentException("trainingDatasetId 对应的数据集不存在或模型族不一致");
         }
-        if (!"READY".equals(dataset.status)) {
-            throw new IllegalStateException("模型只能关联 READY 训练数据集");
+        if (!"FROZEN".equals(dataset.status)) {
+            throw new IllegalStateException("模型只能关联 FROZEN 训练数据集");
         }
         if (!Objects.equals(dataset.featureVersion, registration.featureVersion())) {
             throw new IllegalArgumentException("模型 featureVersion 必须与训练数据集血缘一致");
@@ -329,6 +330,7 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
         AiTrainingDatasetSource value = new AiTrainingDatasetSource();
         value.sampleId = source.sampleId;
         value.sampleLabelId = source.sampleLabelId;
+        value.backfillRunId = source.backfillRunId;
         value.stockCode = source.stockCode;
         value.marketRegime = source.marketRegime;
         value.sectorCode = source.sectorCode;
@@ -351,6 +353,23 @@ public class AiTrainingDatasetServiceImpl implements AiTrainingDatasetService {
         value.tradingStateFingerprint = source.tradingStateFingerprint;
         value.sectorMembershipFingerprint = source.sectorMembershipFingerprint;
         return value;
+    }
+
+    private static Long singleBackfillRunId(List<SelectedSource> selected) {
+        Set<Long> runIds = new TreeSet<>();
+        boolean missing = false;
+        if (selected != null) {
+            for (SelectedSource value : selected) {
+                Long runId = value == null || value.source() == null
+                        ? null : value.source().backfillRunId;
+                if (runId == null || runId <= 0) {
+                    missing = true;
+                } else {
+                    runIds.add(runId);
+                }
+            }
+        }
+        return !missing && runIds.size() == 1 ? runIds.iterator().next() : null;
     }
 
     private AiTrainingDataset dataset(

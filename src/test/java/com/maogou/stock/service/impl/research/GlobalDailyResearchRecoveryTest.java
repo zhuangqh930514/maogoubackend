@@ -32,6 +32,7 @@ class GlobalDailyResearchRecoveryTest {
 
         assertThat(context.checkpoint("SNAPSHOT_UNIVERSE")).contains("\"universeSnapshotId\":91");
         assertThat(context.checkpoint("FETCH_SOURCE_DATA")).contains("\"dataBatchId\":55");
-        assertThat(context).hasNoNullFieldsOrPropertiesExcept("modelVersionId");
+        assertThat(context).hasNoNullFieldsOrPropertiesExcept(
+                "modelVersionId", "historicalBackfillRunId");
     }
 }

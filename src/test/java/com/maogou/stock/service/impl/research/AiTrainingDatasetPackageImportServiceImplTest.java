@@ -46,6 +46,10 @@ class AiTrainingDatasetPackageImportServiceImplTest {
     private static final String STATE = "d".repeat(64);
     private static final String SECTOR = "e".repeat(64);
     private static final String LINEAGE = "f".repeat(64);
+    private static final String FROZEN_MANIFEST = "{\"format\":\"MAOGOU_FROZEN_DATASET_MANIFEST_V1\","
+            + "\"runKey\":\"HISTORICAL:20260720\",\"datasetKey\":\"MAOGOU_RANKER_T3\","
+            + "\"versionNo\":\"20260720\",\"horizonCounts\":{\"3\":1}}";
+    private static final String FROZEN_CHECKSUM = sha256Unchecked(FROZEN_MANIFEST.getBytes(StandardCharsets.UTF_8));
 
     @TempDir
     Path tempDir;
@@ -119,7 +123,7 @@ class AiTrainingDatasetPackageImportServiceImplTest {
     }
 
     @Test
-    void importsResolvedDatasetAsReadyAndMapsOnlyProductionIds() throws Exception {
+    void importsResolvedDatasetAsFrozenAndMapsOnlyProductionIds() throws Exception {
         Fixture fixture = fixture(true);
         AiTrainingDataset persisted = persistedDataset();
         when(fixture.datasetMapper.selectByVersionForShare("MAOGOU_RANKER_T3", "20260720"))
@@ -127,7 +131,7 @@ class AiTrainingDatasetPackageImportServiceImplTest {
 
         AiTrainingDatasetPackageImportService.ImportResult result = fixture.service.importPackage(upload(packageFile(false)), 9L);
 
-        assertThat(result.status()).isEqualTo("READY");
+        assertThat(result.status()).isEqualTo("FROZEN");
         assertThat(result.trainingDatasetId()).isEqualTo(77L);
         verify(fixture.datasetMapper).insertImmutable(any());
         verify(fixture.itemMapper).insertBatchImmutable(anyList());
@@ -198,7 +202,10 @@ class AiTrainingDatasetPackageImportServiceImplTest {
         value.labelVersion = "LABEL/1.1.0";
         value.calendarVersion = "CN_A/1.0.0";
         value.rowCount = 1;
-        value.status = "READY";
+        value.status = "FROZEN";
+        value.freezeManifestJson = FROZEN_MANIFEST;
+        value.freezeChecksum = FROZEN_CHECKSUM;
+        value.frozenAt = LocalDateTime.parse("2026-07-20T16:00:00");
         return value;
     }
 
@@ -224,10 +231,13 @@ class AiTrainingDatasetPackageImportServiceImplTest {
                 + "\"testStartDate\":\"2026-05-02\",\"testEndDate\":\"2026-06-01\","
                 + "\"maxHorizonDays\":3,\"purgeTradingDays\":5,\"embargoTradingDays\":5,"
                 + "\"lineageFingerprint\":\"" + LINEAGE + "\",\"artifactChecksum\":\"" + artifactChecksum
-                + "\",\"rowCount\":" + declaredRows + "},\"researchUniverse\":{\"universeCode\":\"A_SHARE_CORE\"},"
+                + "\",\"rowCount\":" + declaredRows + ",\"status\":\"FROZEN\","
+                + "\"freezeChecksum\":\"" + FROZEN_CHECKSUM + "\",\"frozenAt\":\"2026-07-20T16:00:00\","
+                + "\"freezeManifestJson\":" + jsonString(FROZEN_MANIFEST)
+                + "},\"researchUniverse\":{\"universeCode\":\"A_SHARE_CORE\"},"
                 + "\"sourceSnapshot\":{\"schemaVersion\":\"20260714-unified-1.1\"}}").getBytes(StandardCharsets.UTF_8);
         byte[] packageManifest = ("{\"format\":\"MAOGOU_TRAINING_DATASET_PACKAGE_V1\","
-                + "\"sourceSchemaVersion\":\"20260714-unified-1.1\"}").getBytes(StandardCharsets.UTF_8);
+                + "\"sourceSchemaVersion\":\"20260714-unified-1.1\",\"datasetStatus\":\"FROZEN\"}").getBytes(StandardCharsets.UTF_8);
         Map<String, byte[]> files = new LinkedHashMap<>();
         files.put("dataset-manifest.json", manifest);
         files.put("dataset-items.jsonl", items);
@@ -265,6 +275,18 @@ class AiTrainingDatasetPackageImportServiceImplTest {
 
     private static String sha256(byte[] value) throws Exception {
         return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value));
+    }
+
+    private static String sha256Unchecked(byte[] value) {
+        try {
+            return sha256(value);
+        } catch (Exception exception) {
+            throw new ExceptionInInitializerError(exception);
+        }
+    }
+
+    private static String jsonString(String value) {
+        return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
     }
 
     private record Fixture(

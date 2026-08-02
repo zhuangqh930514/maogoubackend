@@ -22,8 +22,8 @@ public class AiModelQualityGateImpl implements AiModelQualityGate {
             double minimumTestRocAuc
     ) {
         List<Check> checks = new ArrayList<>();
-        checks.add(check("DATASET_READY", dataset != null && "READY".equals(dataset.status),
-                "READY", dataset == null ? "MISSING" : dataset.status, "训练数据集必须是 READY"));
+        checks.add(check("DATASET_FROZEN", dataset != null && "FROZEN".equals(dataset.status),
+                "FROZEN", dataset == null ? "MISSING" : dataset.status, "训练数据集必须先通过冻结审计"));
         int requiredSamples = Math.max(1, minimumSamples);
         checks.add(check("SAMPLE_COUNT", sampleCount >= requiredSamples
                         && dataset != null && dataset.rowCount != null && dataset.rowCount == sampleCount,
