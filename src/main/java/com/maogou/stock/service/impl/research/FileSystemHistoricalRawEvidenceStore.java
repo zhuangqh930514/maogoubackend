@@ -7,6 +7,7 @@ import com.maogou.stock.dto.market.KlinePointResponse;
 import com.maogou.stock.dto.market.KlineSeriesSnapshot;
 import com.maogou.stock.infrastructure.market.HistoricalMarketDataProvider;
 import com.maogou.stock.service.research.HistoricalRawEvidenceStore;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -43,6 +44,7 @@ public class FileSystemHistoricalRawEvidenceStore implements HistoricalRawEviden
     private final ObjectMapper objectMapper;
     private final Path root;
 
+    @Autowired
     public FileSystemHistoricalRawEvidenceStore(ObjectMapper objectMapper, AppProperties properties) {
         this(objectMapper, Path.of(properties.getScheduler().getHistoricalRawEvidenceRoot()));
     }
