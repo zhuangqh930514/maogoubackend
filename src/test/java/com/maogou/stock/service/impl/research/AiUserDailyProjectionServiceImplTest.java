@@ -142,6 +142,7 @@ class AiUserDailyProjectionServiceImplTest {
         report.reportDate = LocalDate.of(2026, 7, 10);
         report.sampleId = 31L;
         report.strategyReleaseId = 91L;
+        report.lineageStatus = "VERIFIED";
         report.status = AnalysisStatus.SUCCESS;
         report.finalAction = "BUY";
         report.calibratedConfidence = new BigDecimal("0.90");
@@ -170,6 +171,30 @@ class AiUserDailyProjectionServiceImplTest {
             assertThat(item.reportId).isEqualTo(701L);
             assertThat(item.decisionSource).isEqualTo("RECONCILED_AI_REPORT");
             assertThat(item.reasonSummary).contains("AI 报告动作");
+        });
+    }
+
+    @Test
+    void anUnverifiedReportIsExplanationOnlyAndCannotReplaceTheFormalDecision() {
+        Fixture fixture = fixture(5L, true);
+        AiAnalysisReport report = new AiAnalysisReport();
+        report.id = 702L;
+        report.userId = 5L;
+        report.stockCode = "600519";
+        report.reportDate = LocalDate.of(2026, 7, 10);
+        report.sampleId = 31L;
+        report.strategyReleaseId = 91L;
+        report.status = AnalysisStatus.SUCCESS;
+        report.finalAction = "BUY";
+        when(fixture.analysisReportMapper.selectLatestSuccessfulForDailyDecision(
+                5L, LocalDate.of(2026, 7, 10), List.of("600519"))).thenReturn(List.of(report));
+
+        AiUserDailyProjectionService.ProjectionResult result = fixture.service.project(request(5L));
+
+        assertThat(result.items()).singleElement().satisfies(item -> {
+            assertThat(item.reportId).isNull();
+            assertThat(item.decisionSource).isEqualTo("DETERMINISTIC_POLICY");
+            assertThat(item.reasonSummary).contains("谨慎观察");
         });
     }
 

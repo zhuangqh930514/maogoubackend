@@ -33,7 +33,9 @@ public record AiAnalysisReportResponse(
         BigDecimal dataQualityScore,
         BigDecimal calibratedConfidence,
         String finalAction,
-        DailyDecision dailyDecision
+        DailyDecision dailyDecision,
+        Long predictionId,
+        Long strategyVersionId
 ) {
     /**
      * Compatibility constructor for service tests and integrations created before report
@@ -68,7 +70,7 @@ public record AiAnalysisReportResponse(
                 buySellPoints, conditionalStrategy, tradePlanReviews, promptSummary, sourceModel,
                 status, errorMessage, sampleId, strategyReleaseId, null, null, null,
                 reportVersion, supersedesReportId, dataQualityScore, calibratedConfidence,
-                finalAction, dailyDecision);
+                finalAction, dailyDecision, null, strategyReleaseId);
     }
 
     public static AiAnalysisReportResponse from(AiAnalysisReport entity) {
@@ -86,6 +88,15 @@ public record AiAnalysisReportResponse(
             AiAnalysisReport entity,
             List<AiConditionalStrategyPayload.ReviewResult> tradePlanReviews,
             DailyDecision dailyDecision
+    ) {
+        return from(entity, tradePlanReviews, dailyDecision, entity.primaryPredictionId);
+    }
+
+    public static AiAnalysisReportResponse from(
+            AiAnalysisReport entity,
+            List<AiConditionalStrategyPayload.ReviewResult> tradePlanReviews,
+            DailyDecision dailyDecision,
+            Long predictionId
     ) {
         String stockName = entity.stockName;
         if (stockName == null || stockName.isBlank() || "未知股票".equals(stockName.trim())) {
@@ -117,7 +128,9 @@ public record AiAnalysisReportResponse(
                 entity.dataQualityScore,
                 entity.calibratedConfidence,
                 entity.finalAction,
-                dailyDecision
+                dailyDecision,
+                predictionId,
+                entity.strategyReleaseId
         );
     }
 

@@ -474,6 +474,7 @@ public class AiUserDailyProjectionServiceImpl implements AiUserDailyProjectionSe
                 && Objects.equals(report.sampleId, sample.id)
                 && Objects.equals(report.strategyReleaseId, strategyReleaseId)
                 && Objects.equals(report.reportDate, tradeDate)
+                && "VERIFIED".equals(report.lineageStatus)
                 && report.status == com.maogou.stock.domain.enums.AnalysisStatus.SUCCESS;
     }
 

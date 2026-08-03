@@ -10,6 +10,24 @@ import java.util.List;
 
 public interface AiAnalysisReportMapper extends BaseMapper<AiAnalysisReport> {
 
+    @Select("""
+            SELECT prediction_id
+            FROM ai_analysis_report_prediction
+            WHERE user_id = #{userId} AND report_id = #{reportId}
+            ORDER BY CASE purpose
+                WHEN 'PRIMARY_RANKING' THEN 1
+                WHEN 'T3_SIGNAL' THEN 2
+                WHEN 'T2_SIGNAL' THEN 3
+                WHEN 'T1_SIGNAL' THEN 4
+                ELSE 5 END,
+                weight DESC, id
+            LIMIT 1
+            """)
+    Long selectPrimaryPredictionId(
+            @Param("userId") Long userId,
+            @Param("reportId") Long reportId
+    );
+
     @Select("SELECT id FROM user_account WHERE id = #{userId} FOR UPDATE")
     Long lockUser(@Param("userId") Long userId);
 

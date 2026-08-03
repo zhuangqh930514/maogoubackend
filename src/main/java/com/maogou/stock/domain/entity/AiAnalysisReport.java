@@ -1,6 +1,7 @@
 package com.maogou.stock.domain.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.maogou.stock.domain.enums.AnalysisStatus;
@@ -18,6 +19,8 @@ public class AiAnalysisReport {
     public String stockName;
     public Long sampleId;
     public Long strategyReleaseId;
+    @TableField(exist = false)
+    public Long primaryPredictionId;
     public Long pipelineRunId;
     public String lineageStatus;
     public String lineageIssueJson;

@@ -349,6 +349,10 @@ public class AiAnalysisServiceImpl implements AiAnalysisService {
     }
 
     private AiAnalysisReportResponse reportResponse(AiAnalysisReport report) {
+        if (report != null && report.id != null && reportMapper != null) {
+            report.primaryPredictionId = reportMapper.selectPrimaryPredictionId(
+                    AuthContext.currentUserIdOrDefault(), report.id);
+        }
         List<AiAnalysisReportResponse> responses = reportResponses(List.of(report));
         return responses.isEmpty() ? AiAnalysisReportResponse.from(report) : responses.get(0);
     }

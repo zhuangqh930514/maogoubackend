@@ -27,6 +27,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.annotation.Autowired;
 
 import java.io.IOException;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -49,6 +51,7 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
     private static final String DATASET_KEY = "MAOGOU_RANKER_T3";
     private static final String MODEL_KEY = "MAOGOU_RANKER";
     private static final String TRAINER_VERSION = "TRAIN_RANKER_V2_1";
+    private static final BigDecimal ONE_HUNDRED = new BigDecimal("100");
     private static final DateTimeFormatter VERSION_FORMATTER =
             DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
 
@@ -434,8 +437,7 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
             if (values.stream().anyMatch(value -> row.factorCode.equals(value.get("factorCode")))) {
                 continue;
             }
-            java.math.BigDecimal reliability = row.wilsonLowerBound == null ? java.math.BigDecimal.ZERO
-                    : row.wilsonLowerBound.max(java.math.BigDecimal.ZERO).min(java.math.BigDecimal.ONE);
+            BigDecimal reliability = normalizePercentagePoint(row.wilsonLowerBound);
             java.math.BigDecimal rankIc = row.rankIc == null ? java.math.BigDecimal.ZERO : row.rankIc.abs();
             values.add(java.util.Map.of(
                     "factorCode", row.factorCode,
@@ -453,6 +455,21 @@ public class AiMonthlyTrainingServiceImpl implements AiMonthlyTrainingRunner {
                 "asOf", asOf,
                 "status", byHorizon.isEmpty() ? "INSUFFICIENT_EVIDENCE" : "CANDIDATE_ONLY",
                 "horizons", byHorizon));
+    }
+
+    /**
+     * Factor performance stores hit-rate confidence as percentage points (0..100),
+     * while model package weights use a unit ratio (0..1). Keep this conversion at
+     * the package boundary so a 60.38% factor is not silently treated as 100%.
+     */
+    static BigDecimal normalizePercentagePoint(BigDecimal value) {
+        if (value == null) {
+            return BigDecimal.ZERO.setScale(8, RoundingMode.HALF_UP);
+        }
+        BigDecimal normalized = value.compareTo(BigDecimal.ONE) > 0
+                ? value.divide(ONE_HUNDRED, 8, RoundingMode.HALF_UP)
+                : value;
+        return normalized.max(BigDecimal.ZERO).min(BigDecimal.ONE).setScale(8, RoundingMode.HALF_UP);
     }
 
     private String writeJson(Object value) {
