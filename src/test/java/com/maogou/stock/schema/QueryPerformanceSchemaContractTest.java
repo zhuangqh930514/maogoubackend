@@ -25,6 +25,8 @@ class QueryPerformanceSchemaContractTest {
             "idx_label_evaluation_candidate",
             "idx_label_training_source_summary",
             "idx_prediction_evaluation_candidates",
+            "idx_prediction_lab_page",
+            "idx_label_lab_page",
             "idx_evaluation_version_prediction",
             "idx_pipeline_owner_type_time");
 
@@ -33,7 +35,8 @@ class QueryPerformanceSchemaContractTest {
         String mysqlSchema = Files.readString(Path.of("src/main/resources/db/schema.sql"));
         String h2Schema = Files.readString(Path.of("src/main/resources/db/schema-h2-body.sql"));
         String migration = Files.readString(
-                Path.of("src/main/resources/db/20260715_query_performance_indexes.sql"));
+                        Path.of("src/main/resources/db/20260715_query_performance_indexes.sql"))
+                + Files.readString(Path.of("src/main/resources/db/20260803_research_lab_page_indexes.sql"));
 
         for (String index : INDEXES) {
             assertThat(mysqlSchema).contains(index);

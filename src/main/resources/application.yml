@@ -8,7 +8,7 @@ spring:
     name: maogou-stock-backend
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: ${MYSQL_URL:jdbc:mysql://8.138.232.4:3306/maogou?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
+    url: ${MYSQL_URL:jdbc:mysql://8.138.232.4:3306/maogou?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&connectTimeout=5000&socketTimeout=30000&tcpKeepAlive=true}
     username: ${MYSQL_USERNAME:zqh}
     password: ${MYSQL_PASSWORD:930514}
     hikari:
@@ -20,6 +20,7 @@ spring:
       max-lifetime: ${MYSQL_MAX_LIFETIME_MS:1800000}
       keepalive-time: ${MYSQL_KEEPALIVE_TIME_MS:300000}
       connection-test-query: ${MYSQL_CONNECTION_TEST_QUERY:SELECT 1}
+      initialization-fail-timeout: ${MYSQL_INITIALIZATION_FAIL_TIMEOUT_MS:10000}
   jackson:
     time-zone: Asia/Shanghai
     date-format: yyyy-MM-dd HH:mm:ss
@@ -84,6 +85,9 @@ maogou:
     queue-wait-ms: ${MAOGOU_AI_QUEUE_WAIT_MS:5000}
     retry-base-delay-ms: ${MAOGOU_AI_RETRY_BASE_DELAY_MS:1500}
     retry-max-delay-ms: ${MAOGOU_AI_RETRY_MAX_DELAY_MS:30000}
+    transient-failure-threshold: ${MAOGOU_AI_TRANSIENT_FAILURE_THRESHOLD:2}
+    provider-cooldown-base-ms: ${MAOGOU_AI_PROVIDER_COOLDOWN_BASE_MS:5000}
+    provider-cooldown-max-ms: ${MAOGOU_AI_PROVIDER_COOLDOWN_MAX_MS:60000}
     report-retry-max-attempts: ${MAOGOU_AI_REPORT_RETRY_MAX_ATTEMPTS:3}
     report-retry-delay-seconds: ${MAOGOU_AI_REPORT_RETRY_DELAY_SECONDS:300}
   scheduler:

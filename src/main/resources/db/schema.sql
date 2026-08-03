@@ -754,6 +754,7 @@ CREATE TABLE IF NOT EXISTS ai_prediction (
     KEY idx_prediction_evaluation_candidates
         (trade_date, horizon_trading_days, id, sample_id, action, action_bucket,
          target_direction, expected_return, probability_up, probability_down, input_fingerprint),
+    KEY idx_prediction_lab_page (trade_date, id),
     CONSTRAINT chk_prediction_horizon CHECK (horizon_trading_days IN (1, 2, 3, 5)),
     CONSTRAINT fk_prediction_sample FOREIGN KEY (sample_id) REFERENCES ai_sample (id),
     CONSTRAINT fk_prediction_release
@@ -823,6 +824,7 @@ CREATE TABLE IF NOT EXISTS ai_sample_label (
         (label_version, fill_status, execution_status, is_current),
     KEY idx_label_sector_evidence
         (label_version, is_current, sector_membership_fingerprint, label_available_at),
+    KEY idx_label_lab_page (is_current, entry_trade_date, id),
     KEY idx_sample_label_calendar (entry_calendar_id, exit_calendar_id),
     CONSTRAINT chk_sample_label_horizon CHECK (horizon_trading_days IN (1, 2, 3, 5)),
     CONSTRAINT fk_sample_label_sample FOREIGN KEY (sample_id) REFERENCES ai_sample (id),

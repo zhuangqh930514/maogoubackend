@@ -7,6 +7,7 @@ import com.maogou.stock.dto.settings.ConnectionTestResponse;
 import com.maogou.stock.dto.settings.ModelConfigRequest;
 import com.maogou.stock.dto.settings.ModelConfigResponse;
 import com.maogou.stock.infrastructure.ai.LocalAiClient;
+import com.maogou.stock.infrastructure.ai.AiModelErrorFormatter;
 import com.maogou.stock.mapper.AiModelConfigMapper;
 import com.maogou.stock.security.AuthContext;
 import com.maogou.stock.service.ModelConfigService;
@@ -86,7 +87,9 @@ public class ModelConfigServiceImpl implements ModelConfigService {
             boolean success = localAiClient.test(config);
             return new ConnectionTestResponse(success, success ? "连接测试成功" : "模型返回为空", System.currentTimeMillis() - start);
         } catch (Exception ex) {
-            return new ConnectionTestResponse(false, ex.getMessage(), System.currentTimeMillis() - start);
+            return new ConnectionTestResponse(false,
+                    AiModelErrorFormatter.userMessage(ex, config.modelName),
+                    System.currentTimeMillis() - start);
         }
     }
 

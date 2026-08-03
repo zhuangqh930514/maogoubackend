@@ -51,6 +51,31 @@ class AiModelRequestLimiterTest {
                 .isLessThanOrEqualTo(350L);
     }
 
+    @Test
+    void opensShortCircuitAfterRepeatedTransientProviderFailuresAndRecoversOnSuccess() {
+        AppProperties properties = properties(1, 5, 100, 1_000);
+        properties.getAi().setTransientFailureThreshold(2);
+        properties.getAi().setProviderCooldownBaseMs(100);
+        properties.getAi().setProviderCooldownMaxMs(1_000);
+        AiModelRequestLimiter limiter = new AiModelRequestLimiter(properties);
+        AiModelConfig config = config("https://api.example.com/v1", "qwen3.6", "key");
+
+        assertThat(limiter.recordTransientFailure(config, new RuntimeException("timeout"))).isNull();
+        AiModelRateLimitException cooldown = limiter.recordTransientFailure(config,
+                new RuntimeException("connection reset"));
+        assertThat(cooldown)
+                .isNotNull()
+                .hasMessageContaining("暂时熔断");
+        assertThatThrownBy(() -> limiter.acquire(config))
+                .isInstanceOf(AiModelRateLimitException.class)
+                .hasMessageContaining("暂时熔断");
+
+        limiter.recordSuccess(config);
+        try (AiModelRequestLimiter.Permit ignored = limiter.acquire(config)) {
+            assertThat(ignored).isNotNull();
+        }
+    }
+
     private static AppProperties properties(int concurrency, long queueWaitMs, long retryBaseMs, long retryMaxMs) {
         AppProperties properties = new AppProperties();
         properties.getAi().setMaxConcurrentRequests(concurrency);

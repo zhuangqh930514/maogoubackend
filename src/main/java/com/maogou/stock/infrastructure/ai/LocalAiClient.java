@@ -9,6 +9,8 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.HttpServerErrorException;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestTemplate;
 
 import java.math.BigDecimal;
@@ -78,10 +80,17 @@ public class LocalAiClient {
                     new HttpEntity<>(body, headers),
                     JsonNode.class
             );
+            requestLimiter.recordSuccess(config);
         } catch (HttpClientErrorException.TooManyRequests exception) {
             Duration retryAfter = retryAfter(exception.getResponseHeaders());
             requestLimiter.recordRateLimit(config, retryAfter, exception);
             throw requestLimiter.cooldownException(config, retryAfter, exception);
+        } catch (HttpServerErrorException | ResourceAccessException exception) {
+            AiModelRateLimitException cooldown = requestLimiter.recordTransientFailure(config, exception);
+            if (cooldown != null) {
+                throw cooldown;
+            }
+            throw exception;
         }
         JsonNode content = response == null ? null : response.at("/choices/0/message/content");
         if (content == null || content.isMissingNode()) {

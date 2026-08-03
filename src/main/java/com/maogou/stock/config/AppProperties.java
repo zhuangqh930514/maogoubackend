@@ -218,6 +218,9 @@ public class AppProperties {
         private long queueWaitMs = 5000;
         private long retryBaseDelayMs = 1500;
         private long retryMaxDelayMs = 30000;
+        private int transientFailureThreshold = 2;
+        private long providerCooldownBaseMs = 5000;
+        private long providerCooldownMaxMs = 60000;
         private int reportRetryMaxAttempts = 3;
         private long reportRetryDelaySeconds = 300;
 
@@ -299,6 +302,30 @@ public class AppProperties {
 
         public void setRetryMaxDelayMs(long retryMaxDelayMs) {
             this.retryMaxDelayMs = retryMaxDelayMs;
+        }
+
+        public int getTransientFailureThreshold() {
+            return transientFailureThreshold;
+        }
+
+        public void setTransientFailureThreshold(int transientFailureThreshold) {
+            this.transientFailureThreshold = transientFailureThreshold;
+        }
+
+        public long getProviderCooldownBaseMs() {
+            return providerCooldownBaseMs;
+        }
+
+        public void setProviderCooldownBaseMs(long providerCooldownBaseMs) {
+            this.providerCooldownBaseMs = providerCooldownBaseMs;
+        }
+
+        public long getProviderCooldownMaxMs() {
+            return providerCooldownMaxMs;
+        }
+
+        public void setProviderCooldownMaxMs(long providerCooldownMaxMs) {
+            this.providerCooldownMaxMs = providerCooldownMaxMs;
         }
 
         public int getReportRetryMaxAttempts() {

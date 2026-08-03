@@ -112,7 +112,6 @@ class SettingsControllerTest {
         latestPipeline.status = "SUCCESS";
         latestPipeline.startedAt = LocalDateTime.of(2026, 7, 13, 16, 0);
         latestPipeline.finishedAt = LocalDateTime.of(2026, 7, 13, 16, 12);
-        when(pipelineRunMapper.selectOne(any(QueryWrapper.class))).thenReturn(latestPipeline);
         AiPipelineRun globalRun = new AiPipelineRun();
         globalRun.id = 8998L;
         globalRun.scopeType = "GLOBAL";
@@ -155,7 +154,10 @@ class SettingsControllerTest {
                 5L, () -> controller.schedulerStatus().data());
 
         assertThat(response.autoClosePipelineEnabled()).isTrue();
-        assertThat(response.autoClosePipelineLastStatus()).isEqualTo("SUCCESS");
+        assertThat(response.autoClosePipelineLastStatus()).isEqualTo("PARTIAL_SUCCESS");
+        assertThat(response.autoClosePipelineLastMessage())
+                .contains("全局日度研究流水线 #8998")
+                .contains("用户投研日报投影流水线 #8997");
         assertThat(response.latestResearchDailyReport()).isNotNull();
         assertThat(response.latestResearchDailyReport().id()).isEqualTo(9001L);
         assertThat(response.latestResearchDailyReport().reportStatus()).isEqualTo("READY");
@@ -221,7 +223,8 @@ class SettingsControllerTest {
         latest.startedAt = LocalDateTime.of(2026, 7, 15, 17, 12);
         latest.finishedAt = LocalDateTime.of(2026, 7, 15, 17, 13);
         latest.updatedAt = latest.finishedAt;
-        when(pipelineRunMapper.selectOne(any(QueryWrapper.class))).thenReturn(latest);
+        when(pipelineRunMapper.selectList(any(QueryWrapper.class)))
+                .thenReturn(List.of(), List.of(latest));
 
         SettingsController controller = new SettingsController(
                 modelConfigService, pipelineRunMapper, new AppProperties(),
@@ -259,7 +262,8 @@ class SettingsControllerTest {
         global.pipelineType = "GLOBAL_DAILY_RESEARCH";
         global.status = "WAITING_SOURCE";
         global.startedAt = LocalDateTime.of(2026, 7, 15, 16, 0);
-        when(pipelineRunMapper.selectOne(any(QueryWrapper.class))).thenReturn(null, global);
+        when(pipelineRunMapper.selectList(any(QueryWrapper.class)))
+                .thenReturn(List.of(global), List.of());
 
         SettingsController controller = new SettingsController(
                 modelConfigService, pipelineRunMapper, new AppProperties(),

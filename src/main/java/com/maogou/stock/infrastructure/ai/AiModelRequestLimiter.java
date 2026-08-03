@@ -8,6 +8,8 @@ import java.time.Duration;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -34,7 +36,9 @@ public class AiModelRequestLimiter {
         long now = System.currentTimeMillis();
         long blockedUntil = state.blockedUntilMillis.get();
         if (blockedUntil > now) {
-            throw cooldownException(key, blockedUntil - now, null);
+            throw state.providerUnavailable.get()
+                    ? providerCooldownException(key, blockedUntil - now, null)
+                    : cooldownException(key, blockedUntil - now, null);
         }
         try {
             if (!state.permits.tryAcquire(properties.getAi().getQueueWaitMs(), TimeUnit.MILLISECONDS)) {
@@ -50,9 +54,20 @@ public class AiModelRequestLimiter {
         blockedUntil = state.blockedUntilMillis.get();
         if (blockedUntil > System.currentTimeMillis()) {
             state.permits.release();
-            throw cooldownException(key, blockedUntil - System.currentTimeMillis(), null);
+            throw state.providerUnavailable.get()
+                    ? providerCooldownException(key, blockedUntil - System.currentTimeMillis(), null)
+                    : cooldownException(key, blockedUntil - System.currentTimeMillis(), null);
         }
         return new Permit(state.permits);
+    }
+
+    public void recordSuccess(AiModelConfig config) {
+        EndpointKey key = EndpointKey.from(config, properties.getAi());
+        EndpointState state = endpointStates.computeIfAbsent(key,
+                ignored -> new EndpointState(properties.getAi().getMaxConcurrentRequests()));
+        state.consecutiveTransientFailures.set(0);
+        state.providerUnavailable.set(false);
+        state.blockedUntilMillis.set(0L);
     }
 
     public void recordRateLimit(AiModelConfig config, Duration retryAfter, Throwable cause) {
@@ -63,7 +78,32 @@ public class AiModelRequestLimiter {
         long delay = Math.max(properties.getAi().getRetryBaseDelayMs(), requestedDelay);
         delay = Math.min(delay, properties.getAi().getRetryMaxDelayMs());
         long until = System.currentTimeMillis() + delay;
+        state.providerUnavailable.set(false);
+        state.consecutiveTransientFailures.set(0);
         state.blockedUntilMillis.accumulateAndGet(until, Math::max);
+    }
+
+    /**
+     * Stop a failing endpoint from being hammered by scheduled report jobs. The first
+     * transient failure is returned to the caller for normal retry handling; once the
+     * threshold is reached, subsequent callers fail fast during the short circuit window.
+     */
+    public AiModelRateLimitException recordTransientFailure(AiModelConfig config, Throwable cause) {
+        EndpointKey key = EndpointKey.from(config, properties.getAi());
+        EndpointState state = endpointStates.computeIfAbsent(key,
+                ignored -> new EndpointState(properties.getAi().getMaxConcurrentRequests()));
+        int failures = state.consecutiveTransientFailures.incrementAndGet();
+        int threshold = Math.max(1, properties.getAi().getTransientFailureThreshold());
+        if (failures < threshold) {
+            return null;
+        }
+        long base = Math.max(1L, properties.getAi().getProviderCooldownBaseMs());
+        long maximum = Math.max(base, properties.getAi().getProviderCooldownMaxMs());
+        int exponent = Math.min(10, Math.max(0, failures - threshold));
+        long delay = Math.min(maximum, base * (1L << exponent));
+        state.providerUnavailable.set(true);
+        state.blockedUntilMillis.accumulateAndGet(System.currentTimeMillis() + delay, Math::max);
+        return providerCooldownException(key, delay, cause);
     }
 
     public AiModelRateLimitException cooldownException(AiModelConfig config, Duration retryAfter, Throwable cause) {
@@ -77,6 +117,14 @@ public class AiModelRequestLimiter {
         long seconds = Math.max(1L, (delayMillis + 999L) / 1000L);
         return new AiModelRateLimitException(
                 "模型接口触发限流，系统将在约 " + seconds + " 秒后自动重试。模型=" + key.modelName,
+                delayMillis, cause);
+    }
+
+    private static AiModelRateLimitException providerCooldownException(
+            EndpointKey key, long delayMillis, Throwable cause) {
+        long seconds = Math.max(1L, (delayMillis + 999L) / 1000L);
+        return new AiModelRateLimitException(
+                "模型服务连续失败，已暂时熔断，约 " + seconds + " 秒后自动重试。模型=" + key.modelName,
                 delayMillis, cause);
     }
 
@@ -96,6 +144,8 @@ public class AiModelRequestLimiter {
     private static final class EndpointState {
         private final Semaphore permits;
         private final AtomicLong blockedUntilMillis = new AtomicLong();
+        private final AtomicInteger consecutiveTransientFailures = new AtomicInteger();
+        private final AtomicBoolean providerUnavailable = new AtomicBoolean();
 
         private EndpointState(int maxConcurrentRequests) {
             this.permits = new Semaphore(Math.max(1, maxConcurrentRequests), true);

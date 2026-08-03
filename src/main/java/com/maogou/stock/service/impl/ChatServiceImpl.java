@@ -15,6 +15,7 @@ import com.maogou.stock.dto.chat.CreateChatSessionRequest;
 import com.maogou.stock.dto.chat.SendChatMessageRequest;
 import com.maogou.stock.dto.chat.UpdateChatMemoryRequest;
 import com.maogou.stock.infrastructure.ai.LocalAiClient;
+import com.maogou.stock.infrastructure.ai.AiModelErrorFormatter;
 import com.maogou.stock.infrastructure.search.WebSearchContext;
 import com.maogou.stock.infrastructure.search.WebSearchItem;
 import com.maogou.stock.infrastructure.search.WebSearchService;
@@ -26,6 +27,8 @@ import com.maogou.stock.service.ChatService;
 import com.maogou.stock.service.ModelConfigService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -36,6 +39,8 @@ import java.util.Locale;
 
 @Service
 public class ChatServiceImpl implements ChatService {
+
+    private static final Logger log = LoggerFactory.getLogger(ChatServiceImpl.class);
 
     private static final int HISTORY_LIMIT = 16;
     private static final int MEMORY_LIMIT = 3600;
@@ -133,8 +138,10 @@ public class ChatServiceImpl implements ChatService {
             String aiText = localAiClient.chat(prompt, config);
             assistantMessage = newMessage(session.id, userId, "assistant", fallback(aiText), config.modelName, "SUCCESS", null, LocalDateTime.now());
         } catch (Exception ex) {
-            String error = ex.getMessage() == null ? "未知模型调用错误" : ex.getMessage();
-            assistantMessage = newMessage(session.id, userId, "assistant", "模型调用失败：" + error, config.modelName, "FAILED", error, LocalDateTime.now());
+            log.warn("chat model request failed, userId={}, sessionId={}, model={}", userId, session.id, config.modelName, ex);
+            String error = AiModelErrorFormatter.userMessage(ex, config.modelName);
+            assistantMessage = newMessage(session.id, userId, "assistant", error, config.modelName, "FAILED", error, LocalDateTime.now());
+            assistantMessage.retryAfterSeconds = AiModelErrorFormatter.retryAfterSeconds(ex);
         }
         messageMapper.insert(assistantMessage);
 
