@@ -342,4 +342,35 @@ class SettingsControllerTest {
         assertThat(queryCaptor.getValue().getParamNameValuePairs().values())
                 .contains("GLOBAL", "USER", 5L, "GLOBAL_DAILY_RESEARCH", "USER_DAILY_PROJECTION");
     }
+
+    @Test
+    void schedulerLogListReturnsPreviewAndDetailEndpointReturnsFullError() {
+        ModelConfigService modelConfigService = mock(ModelConfigService.class);
+        AiPipelineRunMapper pipelineRunMapper = mock(AiPipelineRunMapper.class);
+        TradingCalendarService tradingCalendarService = mock(TradingCalendarService.class);
+        AiResearchDailyReportService reportService = mock(AiResearchDailyReportService.class);
+        AutoClosePipelineService pipelineService = mock(AutoClosePipelineService.class);
+        AiPipelineRun run = new AiPipelineRun();
+        run.id = 77L;
+        run.scopeType = "GLOBAL";
+        run.pipelineType = "GLOBAL_DAILY_RESEARCH";
+        run.status = "PARTIAL_SUCCESS";
+        run.errorMessage = "行情源超时";
+        run.errorDetail = "x".repeat(900);
+        when(pipelineRunMapper.selectList(any(QueryWrapper.class))).thenReturn(List.of(run));
+        when(pipelineRunMapper.selectOne(any(QueryWrapper.class))).thenReturn(run);
+        SettingsController controller = new SettingsController(
+                modelConfigService, pipelineRunMapper, new AppProperties(),
+                tradingCalendarService, reportService, pipelineService);
+
+        SchedulerJobLogResponse preview = AuthContext.callAs(
+                5L, () -> controller.schedulerJobLogs(12).data().get(0));
+        SchedulerJobLogResponse detail = AuthContext.callAs(
+                5L, () -> controller.schedulerJobLog(77L).data());
+
+        assertThat(preview.detailTruncated()).isTrue();
+        assertThat(preview.errorDetail()).hasSizeLessThan(run.errorDetail.length());
+        assertThat(detail.detailTruncated()).isFalse();
+        assertThat(detail.errorDetail()).isEqualTo(run.errorDetail);
+    }
 }

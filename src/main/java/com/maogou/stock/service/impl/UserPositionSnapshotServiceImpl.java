@@ -122,8 +122,11 @@ public class UserPositionSnapshotServiceImpl implements UserPositionSnapshotServ
         target.quoteStatus = previous.quoteStatus;
         target.quoteSource = previous.quoteSource;
         target.quoteAsOf = previous.quoteAsOf;
-        target.calculationStatus = previous.calculationStatus;
-        target.unavailableReason = previous.unavailableReason;
+        // A missing refresh must never make yesterday's quote look current. Keep the
+        // last real value for continuity, but force the portfolio summary to remain
+        // incomplete and expose the stale state to the user.
+        target.calculationStatus = "STALE";
+        target.unavailableReason = "当前行情未更新，展示上一次真实行情快照";
     }
 
     private static BigDecimal rate(BigDecimal value, BigDecimal base) {

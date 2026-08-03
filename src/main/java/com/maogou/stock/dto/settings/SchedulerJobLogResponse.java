@@ -16,6 +16,7 @@ public record SchedulerJobLogResponse(
         Integer retryCount,
         LocalDateTime nextRetryAt,
         String errorMessage,
-        String errorDetail
+        String errorDetail,
+        boolean detailTruncated
 ) {
 }

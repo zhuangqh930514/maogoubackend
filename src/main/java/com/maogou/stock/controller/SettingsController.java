@@ -19,11 +19,14 @@ import com.maogou.stock.service.ModelConfigService;
 import com.maogou.stock.service.TradingCalendarService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.scheduling.support.CronExpression;
 
 import java.time.LocalDate;
@@ -38,6 +41,8 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/settings")
 public class SettingsController {
+
+    private static final int JOB_LOG_DETAIL_PREVIEW_LIMIT = 800;
 
     private final ModelConfigService modelConfigService;
     private final AiPipelineRunMapper pipelineRunMapper;
@@ -331,31 +336,56 @@ public class SettingsController {
         int size = Math.max(1, Math.min(limit == null ? 20 : limit, 50));
         Long userId = AuthContext.currentUserId().orElseThrow(() ->
                 new org.springframework.security.access.AccessDeniedException("请先登录"));
-        List<AiPipelineRun> rows = pipelineRunMapper.selectList(new QueryWrapper<AiPipelineRun>()
-                .and(scope -> scope.eq("scope_type", "GLOBAL")
-                        .or(owner -> owner.eq("scope_type", "USER").eq("owner_user_id", userId)))
-                .in("pipeline_type", "GLOBAL_DAILY_RESEARCH", "USER_DAILY_PROJECTION",
-                        "GLOBAL_WEEKLY_RESEARCH", "GLOBAL_MONTHLY_TRAINING")
+        List<AiPipelineRun> rows = pipelineRunMapper.selectList(visibleJobLogsQuery(userId)
                 .orderByDesc("created_at", "id")
                 .last("LIMIT " + size));
         return ApiResponse.ok(rows.stream()
-                .map(item -> new SchedulerJobLogResponse(
-                        item.id,
-                        pipelineName(item.pipelineType),
-                        item.pipelineType,
-                        item.status,
-                        item.startedAt,
-                        item.finishedAt,
-                        item.processedCount,
-                        item.successCount,
-                        item.failedCount,
-                        item.currentStep,
-                        item.retryCount,
-                        item.nextRetryAt,
-                        item.errorMessage,
-                        item.errorDetail
-                ))
+                .map(item -> toJobLogResponse(item, true))
                 .toList());
+    }
+
+    @GetMapping("/scheduler/job-logs/{id}")
+    public ApiResponse<SchedulerJobLogResponse> schedulerJobLog(@PathVariable("id") Long id) {
+        Long userId = AuthContext.currentUserId().orElseThrow(() ->
+                new org.springframework.security.access.AccessDeniedException("请先登录"));
+        AiPipelineRun row = pipelineRunMapper.selectOne(visibleJobLogsQuery(userId).eq("id", id));
+        if (row == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "任务日志不存在或无权查看");
+        }
+        return ApiResponse.ok(toJobLogResponse(row, false));
+    }
+
+    private static QueryWrapper<AiPipelineRun> visibleJobLogsQuery(Long userId) {
+        return new QueryWrapper<AiPipelineRun>()
+                .and(scope -> scope.eq("scope_type", "GLOBAL")
+                        .or(owner -> owner.eq("scope_type", "USER").eq("owner_user_id", userId)))
+                .in("pipeline_type", "GLOBAL_DAILY_RESEARCH", "USER_DAILY_PROJECTION",
+                        "GLOBAL_WEEKLY_RESEARCH", "GLOBAL_MONTHLY_TRAINING");
+    }
+
+    private static SchedulerJobLogResponse toJobLogResponse(AiPipelineRun item, boolean preview) {
+        String detail = item.errorDetail;
+        boolean truncated = preview && detail != null && detail.length() > JOB_LOG_DETAIL_PREVIEW_LIMIT;
+        if (truncated) {
+            detail = detail.substring(0, JOB_LOG_DETAIL_PREVIEW_LIMIT) + "…（完整错误请打开详情）";
+        }
+        return new SchedulerJobLogResponse(
+                item.id,
+                pipelineName(item.pipelineType),
+                item.pipelineType,
+                item.status,
+                item.startedAt,
+                item.finishedAt,
+                item.processedCount,
+                item.successCount,
+                item.failedCount,
+                item.currentStep,
+                item.retryCount,
+                item.nextRetryAt,
+                item.errorMessage,
+                detail,
+                truncated
+        );
     }
 
     @PutMapping("/scheduler/auto-close-pipeline")
